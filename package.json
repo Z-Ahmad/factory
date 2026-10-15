@@ -1,0 +1,12 @@
+{
+  "name": "factory",
+  "version": "0.1.0",
+  "description": "A kit for running an overnight agent factory on a project. Configured by the project's factory.toml.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

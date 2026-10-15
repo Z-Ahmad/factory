@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# usage: factory [--file <factory.toml>] <command> [args]
+# Finds the project's factory.toml, exports its values as FK_* variables,
+# and runs cmd/<command> (bash, or .mjs under node). `factory help` lists commands.
+set -euo pipefail
+
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+die() { echo "factory: $*" >&2; exit "${2:-1}"; }
+
+usage() {
+  echo "usage: factory [--file <factory.toml>] <command> [args]"
+  echo
+  echo "commands:"
+  local f name desc
+  for f in "$KIT"/cmd/*; do
+    [[ -f "$f" ]] || continue
+    name="$(basename "$f")"; name="${name%.*}"
+    desc="$(head -n 5 "$f" | grep -m1 -E '^(#|//) desc:' | sed -E 's/^(#|\/\/) desc: *//' || true)"
+    printf '  %-14s %s\n' "$name" "$desc"
+  done
+}
+
+# factory.toml: $FACTORY_TOML, else walk up from cwd, else the git common root
+# (the main checkout), so a worktree on a branch without the file still works.
+find_toml() {
+  if [[ -n "${FACTORY_TOML:-}" ]]; then
+    [[ -f "$FACTORY_TOML" ]] || die "FACTORY_TOML points at a missing file: $FACTORY_TOML"
+    echo "$FACTORY_TOML"; return 0
+  fi
+  local d="$PWD" common
+  while :; do
+    [[ -f "$d/factory.toml" ]] && { echo "$d/factory.toml"; return 0; }
+    [[ "$d" == "/" ]] && break
+    d="$(dirname "$d")"
+  done
+  if common="$(git rev-parse --git-common-dir 2>/dev/null)"; then
+    d="$(cd "$common" && pwd -P)"; d="$(dirname "$d")"
+    [[ -f "$d/factory.toml" ]] && { echo "$d/factory.toml"; return 0; }
+  fi
+  return 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --file|-f)
+      [[ $# -ge 2 ]] || die "$1 needs a path" 2
+      [[ -f "$2" ]] || die "no such file: $2" 2
+      FACTORY_TOML="$(cd "$(dirname "$2")" && pwd -P)/$(basename "$2")"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+CMD="${1:-help}"
+case "$CMD" in help|-h|--help) usage; exit 0 ;; esac
+shift
+[[ "$CMD" =~ ^[a-z][a-z0-9-]*$ ]] || die "bad command name: $CMD" 2
+
+TARGET=""
+for f in "$KIT/cmd/$CMD" "$KIT/cmd/$CMD.mjs" "$KIT/cmd/$CMD.sh"; do
+  [[ -f "$f" ]] && { TARGET="$f"; break; }
+done
+[[ -n "$TARGET" ]] || { echo "factory: unknown command: $CMD" >&2; usage >&2; exit 2; }
+
+command -v node >/dev/null 2>&1 || die "node is required (Node 22 or newer)"
+
+TOML="$(find_toml)" || die "no factory.toml found (looked up from $PWD, then in the git common root). Add one at the project root, or pass --file / set FACTORY_TOML."
+export FACTORY_TOML="$TOML" FK_KIT_DIR="$KIT"
+
+# `config` reports its own errors, so a broken file can still be inspected.
+if [[ "$CMD" != "config" ]]; then
+  ENV_SH="$(node "$KIT/cmd/config.mjs" env --sh)" || exit 1
+  eval "$ENV_SH"
+fi
+
+case "$TARGET" in
+  *.mjs) exec node "$TARGET" "$@" ;;
+  *) [[ -x "$TARGET" ]] || die "$TARGET is not executable"; exec "$TARGET" "$@" ;;
+esac

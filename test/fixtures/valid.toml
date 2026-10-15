@@ -1,0 +1,91 @@
+# A synthetic project, used only to exercise the factory.toml contract.
+[kit]
+repo = "https://example.invalid/factory.git"
+ref  = "v0.1.0"
+
+[project]
+name          = "example-app"
+main_checkout = "/tmp/example"
+state_dir     = "~/example-factory"                # ~ expands to the home directory
+night_file    = "{state_dir}/night-{n}.md"         # {state_dir} is filled in; {n} is left for the command
+shots_dir     = "{state_dir}/night-{n}/shots"
+item_line     = "- [ ] {id}."
+log_line      = "{hhmm} · {id} · {sha} · {note}"
+
+[git]
+worktrees_dir       = ".worktrees"
+worktree_branch     = "factory/{name}-wt"
+push_branch         = "factory/{name}"
+protected_worktrees = ["night-*", "phone"]
+never_push          = ["main"]
+commit_trailer      = 'Co-Authored-By: Example Agent <agent@example.invalid>'
+
+[[targets]]
+name    = "app"
+base    = "origin/dev"
+pr_base = "dev"
+paths   = ["app/**"]
+default = true
+
+[[targets]]
+name         = "site"
+base         = "origin/main"
+pr_base      = "main"
+deploys_prod = true
+paths = [
+  "site/**",      # trailing comma and comments inside a multi-line array
+  "docs/**",
+]
+
+[worktree]
+cache_symlinks = ["node_modules", "app/.build"]
+
+[never_touch]
+paths = ["app/Config/secrets.cfg", "site/.env*"]
+secret_nonempty = { "app/Config/secrets.cfg" = "API_TOKEN" }
+
+[dev]
+up         = "npm run dev"
+log        = "{state_dir}/dev.log"
+wait_ports = [8080, 9099]
+timeout_s  = 600
+agents_may_start = false
+read_api   = { cwd = "{main_checkout}", cmd = "npm run dev -w api", port = 3002 }
+
+[seed]
+trip        = "example-trip"
+fixture_dir = "{state_dir}/fixtures/{trip}"
+emulators   = { store = "127.0.0.1:8080", auth = "127.0.0.1:9099" }
+
+[disk]
+min_gb   = 40
+floor_gb = 20
+dd_root  = "~/Library/Caches/example-app"
+archives = { glob = "build/*.xcarchive", keep = 3 }
+
+[sim]
+shooter_udid         = "00000000-0000-0000-0000-000000000000"
+protected            = ["00000000-0000-0000-0000-000000000000", "Example Phone"]
+reset_keyboard_prefs = true
+
+[proof.ios]
+build        = "scripts/build.sh {dd}"
+dd           = "app"
+app          = "{dd}/Build/Example.app"
+launch_env   = { MODE = "demo", SIGNIN = "demo:{password}", OPEN = "{trip}" }
+rest_at_s    = 4.5
+fail_markers = ["LAYOUT-LOOP"]
+
+[proof.ios.verdict]
+flash_warn = 4
+grid       = "8x16"
+
+[proof.matrix.default]
+cells = ["light", "dark", "size=second"]
+
+[phone]
+wipe = ["{dd_root}/dd-device"]
+
+[loop]
+models = { implement = "sonnet", ideate = "opus", banned = ["haiku"] }
+rounds = 1

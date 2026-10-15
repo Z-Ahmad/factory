@@ -1,0 +1,19 @@
+[kit]
+repo = "https://example.invalid/factory.git"
+# ref is required and missing
+
+[project]
+name          = "example-app"
+main_checkout = "/tmp/example"
+state_dir     = "/tmp/example-state"
+night_file    = "{state_dir}/night-{n}.md"
+
+[git]
+worktrees_dir   = ".worktrees"
+worktree_branch = "factory/{name}-wt"
+push_branch     = "factory/{name}"
+
+[[targets]]
+name    = "app"
+base    = "origin/main"
+pr_base = "main"

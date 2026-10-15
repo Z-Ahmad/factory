@@ -1,0 +1,6 @@
+[kit]
+repo = "https://example.invalid/factory.git"
+ref  = "v0.1.0"
+
+[disk]
+min_gb = 40; floor_gb = 20

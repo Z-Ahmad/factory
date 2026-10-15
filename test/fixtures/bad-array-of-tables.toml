@@ -1,0 +1,11 @@
+[kit]
+repo = "https://example.invalid/factory.git"
+ref  = "v0.1.0"
+
+[[targets]]
+name    = "app"
+base    = "origin/main"
+pr_base = "main"
+
+[targets]
+name = "site"
