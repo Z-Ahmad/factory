@@ -406,6 +406,8 @@ export const SCHEMA = table({
     dd_root: str(),
     dd_keep: strs(),
     dd_keep_derive: strs(),
+    dd_keep_patterns: strs(),
+    tmp_dir: str(),
     tmp_keep: strs(),
     tmp_globs: strs(),
     archives: table({ glob: str(REQ), keep: int(REQ) }),

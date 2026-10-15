@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# desc: list or remove build caches, frame dumps, scratch dirs, old archives, spare simulators and merged agent worktrees
+# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|archives|tmp]... [--frames-age <days>] [--include-night <name>]
+# Dry-run by default: prints what it WOULD remove with sizes and a total. --apply deletes.
+# Categories (every path, pattern and count comes from factory.toml; [section] key in brackets):
+#   derived-data  <[disk] dd_root>/dd-* not in the keep list ([disk] dd_keep, plus names found by grepping the
+#                 [disk] dd_keep_derive files with the [disk] dd_keep_patterns), and <[disk] tmp_dir>/<tmp glob starting
+#                 with dd-> except [disk] tmp_keep. macOS only.
+#   sims          simulators whose name matches [sim] ephemeral, never a name or UDID in [sim] protected. macOS only.
+#   worktrees     <[git] worktrees_dir>/<[git] agent_worktrees> whose commits are all patch-equivalent on some
+#                 origin/<[git] push_branch prefix>* branch and whose untracked files are only symlinks. Names matching
+#                 [git] protected_worktrees are never touched unless --include-night <name>.
+#   frames        <[project] shots_dir>/**/frames/ dirs older than --frames-age days (default [disk] frames_age_days, else 2);
+#                 0 = all (contact/rest/mp4/loose PNGs stay)
+#   tmp           dirs in [disk] tmp_dir owned by you, mtime > 1h, named by [disk] tmp_globs (dd-* globs are skipped
+#                 when derived-data also runs; [disk] tmp_keep is never touched)
+#   archives      <[disk] archives.glob> in the main checkout + worktrees; keeps the [disk] archives.keep highest build numbers overall
+# Bash 3.2 compatible (macOS /bin/bash). Sizes are `du -sk`. Exit 0, or 1 on a bad argument.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/darwin.sh"
+shopt -s extglob   # so [sim] ephemeral can say box-test-+([0-9])
+
+FRAMES_AGE="${FK_DISK_FRAMES_AGE_DAYS:-2}"
+APPLY=0 ONLY="" INCLUDE_NIGHT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --only) ONLY="$ONLY ${2:?}"; shift 2 ;;
+    --frames-age) FRAMES_AGE="${2:?}"; [[ "$FRAMES_AGE" =~ ^[0-9]+$ ]] || { echo "--frames-age wants days (integer)" >&2; exit 1; }; shift 2 ;;
+    --include-night) INCLUDE_NIGHT="${2:?}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
+cd "$MAIN"
+DD_ROOT="${FK_DISK_DD_ROOT:-}"
+TMP_DIR="${FK_DISK_TMP_DIR:-/tmp}"
+
+TOTAL_KB=0
+want() { [[ -z "$ONLY" || " $ONLY " == *" $1 "* ]]; }
+kb() { du -sk "$1" 2>/dev/null | awk '{print $1+0}' || true; }
+header() { echo; echo "== $1 =="; }
+# remove_path <path>: print size, delete when --apply.
+remove_path() {
+  local p="$1" size; size="$(kb "$p")"
+  TOTAL_KB=$((TOTAL_KB + size))
+  printf '  %s  %s\n' "$(fk_human "$size" | awk '{printf "%6s", $0}')" "$p"
+  if [[ "$APPLY" == 1 ]]; then rm -rf "$p"; fi
+  return 0
+}
+# glob_in <name> <newline-separated globs>: exit 0 when name matches one of them.
+glob_in() {
+  local g
+  while IFS= read -r g; do
+    # shellcheck disable=SC2053
+    if [[ -n "$g" && "$1" == $g ]]; then return 0; fi
+  done <<< "$2"
+  return 1
+}
+# path_in <path> <newline-separated paths>: exit 0 when path is (or is a link to) one of them.
+path_in() {
+  local k
+  while IFS= read -r k; do
+    if [[ -n "$k" && "$1" -ef "$k" ]]; then return 0; fi
+  done <<< "$2"
+  return 1
+}
+# glob_lines <glob>: matching paths, one per line (nothing when none match; spaces in paths are safe).
+glob_lines() { compgen -G "$1" || true; }
+
+if [[ "$APPLY" == 1 ]]; then echo "factory-cleanup: APPLY"; else echo "factory-cleanup: dry run (pass --apply to delete)"; fi
+
+# dd-prefixed tmp globs are derived-data scratch: derived-data owns them whenever it runs here.
+DD_RUNS=0
+if want derived-data && fk_is_darwin; then DD_RUNS=1; fi
+
+# ---- 1. derived data ----
+if want derived-data; then
+  header "derived-data"
+  if ! fk_is_darwin; then
+    echo "  skipped: needs Xcode"
+  else
+    KEEP=" " KEEP_GLOBS=""
+    while IFS= read -r n; do
+      [[ -n "$n" ]] || continue
+      case "$n" in
+        *[*?[]*) KEEP_GLOBS="${KEEP_GLOBS:+$KEEP_GLOBS$'\n'}$n" ;;
+        *) [[ "$KEEP" == *" $n "* ]] || KEEP="$KEEP$n " ;;
+      esac
+    done <<< "${FK_DISK_DD_KEEP:-}"
+    # Names the project's scripts actually use: each pattern's match ends in the name (a dd- prefix is dropped).
+    FILES=()
+    while IFS= read -r g; do
+      [[ -n "$g" ]] || continue
+      while IFS= read -r f; do [[ -n "$f" ]] && FILES+=("$f"); done < <(glob_lines "$g")
+    done <<< "${FK_DISK_DD_KEEP_DERIVE:-}"
+    if [[ ${#FILES[@]} -gt 0 ]]; then
+      while IFS= read -r pat; do
+        [[ -n "$pat" ]] || continue
+        while IFS= read -r m; do
+          [[ -n "$m" ]] || continue
+          n="${m##*[[:space:]]}"; n="${n#dd-}"
+          [[ "$KEEP" == *" $n "* ]] || KEEP="$KEEP$n "
+        done < <(grep -hoE "$pat" "${FILES[@]}" 2>/dev/null || true)
+      done <<< "${FK_DISK_DD_KEEP_PATTERNS:-}"
+    fi
+    echo "  keep list (derived from scripts + base): $KEEP${KEEP_GLOBS:+ and ${KEEP_GLOBS//$'\n'/, }}"
+    if [[ -n "$DD_ROOT" && -d "$DD_ROOT" ]]; then
+      for d in "$DD_ROOT"/dd-*; do
+        [[ -d "$d" ]] || continue
+        n="${d##*/dd-}"
+        if [[ "$KEEP" == *" $n "* ]] || glob_in "$n" "$KEEP_GLOBS"; then continue; fi
+        remove_path "$d"
+      done
+    fi
+    while IFS= read -r g; do
+      [[ "$g" == dd-* ]] || continue
+      for d in "$TMP_DIR"/$g; do
+        [[ -d "$d" ]] || continue
+        if path_in "$d" "${FK_DISK_TMP_KEEP:-}"; then continue; fi
+        remove_path "$d"
+      done
+    done <<< "${FK_DISK_TMP_GLOBS:-}"
+  fi
+fi
+
+# ---- 2. simulators ----
+if want sims; then
+  header "sims"
+  if ! fk_is_darwin || ! command -v xcrun >/dev/null 2>&1; then
+    echo "  skipped: needs Xcode"
+  else
+    SIM_RE='^[[:space:]]+(.+)[[:space:]]+\(([0-9A-F-]{36})\)[[:space:]]+\(([A-Za-z]+)\)'
+    while IFS= read -r line; do
+      [[ "$line" =~ $SIM_RE ]] || continue
+      name="${BASH_REMATCH[1]}"; udid="${BASH_REMATCH[2]}"; state="${BASH_REMATCH[3]}"
+      glob_in "$name" "${FK_SIM_EPHEMERAL:-}" || continue
+      if glob_in "$udid" "${FK_SIM_PROTECTED:-}" || glob_in "$name" "${FK_SIM_PROTECTED:-}"; then continue; fi
+      echo "  $name ($udid, $state)"
+      if [[ "$APPLY" == 1 ]]; then
+        if [[ "$state" == Booted ]]; then xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true; fi
+        xcrun simctl delete "$udid" >/dev/null 2>&1 || echo "    delete failed" >&2
+      fi
+    done < <(xcrun simctl list devices)
+  fi
+fi
+
+# ---- 3. worktrees ----
+if want worktrees; then
+  header "worktrees"
+  git fetch origin --quiet 2>/dev/null || true
+  # origin/<push_branch up to {name}>*: the branches a night pushes to
+  UP_PREFIX="${FK_GIT_PUSH_BRANCH:-factory/{name}}"; UP_PREFIX="${UP_PREFIX%%\{name\}*}"
+  UPSTREAMS="$(git for-each-ref --format='%(refname:short)' "refs/remotes/origin/$UP_PREFIX" || true)"
+  WT_ROOT="$MAIN/${FK_GIT_WORKTREES_DIR:?}/"
+  while IFS=$'\t' read -r path head branch; do
+    [[ "$path" == "$WT_ROOT"* ]] || continue
+    name="${path##*/}"
+    if glob_in "$name" "${FK_GIT_PROTECTED_WORKTREES:-}"; then
+      [[ "$name" == "$INCLUDE_NIGHT" ]] || { echo "  SKIP  $name (active factory worktree; --include-night $name to allow)"; continue; }
+    elif ! glob_in "$name" "${FK_GIT_AGENT_WORKTREES:-}"; then
+      continue
+    fi
+    # (a) every commit patch-equivalent on some upstream branch
+    merged=""
+    for up in $UPSTREAMS; do
+      if [[ -z "$(git cherry "$up" "$head" 2>/dev/null | grep '^+' || true)" ]]; then merged="$up"; break; fi
+    done
+    # (b) only symlinks untracked, and nothing modified
+    reason=""
+    [[ -n "$merged" ]] || reason="commits not all upstream on any origin/${UP_PREFIX}*"
+    if [[ -z "$reason" ]]; then
+      dirty="$(cd "$path" && git status --porcelain 2>/dev/null || true)"
+      while IFS= read -r l; do
+        [[ -z "$l" ]] && continue
+        if [[ "$l" == "?? "* ]]; then
+          f="${l#\?\? }"; f="${f%/}"
+          [[ -L "$path/$f" ]] || { reason="untracked non-symlink: $f"; break; }
+        else
+          reason="modified tracked files: $l"; break
+        fi
+      done <<< "$dirty"
+    fi
+    if [[ -n "$reason" ]]; then echo "  KEPT  $name ($reason)"; continue; fi
+    echo "  REMOVE $name  (branch ${branch:-detached}, upstream: $merged)"
+    if [[ "$APPLY" == 1 ]]; then
+      git worktree remove --force "$path"
+      if [[ -n "$branch" ]]; then git branch -D "$branch" >/dev/null 2>&1 || true; fi
+    fi
+  done < <(fk_worktrees "$MAIN")
+fi
+
+# ---- 4. frame dumps ----
+if want frames; then
+  header "frames (older than $FRAMES_AGE days)"
+  SHOTS=()
+  while IFS= read -r s; do [[ -n "$s" ]] && SHOTS+=("$s"); done < <(glob_lines "${FK_PROJECT_SHOTS_DIR//\{n\}/*}")
+  if [[ ${#SHOTS[@]} -gt 0 ]]; then
+    AGE=(); [[ "$FRAMES_AGE" == 0 ]] || AGE=(-mtime "+$FRAMES_AGE")
+    while IFS= read -r d; do
+      [[ -n "$d" ]] && remove_path "$d"
+    done < <(find "${SHOTS[@]}" -type d -name frames ${AGE[@]+"${AGE[@]}"} 2>/dev/null || true)
+  fi
+fi
+
+# ---- 5. tmp scratch ----
+if want tmp; then
+  TMP_REAL="$(cd "$TMP_DIR" 2>/dev/null && pwd -P || echo "$TMP_DIR")"
+  header "tmp (agent scratch in $TMP_REAL, yours, older than 1h)"
+  NAMES=()
+  while IFS= read -r g; do
+    [[ -n "$g" ]] || continue
+    if [[ "$g" == dd-* && "$DD_RUNS" == 1 ]]; then continue; fi
+    [[ ${#NAMES[@]} -eq 0 ]] || NAMES+=(-o)
+    NAMES+=(-name "$g")
+  done <<< "${FK_DISK_TMP_GLOBS:-}"
+  if [[ ${#NAMES[@]} -gt 0 && -d "$TMP_REAL" ]]; then
+    while IFS= read -r d; do
+      if [[ -n "$d" ]] && ! path_in "$d" "${FK_DISK_TMP_KEEP:-}"; then remove_path "$d"; fi
+    done < <(find "$TMP_REAL" -mindepth 1 -maxdepth 1 -type d -user "$(id -un)" -mmin +60 \( "${NAMES[@]}" \) 2>/dev/null || true)
+  fi
+fi
+
+# ---- 6. archives ----
+ARCH_GLOB="${FK_DISK_ARCHIVES_GLOB:-}" ARCH_KEEP="${FK_DISK_ARCHIVES_KEEP:-3}"
+if want archives; then
+  header "archives (keep the $ARCH_KEEP highest build numbers)"
+  if [[ -n "$ARCH_GLOB" ]]; then
+    base="${ARCH_GLOB##*/}"; pre="${base%%\**}"; suf="${base#*\*}"
+    LIST="$( { glob_lines "$MAIN/$ARCH_GLOB"; glob_lines "$MAIN/${FK_GIT_WORKTREES_DIR:?}/*/$ARCH_GLOB"; } | while IFS= read -r a; do
+              [[ -d "$a" ]] || continue
+              n="${a##*/}"; n="${n#"$pre"}"; n="${n%"$suf"}"
+              printf '%s\t%s\n' "$n" "$a"
+            done | sort -t$'\t' -k1,1nr || true)"
+    i=0
+    while IFS=$'\t' read -r n a; do
+      [[ -n "$a" ]] || continue
+      i=$((i + 1))
+      if [[ "$i" -le "$ARCH_KEEP" ]]; then echo "  keep   build $n  $a"; else remove_path "$a"; fi
+    done <<< "$LIST"
+  fi
+fi
+
+echo
+echo "total $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable): $(fk_human "$TOTAL_KB") (derived-data, frames, tmp, archives; sims and worktrees listed above)"

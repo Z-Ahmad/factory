@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# desc: report free disk space; below the minimum, run cleanup (frames, tmp, sims) and stop the night if still under the floor
+# usage: factory disk-guard [--min <GB>] [--floor <GB>]
+# Prints free GB on /. Below --min ([disk] min_gb, default 40): runs `factory cleanup --apply` on the
+# [disk] low_cleanup categories (default frames, tmp, sims) with --frames-age 0, then prints free GB again.
+# Exit 0 when fine, 2 when still below --floor ([disk] floor_gb, default 20) so the orchestrator stops,
+# 1 on a bad argument.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+MIN="${FK_DISK_MIN_GB:-40}" FLOOR="${FK_DISK_FLOOR_GB:-20}"
+LOW_CLEANUP="${FK_DISK_LOW_CLEANUP:-frames
+tmp
+sims}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --min) MIN="${2:?}"; shift 2 ;;
+    --floor) FLOOR="${2:?}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+F="$(fk_free_gb /)"
+echo "factory-disk-guard: ${F} GB free on / (min ${MIN}, floor ${FLOOR})"
+if (( F < MIN )); then
+  ONLY=()
+  while IFS= read -r c; do
+    if [[ -n "$c" ]]; then ONLY+=(--only "$c"); fi
+  done <<< "$LOW_CLEANUP"
+  "$FK_KIT_DIR/cmd/cleanup" --apply ${ONLY[@]+"${ONLY[@]}"} --frames-age 0
+  F="$(fk_free_gb /)"
+  echo "factory-disk-guard: ${F} GB free after cleanup"
+fi
+if (( F < FLOOR )); then echo "factory-disk-guard: BELOW FLOOR (${FLOOR} GB), stop" >&2; exit 2; fi

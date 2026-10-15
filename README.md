@@ -6,7 +6,7 @@ You write a short backlog before bed. An orchestrator agent (e.g. Claude Code ru
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.2, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: `config`, `tick`. Moving in next: `cleanup`, `disk-guard`, `dev-up`, `end-night`, `worktree`, `preflight`, and the video-proof tools. The proof tools target the iOS Simulator first.
+> **Status: v0.3, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: `config`, `tick`, `cleanup`, `disk-guard`. Moving in next: `dev-up`, `end-night`, `worktree`, `preflight`, and the video-proof tools. The proof tools target the iOS Simulator first.
 
 ## Why it exists
 
@@ -104,7 +104,7 @@ You need Node 22+, git and bash. The `gh` CLI is needed for pull-request checkli
 ```toml
 [kit]
 repo = "https://github.com/Z-Ahmad/factory.git"
-ref  = "v0.2.0"
+ref  = "v0.3.0"
 
 [project]
 name          = "example-app"
@@ -159,8 +159,10 @@ To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR
 | `factory config get <key>` | ✓ | Prints one value, e.g. `factory config get git.github` |
 | `factory config env --sh` | ✓ | Prints every value as `FK_*` shell exports |
 | `factory tick` | ✓ | Checks off a backlog item in the night file and the PR checklist, and appends a log line. `--blocked "why"`, `--dry-run`, `--pr N` |
+| `factory cleanup` | ✓ | Lists what can be freed: old proof frames, stale build folders, temp files, extra archives, throwaway simulators, merged agent worktrees. Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>` |
+| `factory disk-guard` | ✓ | Prints free disk space. Below `[disk] min_gb` it runs `cleanup --apply` on frames, temp files and simulators. Exits 2 if space is still below `floor_gb`, so the loop stops |
 | `factory help` | ✓ | Lists the commands |
-| `cleanup`, `disk-guard`, `dev-up`, `end-night`, `worktree`, `preflight` | planned | Machine upkeep and the night's start and end |
+| `dev-up`, `end-night`, `worktree`, `preflight` | planned | Dev-stack upkeep, the night's start and end |
 | `proof/` | planned | Video proof scoring and the matrix |
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the main git checkout, so it works from any worktree. Use `FACTORY_TOML=<path>` to name one explicitly.
