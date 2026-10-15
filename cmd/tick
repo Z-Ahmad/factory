@@ -32,27 +32,7 @@ done
 # fill <template> <name> <value> [<name> <value>...]: replaces {name} for the names given, in one
 # pass, so a value is never expanded again and special characters in it stay literal.
 # Any other {word} is left as written. Prints the result and a newline.
-fill() {
-  local tpl="$1"; shift
-  local names="" vars=()
-  while [[ $# -gt 1 ]]; do vars+=("FILL_$1=$2"); names+=" $1"; shift 2; done
-  env "${vars[@]}" FILL_NAMES="$names" FILL_TPL="$tpl" awk '
-    BEGIN {
-      s = ENVIRON["FILL_TPL"]; names = " " ENVIRON["FILL_NAMES"] " "; out = ""
-      while ((i = index(s, "{")) > 0) {
-        out = out substr(s, 1, i - 1); s = substr(s, i)
-        j = index(s, "}")
-        if (j > 0) {
-          name = substr(s, 2, j - 2)
-          if (name ~ /^[A-Za-z_]+$/ && index(names, " " name " ") > 0) {
-            out = out ENVIRON["FILL_" name]; s = substr(s, j + 1); continue
-          }
-        }
-        out = out "{"; s = substr(s, 2)
-      }
-      print out s
-    }'
-}
+fill() { fk_fill "$@"; }   # lives in lib/sh/common.sh
 
 DEFAULT_ITEM_LINE='- [ ] {id}.'
 DEFAULT_LOG_LINE='{hhmm} · {id} · {sha} · {note}'

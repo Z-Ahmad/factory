@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# desc: show which dev-stack ports are up or down
+# usage: factory dev-status
+# One line per [dev] all_ports entry (or the wait_ports when all_ports is not set): ":PORT up" or ":PORT down".
+# Exit 0 when every [dev] wait_ports entry is up, 1 when any is down, 2 when no ports are configured.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+ALL="${FK_DEV_ALL_PORTS:-${FK_DEV_WAIT_PORTS:-}}"
+[[ -n "$ALL" ]] || { echo "factory dev-status: [dev] all_ports and wait_ports are not set" >&2; exit 2; }
+
+STATE=""
+while IFS= read -r p; do
+  [[ -n "$p" ]] || continue
+  if fk_port_up "$p"; then s=up; else s=down; fi
+  echo ":$p $s"
+  STATE="$STATE $p=$s"
+done <<< "$ALL"
+
+RC=0
+while IFS= read -r p; do
+  [[ -n "$p" ]] || continue
+  if [[ "$STATE " == *" $p=up "* ]]; then continue; fi
+  # a wait port that is not in all_ports still has to be up
+  if [[ "$STATE " == *" $p=down "* ]] || ! fk_port_up "$p"; then RC=1; fi
+done <<< "${FK_DEV_WAIT_PORTS:-}"
+exit "$RC"

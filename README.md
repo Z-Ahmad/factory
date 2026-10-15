@@ -6,7 +6,7 @@ You write a short backlog before bed. An orchestrator agent (e.g. Claude Code ru
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.3, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: `config`, `tick`, `cleanup`, `disk-guard`. Moving in next: `dev-up`, `end-night`, `worktree`, `preflight`, and the video-proof tools. The proof tools target the iOS Simulator first.
+> **Status: v0.4, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`). Moving in next: the video-proof tools, a safety hook, and the orchestrator skill. The proof tools target the iOS Simulator first.
 
 ## Why it exists
 
@@ -52,7 +52,7 @@ A made-up app, `example-app`, through one night. Commands marked *(planned)* sti
 
 | Step | Who | What |
 |---|---|---|
-| Preflight | orchestrator | Check free disk, check the dev server is up, update the worktree, reset the test data: `factory preflight` *(planned)* |
+| Preflight | orchestrator | Check free disk, check the dev server is up, update the worktree, reset the test data: `factory preflight` |
 | Ideate (taste items only) | strong model | 2–3 options with side-by-side screenshots. You pick one before anything is built |
 | Implement | worker | Changes the code in the night's worktree; reports back in ≤150 words |
 | Prove | worker | Records the change running in the app with a self-driving test scenario (no manual taps) *(planned: `proof/`)* |
@@ -93,7 +93,7 @@ MATRIX: FAIL (2/3 cells)
 
 A stuck item is marked `--blocked "<why>"` and the loop moves on.
 
-**5. Morning.** The night ends by sweeping scratch files and temporary simulators and checking that no secret was blanked. It then writes a summary: what shipped, what's blocked, what to test on a real device (`factory end-night` *(planned)*). You review one draft pull request whose checklist matches the night file.
+**5. Morning.** The night ends by sweeping scratch files and temporary simulators and checking that no secret was blanked. It then writes a summary: what shipped, what's blocked, what to test on a real device (`factory end-night`). You review one draft pull request whose checklist matches the night file.
 
 ## Getting started
 
@@ -104,7 +104,7 @@ You need Node 22+, git and bash. The `gh` CLI is needed for pull-request checkli
 ```toml
 [kit]
 repo = "https://github.com/Z-Ahmad/factory.git"
-ref  = "v0.3.0"
+ref  = "v0.4.0"
 
 [project]
 name          = "example-app"
@@ -161,8 +161,13 @@ To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR
 | `factory tick` | ✓ | Checks off a backlog item in the night file and the PR checklist, and appends a log line. `--blocked "why"`, `--dry-run`, `--pr N` |
 | `factory cleanup` | ✓ | Lists what can be freed: old proof frames, stale build folders, temp files, extra archives, throwaway simulators, merged agent worktrees. Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>` |
 | `factory disk-guard` | ✓ | Prints free disk space. Below `[disk] min_gb` it runs `cleanup --apply` on frames, temp files and simulators. Exits 2 if space is still below `floor_gb`, so the loop stops |
+| `factory dev-up` | ✓ | Starts the dev stack (`[dev] up`) in the background if its ports are down, then resets the test data. Does nothing when it's already up |
+| `factory dev-status` | ✓ | One line per dev port, up or down. Exit 1 if a required port is down |
+| `factory read-api up\|down` | ✓ | Runs a second API server on its own port (`[dev] read_api`) and stops only the one it started |
+| `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent, sharing installed dependencies through symlinks |
+| `factory preflight` | ✓ | Start of every firing: disk-guard, then dev-up, then a test-data reset. One summary line; it names the step that failed |
+| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` sweeps scratch files and temporary simulators. It checks that no required secret is blank and that every worktree is clean (exit 3 if not), then appends a final line to the log |
 | `factory help` | ✓ | Lists the commands |
-| `dev-up`, `end-night`, `worktree`, `preflight` | planned | Dev-stack upkeep, the night's start and end |
 | `proof/` | planned | Video proof scoring and the matrix |
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the main git checkout, so it works from any worktree. Use `FACTORY_TOML=<path>` to name one explicitly.

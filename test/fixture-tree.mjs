@@ -36,7 +36,7 @@ const old = (p) => utimesSync(p, LONG_AGO, LONG_AGO);
  * Builds the tree and returns paths plus helpers.
  * `disk` and `extra` are TOML text appended inside [disk] and at the end of the file.
  */
-export function tree({ diskOverrides = {} } = {}) {
+export function tree({ diskOverrides = {}, gitExtra = '', extraToml = () => '' } = {}) {
   const s = scratch();
   const root = realpathSync(s.dir);
   const p = (...a) => join(root, ...a);
@@ -147,12 +147,13 @@ worktrees_dir       = ".worktrees"
 worktree_branch     = "x/{name}-wt"
 push_branch         = "nightly/{name}"
 agent_worktrees     = "agent-*"
-protected_worktrees = ["night-*", "phone"]
+protected_worktrees = ["night-*", "phone"]${gitExtra ? `\n${gitExtra}` : ''}
 
 [[targets]]
 name    = "app"
 base    = "origin/trunk"
 pr_base = "trunk"
+default = true
 
 [disk]
 min_gb           = ${disk.min_gb}
@@ -171,7 +172,8 @@ archives         = { glob = "build/App-*.xcarchive", keep = 3 }
 [sim]
 protected = ["${SHOOTER.replace('A', '7')}", "box-test-kit", "Shooter Phone"]
 ephemeral = ["box-factory-*", "box-opus-*", "box-test-+([0-9])"]
-`;
+sweep     = ["box-*"]
+${extraToml(p)}`;
   writeFileSync(p('factory.toml'), toml);
 
   const env = { FACTORY_TOML: p('factory.toml'), PATH: `${bin}:${process.env.PATH}`, DF_GB: '67' };
@@ -179,5 +181,6 @@ ephemeral = ["box-factory-*", "box-opus-*", "box-test-+([0-9])"]
   const xcrunCalls = () => (existsSync(xcrunLog) ? readFileSync(xcrunLog, 'utf8').trim().split('\n') : []);
   /** Replaces the fixture root in output so expectations don't depend on the scratch path. */
   const clean = (text) => text.split(root).join('<root>');
-  return { ...s, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames };
+  const gitOut = (cwd, ...a) => git(cwd, ...a).toString().trim();
+  return { ...s, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, git: gitOut };
 }

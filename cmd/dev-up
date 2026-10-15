@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# desc: start the dev stack detached if its ports are down, wait for them, then restore the seed
+# usage: factory dev-up [--no-seed] [dir]
+# Starts [dev] up (e.g. "npm run dev") DETACHED in its own process session, so it outlives the
+# session that launched it, in [dev] cwd (a path relative to [project] main_checkout, or absolute;
+# the optional dir argument overrides it). Output is appended to [dev] log. Then waits up to
+# [dev] timeout_s (default 600) for every [dev] wait_ports entry, and runs [seed] restore
+# (skipped with --no-seed). Does nothing when all the wait_ports are already listening, apart
+# from the seed restore.
+# Exit 0 when the stack is up (and the seed restored), 1 on a bad argument, missing config or
+# missing directory, 2 when the ports did not come up in time, 3 when the seed restore failed.
+# FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+SEED=1 DIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-seed) SEED=0; shift ;;
+    -*) echo "unknown arg: $1" >&2; exit 1 ;;
+    *) [[ -z "$DIR" ]] || { echo "unexpected argument: $1" >&2; exit 1; }; DIR="$1"; shift ;;
+  esac
+done
+
+MAIN="${FK_PROJECT_MAIN_CHECKOUT:?}"
+PORTS=()
+while IFS= read -r p; do if [[ -n "$p" ]]; then PORTS+=("$p"); fi; done <<< "${FK_DEV_WAIT_PORTS:-}"
+[[ ${#PORTS[@]} -gt 0 ]] || fk_die "[dev] wait_ports is not set"
+PORTS_TXT="$(IFS=/; echo "${PORTS[*]}")"
+
+stack_up() { local p; for p in "${PORTS[@]}"; do fk_port_up "$p" || return 1; done; }
+
+if stack_up; then
+  echo "factory-dev-up: ports already up ($PORTS_TXT); nothing to start"
+else
+  [[ -n "${FK_DEV_UP:-}" ]] || fk_die "[dev] up is not set"
+  [[ -n "$DIR" ]] || DIR="${FK_DEV_CWD:-}"
+  [[ -n "$DIR" ]] || fk_die "no directory: pass one, or set [dev] cwd"
+  [[ "$DIR" == /* ]] || DIR="$MAIN/$DIR"
+  [[ -d "$DIR" ]] || { echo "factory-dev-up: no such dir $DIR" >&2; exit 1; }
+  LOG="${FK_DEV_LOG:-${FK_PROJECT_STATE_DIR:?}/dev.log}"
+  PID="$(fk_spawn_detached "$DIR" "$LOG" "$FK_DEV_UP")"
+  echo "factory-dev-up: started $FK_DEV_UP (pid $PID) detached in $DIR; log $LOG"
+  POLL="${FK_DEV_POLL_S:-5}" TIMEOUT="${FK_DEV_TIMEOUT_S:-600}"
+  waited=0
+  until stack_up; do
+    if (( waited >= TIMEOUT )); then
+      echo "factory-dev-up: ports ($PORTS_TXT) did not come up in ${TIMEOUT}s; see $LOG" >&2
+      exit 2
+    fi
+    sleep "$POLL"; waited=$((waited + POLL))
+  done
+  echo "factory-dev-up: ports up ($PORTS_TXT)"
+fi
+
+if [[ "$SEED" == 1 ]]; then
+  if OUT="$(fk_seed_restore)"; then RC=0; else RC=$?; fi
+  printf '%s\n' "$OUT" | tail -n 1
+  if (( RC != 0 )); then echo "factory-dev-up: seed restore failed (exit $RC)" >&2; exit 3; fi
+fi

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# desc: serve a second API instance on its own port, detached (up), or stop the one this command started (down)
+# usage: factory read-api up|down
+# up    runs [dev] read_api cmd in read_api cwd (relative paths are under [project] main_checkout) with
+#       PORT=<read_api port>, detached in its own process session. Output goes to <state_dir>/read-api.log
+#       and the process id to <state_dir>/read-api.pid. Waits up to 120s for the port.
+# down  stops that process group, and only that one: the pid file must match a live process that still has
+#       the same start time, and every listener on the port must belong to the group. Anything else on the
+#       port is left alone. Waits up to 10s for the port to free (SIGKILL to the group after that).
+# It never reads or prints .env files; whatever the command itself loads is its own business.
+# Exit codes. up: 0 listening, 1 refused (port in use by something else) or failed to start, 2 not listening in time.
+#             down: 0 stopped, or nothing of ours running and the port is free; 1 the port is held by something
+#             this command did not start (nothing was killed).
+# FK_READ_API_POLL_S (default 1) is the seconds between port checks, for tests.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+ACTION="${1:-}"
+[[ "$ACTION" == up || "$ACTION" == down ]] || { echo "usage: factory read-api up|down" >&2; exit 1; }
+[[ $# -le 1 ]] || { echo "unexpected argument: $2" >&2; exit 1; }
+
+CMD="${FK_DEV_READ_API_CMD:-}" PORT="${FK_DEV_READ_API_PORT:-}" CWD="${FK_DEV_READ_API_CWD:-}"
+[[ -n "$CMD" && -n "$PORT" && -n "$CWD" ]] || fk_die "[dev] read_api (cwd, cmd, port) is not set"
+[[ "$CWD" == /* ]] || CWD="${FK_PROJECT_MAIN_CHECKOUT:?}/$CWD"
+STATE="${FK_PROJECT_STATE_DIR:?}"
+PIDFILE="$STATE/read-api.pid" LOG="$STATE/read-api.log"
+POLL="${FK_READ_API_POLL_S:-1}"
+
+# The pid file holds "<pid> <start time>"; the start time guards against a reused pid.
+started_at() { ps -o lstart= -p "$1" 2>/dev/null | sed -E 's/^ +//; s/ +$//' || true; }
+ours_alive() {
+  local pid when
+  [[ -f "$PIDFILE" ]] || return 1
+  pid="$(awk '{print $1}' "$PIDFILE")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  when="$(started_at "$pid")"
+  [[ -n "$when" && "$when" == "$(sed -E 's/^[0-9]+ +//' "$PIDFILE")" ]]
+}
+our_pid() { awk '{print $1}' "$PIDFILE"; }
+pgid_of() { ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+
+if [[ "$ACTION" == up ]]; then
+  if fk_port_up "$PORT"; then
+    if ours_alive; then echo "factory-read-api: already up on :$PORT (pid $(our_pid))"; exit 0; fi
+    echo "factory-read-api: :$PORT is already in use by something this command did not start; not starting" >&2
+    exit 1
+  fi
+  [[ -d "$CWD" ]] || { echo "factory-read-api: no such dir $CWD" >&2; exit 1; }
+  mkdir -p "$STATE"
+  PID="$(PORT="$PORT" fk_spawn_detached "$CWD" "$LOG" "$CMD")" || { echo "factory-read-api: could not start $CMD in $CWD" >&2; exit 1; }
+  printf '%s %s\n' "$PID" "$(started_at "$PID")" > "$PIDFILE"
+  echo "factory-read-api: started $CMD (pid $PID) on :$PORT detached in $CWD; log $LOG"
+  waited=0
+  until fk_port_up "$PORT"; do
+    if ! kill -0 "$PID" 2>/dev/null; then echo "factory-read-api: the process exited before :$PORT came up; see $LOG" >&2; rm -f "$PIDFILE"; exit 1; fi
+    if (( waited >= 120 )); then echo "factory-read-api: :$PORT not listening after 120s; see $LOG (run 'factory read-api down' to stop it)" >&2; exit 2; fi
+    sleep "$POLL"; waited=$((waited + POLL))
+  done
+  echo "factory-read-api: up on :$PORT"
+  exit 0
+fi
+
+# ---- down ----
+if ! ours_alive; then
+  rm -f "$PIDFILE"
+  if fk_port_up "$PORT"; then
+    echo "factory-read-api: nothing started by this command is running, and :$PORT is held by another process; not touching it" >&2
+    exit 1
+  fi
+  echo "factory-read-api: nothing to stop; :$PORT is free"
+  exit 0
+fi
+PID="$(our_pid)"
+GROUP="$(pgid_of "$PID")"
+if [[ "$GROUP" != "$PID" ]]; then
+  echo "factory-read-api: pid $PID is not the leader of its own process group; not touching it" >&2
+  rm -f "$PIDFILE"
+  exit 1
+fi
+for lp in $(fk_listen_pids "$PORT"); do
+  if [[ "$(pgid_of "$lp")" != "$GROUP" ]]; then
+    echo "factory-read-api: :$PORT is held by pid $lp, which this command did not start; not touching it" >&2
+    exit 1
+  fi
+done
+kill -TERM -- "-$GROUP" 2>/dev/null || true
+waited=0
+while kill -0 "$PID" 2>/dev/null || fk_port_up "$PORT"; do
+  if (( waited >= 10 )); then kill -KILL -- "-$GROUP" 2>/dev/null || true; echo "factory-read-api: needed SIGKILL for group $GROUP"; sleep 1; break; fi
+  sleep 1; waited=$((waited + 1))
+done
+rm -f "$PIDFILE"
+if fk_port_up "$PORT"; then echo "factory-read-api: :$PORT is still listening after the group was killed" >&2; exit 1; fi
+echo "factory-read-api: stopped group $GROUP; :$PORT is free"

@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# desc: end-of-night sweep: free disk, remove spare simulators, re-seed, check secrets, report worktrees and the PR, log one line
+# usage: factory end-night --night N [--apply] [--stop-emulators]
+# Dry-run by default: prints what it WOULD do. --apply does it. Every step prints one result line; all steps always run.
+#   1 disk       cleanup frames+tmp+sims (frames-age 0), then free GB on /
+#   2 sims       any other simulator matching [sim] sweep that cleanup's sims category doesn't match
+#                (never one in [sim] protected, by name or UDID)
+#   3 seed       [dev] wait_ports all listening -> [seed] restore (from the main checkout); --stop-emulators then SIGTERMs
+#                whatever listens on the [dev] all_ports (PIDs found via lsof, no pkill)
+#   4 token      read-only: each [never_touch] secret_nonempty file must exist and have a non-empty value for its key
+#                (the value is never printed)
+#   5 worktrees  per <[git] worktrees_dir>/*: branch, HEAD, clean?, commits not on origin/<[git] push_branch for night N>.
+#                Untracked [worktree] cache_symlinks are not dirt. --apply fast-forwards a clean [git] phone_worktree to that
+#                branch. Lists stale ones as "safe to remove". Deletes nothing.
+#   6 pr         the branch tip + PR state via gh
+#   7 log        --apply appends one summary line ([project] log_line) to the night file
+# Exit 0 normally; exit 3 if a secret is empty or missing, or a worktree has uncommitted work (after finishing every step);
+# exit 1 on a bad argument or a missing repo.
+# FK_NOW_HHMM overrides the clock in the log line (for tests).
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/darwin.sh"
+shopt -s extglob   # so [sim] patterns can say box-test-+([0-9])
+
+NIGHT="" APPLY=0 STOP_EMU=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --night) NIGHT="${2:?}"; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    --stop-emulators) STOP_EMU=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+[[ "$NIGHT" =~ ^[0-9]+$ ]] || { echo "usage: factory end-night --night N [--apply] [--stop-emulators]" >&2; exit 1; }
+
+MAIN="${FK_PROJECT_MAIN_CHECKOUT:?}"
+BRANCH="$(fk_fill "${FK_GIT_PUSH_BRANCH:?}" name "night-$NIGHT")"
+UP="origin/$BRANCH"
+NIGHT_FILE="$(fk_fill "${FK_PROJECT_NIGHT_FILE:?}" n "$NIGHT")"
+DEFAULT_LOG_LINE='{hhmm} · {id} · {sha} · {note}'
+EXIT=0
+
+[[ -d "$MAIN/.git" || -f "$MAIN/.git" ]] || { echo "no repo at $MAIN" >&2; exit 1; }
+cd "$MAIN"
+MAIN="$(pwd -P)"
+g() { git -C "$MAIN" "$@"; }
+header() { echo; echo "== $1 =="; }
+# glob_in <name> <newline-separated globs>: exit 0 when name matches one of them.
+glob_in() {
+  local g
+  while IFS= read -r g; do
+    # shellcheck disable=SC2053
+    if [[ -n "$g" && "$1" == $g ]]; then return 0; fi
+  done <<< "$2"
+  return 1
+}
+# join_lines <newline-separated>: "a, b, c"
+join_lines() { printf '%s' "$1" | awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }'; }
+
+if [[ "$APPLY" == 1 ]]; then echo "factory-end-night: APPLY (night $NIGHT)"; else echo "factory-end-night: dry run (night $NIGHT; pass --apply to act)"; fi
+g fetch origin --quiet 2>/dev/null || echo "  (git fetch origin failed; using local refs)"
+
+# ---- 1. disk ----
+header "1 disk"
+CLEAN_ARGS=(--only frames --only tmp --only sims --frames-age 0)
+if [[ "$APPLY" == 1 ]]; then CLEAN_ARGS=(--apply "${CLEAN_ARGS[@]}"); fi
+CLEAN_RC=0
+CLEAN_OUT="$("$FK_KIT_DIR/cmd/cleanup" "${CLEAN_ARGS[@]}" 2>&1)" || CLEAN_RC=$?
+printf '%s\n' "$CLEAN_OUT" | sed 's/^/  /'
+if (( CLEAN_RC != 0 )); then echo "  (cleanup exited $CLEAN_RC)"; fi
+# sims cleanup handles = the indented "name (UDID, state)" lines in its sims section
+SIMS_N="$(printf '%s\n' "$CLEAN_OUT" | awk '/^== sims ==/{s=1; next} /^== /{s=0} s && /\([0-9A-F-]+, [A-Za-z]+\)$/ {n++} END{print n+0}')"
+FREE="$(fk_free_gb /)"
+echo "disk: ${FREE} GB free on /"
+
+# ---- 2. simulators (the [sim] sweep ones that cleanup does not already match) ----
+header "2 simulators"
+EXTRA=0
+SWEEP="${FK_SIM_SWEEP:-}"
+if [[ -n "$SWEEP" ]] && fk_is_darwin && command -v xcrun >/dev/null 2>&1; then
+  SIM_RE='^[[:space:]]+(.+)[[:space:]]+\(([0-9A-F-]{36})\)[[:space:]]+\(([A-Za-z]+)\)'
+  while IFS= read -r line; do
+    [[ "$line" =~ $SIM_RE ]] || continue
+    name="${BASH_REMATCH[1]}"; udid="${BASH_REMATCH[2]}"; state="${BASH_REMATCH[3]}"
+    glob_in "$name" "$SWEEP" || continue
+    if glob_in "$udid" "${FK_SIM_PROTECTED:-}" || glob_in "$name" "${FK_SIM_PROTECTED:-}"; then continue; fi
+    # already handled by cleanup's sims category
+    if glob_in "$name" "${FK_SIM_EPHEMERAL:-}"; then continue; fi
+    echo "  $name ($udid, $state)"
+    EXTRA=$((EXTRA + 1))
+    if [[ "$APPLY" == 1 ]]; then
+      if [[ "$state" == Booted ]]; then xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true; fi
+      xcrun simctl delete "$udid" >/dev/null 2>&1 || echo "    delete failed" >&2
+    fi
+  done < <(xcrun simctl list devices 2>/dev/null || true)
+elif [[ -n "$SWEEP" ]]; then
+  echo "  skipped: needs Xcode"
+fi
+SIMS_TOTAL=$((SIMS_N + EXTRA))
+echo "sims: $SIMS_N via factory-cleanup + $EXTRA other ${SWEEP:+$(join_lines "$SWEEP") }= $SIMS_TOTAL $([[ "$APPLY" == 1 ]] && echo removed || echo "would be removed") (kept $(join_lines "${FK_SIM_PROTECTED:-}"))"
+
+# ---- 3. emulator seed ----
+header "3 emulator seed"
+DOWN_PORTS=()
+while IFS= read -r p; do
+  [[ -n "$p" ]] || continue
+  if ! fk_port_up "$p"; then DOWN_PORTS+=("$p"); fi
+done <<< "${FK_DEV_WAIT_PORTS:-}"
+SEED="no emulators"
+if [[ -z "${FK_DEV_WAIT_PORTS:-}" ]]; then
+  echo "  [dev] wait_ports is not set; skipping seed"
+elif [[ ${#DOWN_PORTS[@]} -eq 0 ]]; then
+  if [[ -z "${FK_SEED_RESTORE:-}" ]]; then
+    echo "  [seed] restore is not set; skipping seed"
+    SEED="no seed command"
+  elif [[ "$APPLY" == 1 ]]; then
+    if SEED_OUT="$(fk_seed_restore)"; then SEED_RC=0; else SEED_RC=$?; fi
+    echo "  last line: $(printf '%s\n' "$SEED_OUT" | tail -n 1)"
+    if [[ $SEED_RC -eq 0 ]]; then SEED=ok; else SEED="FAILED rc=$SEED_RC"; fi
+  else
+    echo "  would run: $FK_SEED_RESTORE (from $MAIN)"
+    SEED="would seed"
+  fi
+else
+  echo "  emulators not all listening (down: ${DOWN_PORTS[*]}); skipping seed"
+fi
+echo "seed: $SEED"
+if [[ "$STOP_EMU" == 1 ]]; then
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    pids="$(fk_listen_pids "$p" | tr '\n' ' ')"
+    if [[ -z "${pids// /}" ]]; then echo "  :$p nothing listening"; continue; fi
+    if [[ "$APPLY" == 1 ]]; then
+      echo "  :$p SIGTERM $pids"
+      # shellcheck disable=SC2086
+      kill -TERM $pids 2>/dev/null || echo "    kill failed" >&2
+    else echo "  :$p would SIGTERM $pids"; fi
+  done <<< "${FK_DEV_ALL_PORTS:-${FK_DEV_WAIT_PORTS:-}}"
+fi
+
+# ---- 4. secrets check (read-only; values are never printed) ----
+header "4 secrets"
+# secret_state <file> <key>: prints ok, missing or empty. The last assignment of the key decides.
+secret_state() {
+  if [[ ! -f "$1" ]]; then echo missing; return 0; fi
+  awk -v key="$2" '
+    { line = $0; sub(/^[[:space:]]+/, "", line)
+      if (substr(line, 1, length(key)) == key) {
+        rest = substr(line, length(key) + 1)
+        if (rest ~ /^[[:space:]]*=/) { sub(/^[[:space:]]*=[[:space:]]*/, "", rest); sub(/[[:space:]]+$/, "", rest); val = rest; seen = 1 }
+      } }
+    END { print (seen && val != "") ? "ok" : "empty" }' "$1"
+}
+TOKEN=ok
+SECRET_ROWS=""
+if SECRET_JSON="$(node "$FK_KIT_DIR/cmd/config.mjs" get never_touch.secret_nonempty 2>/dev/null)" && [[ -n "$SECRET_JSON" ]]; then
+  SECRET_ROWS="$(node -e 'for (const [p, k] of Object.entries(JSON.parse(process.argv[1]))) console.log(p + "\t" + k)' "$SECRET_JSON")"
+fi
+if [[ -z "$SECRET_ROWS" ]]; then echo "  no [never_touch] secret_nonempty entries"; fi
+FIX_HINT="${FK_NEVER_TOUCH_NEVER_RUN_IN_WORKTREE:-}"; FIX_HINT="${FIX_HINT%%$'\n'*}"
+while IFS=$'\t' read -r spath skey; do
+  [[ -n "$spath" ]] || continue
+  if [[ ! "$skey" =~ ^[A-Za-z0-9_]+$ ]]; then echo "  !! bad key name in [never_touch] secret_nonempty: $skey"; TOKEN=EMPTY; continue; fi
+  st="$(secret_state "$MAIN/$spath" "$skey")"
+  if [[ "$st" == missing ]]; then
+    echo "  !! ${spath##*/} missing"
+  fi
+  if [[ "$st" != ok ]]; then
+    TOKEN=EMPTY
+    echo "  !!!! $skey IS EMPTY in $spath"
+    if [[ -n "$FIX_HINT" ]]; then echo "  !!!! fix: you run $FIX_HINT from the main checkout ($MAIN)"; fi
+    EXIT=3
+  fi
+done <<< "$SECRET_ROWS"
+echo "token: $TOKEN"
+
+# ---- 5. worktrees ----
+header "5 worktrees"
+UP_PREFIX="${FK_GIT_PUSH_BRANCH%%\{name\}*}"
+UPSTREAMS="$(g for-each-ref --format='%(refname:short)' "refs/remotes/origin/$UP_PREFIX" || true)"
+TIPS="$(for u in $UPSTREAMS; do g rev-parse "$u"; done)"
+DIRTY_LIST=""
+STALE=()
+WT_ROOT="$MAIN/${FK_GIT_WORKTREES_DIR:?}/"
+PHONE="${FK_GIT_PHONE_WORKTREE:-}"
+while IFS=$'\t' read -r path head branch; do
+  [[ "$path" == "$WT_ROOT"* ]] || continue
+  name="${path##*/}"
+  dirt="$(fk_dirt "$path" || true)"
+  if [[ -z "$dirt" ]]; then clean=clean; else clean="DIRTY"; DIRTY_LIST="$DIRTY_LIST $name"; EXIT=3; fi
+  ahead="n/a"
+  if g rev-parse --verify -q "$UP" >/dev/null; then ahead="$(g rev-list --count "$UP..$head" 2>/dev/null || true)"; fi
+  echo "  $name  branch ${branch:-detached}  HEAD ${head:0:8}  $clean  ahead-of-$UP: $ahead"
+  if [[ "$clean" == DIRTY ]]; then printf '%s\n' "$dirt" | head -n 5 | sed 's/^/      /'; fi
+  # fast-forward the phone worktree
+  if [[ -n "$PHONE" && "$name" == "$PHONE" ]]; then
+    if [[ "$clean" != clean ]]; then echo "    $PHONE not fast-forwarded (dirty)"
+    elif ! g rev-parse --verify -q "$UP" >/dev/null; then echo "    $PHONE not fast-forwarded ($UP missing)"
+    elif [[ "$head" == "$(g rev-parse "$UP")" ]]; then echo "    $PHONE already at $UP"
+    elif [[ "$APPLY" == 1 ]]; then
+      git -C "$path" fetch --quiet origin 2>/dev/null || true
+      if git -C "$path" merge --ff-only "$UP" >/dev/null 2>&1; then echo "    $PHONE fast-forwarded to $(git -C "$path" rev-parse --short=8 HEAD)"
+      else echo "    $PHONE ff-only merge refused (diverged); left alone"; fi
+    else echo "    would fast-forward $PHONE to $UP"; fi
+  fi
+  # stale: clean, HEAD not itself a tip, but reachable from some upstream tip (nothing unique to lose)
+  if [[ "$clean" == clean ]] && ! grep -qx "$head" <<< "$TIPS"; then
+    for u in $UPSTREAMS; do
+      if g merge-base --is-ancestor "$head" "$u" 2>/dev/null; then STALE+=("$path"); break; fi
+    done
+  fi
+done < <(fk_worktrees "$MAIN")
+if [[ ${#STALE[@]} -gt 0 ]]; then
+  for s in "${STALE[@]}"; do echo "  safe to remove: git worktree remove $s"; done
+else echo "  no stale worktrees"; fi
+DIRTY_LIST="${DIRTY_LIST# }"; DIRTY_LIST="${DIRTY_LIST// /,}"
+echo "dirty worktrees: ${DIRTY_LIST:-none}"
+
+# ---- 6. branch / PR ----
+header "6 branch / PR"
+TIP="—"
+if g rev-parse --verify -q "$UP" >/dev/null; then TIP="$(g rev-parse --short=8 "$UP")"; echo "  $UP tip: $TIP  $(g log -1 --format=%s "$UP")"
+else echo "  $UP not found"; fi
+PR="PR none"
+GH_REPO=(); if [[ -n "${FK_GIT_GITHUB:-}" ]]; then GH_REPO=(-R "$FK_GIT_GITHUB"); fi
+if PR_JSON="$(gh pr list ${GH_REPO[@]+"${GH_REPO[@]}"} --head "$BRANCH" --state all --json number,state,isDraft 2>/dev/null)" && [[ -n "$PR_JSON" ]]; then
+  PR_LINE="$(printf '%s' "$PR_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const a=JSON.parse(s);console.log(a.length?a.map(p=>"#"+p.number+" "+p.state+(p.isDraft?" (draft)":"")).join(", "):"")}catch{console.log("")}})')"
+  if [[ -n "$PR_LINE" ]]; then PR="PR $PR_LINE"; fi
+else PR="PR unknown (gh failed)"; fi
+echo "pr: $PR"
+
+# ---- 7. log ----
+header "7 log"
+SUMMARY="disk ${FREE} GB free; sims removed ${SIMS_TOTAL}; seed ${SEED}; token ${TOKEN}; dirty worktrees: ${DIRTY_LIST:-none}; ${PR}"
+LINE="$(fk_fill "${FK_PROJECT_LOG_LINE:-$DEFAULT_LOG_LINE}" hhmm "${FK_NOW_HHMM:-$(date +%H:%M)}" id end-night sha "$TIP" note "— · ${SUMMARY}")"
+if [[ "$APPLY" == 1 ]]; then
+  if [[ -f "$NIGHT_FILE" ]]; then printf '%s\n' "$LINE" >> "$NIGHT_FILE"; echo "  appended to $NIGHT_FILE"
+  else echo "  no such file: $NIGHT_FILE (not logged)" >&2; fi
+else echo "  would append to $NIGHT_FILE:"; fi
+echo "  $LINE"
+
+echo
+echo "factory-end-night: done (exit $EXIT$([[ $EXIT == 3 ]] && echo ": token empty or dirty worktree"))"
+exit "$EXIT"

@@ -417,6 +417,7 @@ export const SCHEMA = table({
     shooter_device: str(),
     protected: strs(),
     ephemeral: strs(),
+    sweep: strs(),
     second_size: str(),
     reset_keyboard_prefs: bool(),
   }),

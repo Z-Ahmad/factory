@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# desc: create (or reuse) a project worktree on its factory branch, with the cache symlinks from the main checkout
+# usage: factory worktree <name> [--base <ref>]
+# Creates <[project] main_checkout>/<[git] worktrees_dir>/<name> on branch [git] worktree_branch (name filled in),
+# cut from origin/<[git] push_branch with the name filled in> when that exists, else from --base <ref>, else from the
+# base of the [[targets]] entry with default = true (with a note on stderr).
+# Symlinks each [worktree] cache_symlinks path from the main checkout when it exists there and not yet here.
+# Idempotent: safe to re-run. Exit 0, or 1 on a bad argument or when there is no base to cut from.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+NAME="${1:-}"
+[[ -n "$NAME" && "$NAME" != --* ]] || { echo "usage: factory worktree <name> [--base <ref>]" >&2; exit 1; }
+[[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "bad worktree name: $NAME" >&2; exit 1; }
+shift
+BASE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="${2:?--base needs a ref}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
+WT="$MAIN/${FK_GIT_WORKTREES_DIR:?}/$NAME"
+BRANCH="$(fk_fill "${FK_GIT_WORKTREE_BRANCH:?}" name "$NAME")"
+PUSH="$(fk_fill "${FK_GIT_PUSH_BRANCH:?}" name "$NAME")"
+
+# default_base: the base of the [[targets]] entry with default = true
+default_base() {
+  local i n="${FK_TARGETS_COUNT:-0}" v
+  for ((i = 0; i < n; i++)); do
+    v="FK_TARGETS_${i}_DEFAULT"
+    if [[ "${!v:-}" == true ]]; then v="FK_TARGETS_${i}_BASE"; printf '%s' "${!v:-}"; return 0; fi
+  done
+  return 1
+}
+
+git -C "$MAIN" fetch origin --quiet
+
+if [[ -d "$WT" ]]; then
+  echo "reusing worktree $WT"
+else
+  if [[ -n "$BASE" ]]; then START="$BASE"
+  elif git -C "$MAIN" rev-parse --verify --quiet "origin/$PUSH" >/dev/null; then START="origin/$PUSH"
+  else
+    START="$(default_base)" || fk_die "origin/$PUSH not found, and no [[targets]] entry has default = true; pass --base <ref>"
+    echo "origin/$PUSH not found, falling back to $START" >&2
+  fi
+  if git -C "$MAIN" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+    git -C "$MAIN" worktree add "$WT" "$BRANCH"
+  else
+    git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "$START"
+  fi
+fi
+
+link() { # link <relative path>: symlink from main checkout if it exists there and not yet here
+  local rel="$1" src="$MAIN/$1" dst="$WT/$1"
+  [[ -e "$src" ]] || { echo "  skip $rel (missing in main checkout)"; return 0; }
+  if [[ -L "$dst" ]]; then echo "  ok   $rel"; return 0; fi
+  if [[ -e "$dst" ]]; then echo "  keep $rel (real path already exists in worktree)"; return 0; fi
+  mkdir -p "$(dirname "$dst")"
+  ln -s "$src" "$dst"
+  echo "  link $rel"
+}
+echo "symlinking caches from $MAIN"
+while IFS= read -r rel; do
+  if [[ -n "$rel" ]]; then link "$rel"; fi
+done <<< "${FK_WORKTREE_CACHE_SYMLINKS:-}"
+
+echo
+echo "worktree: $WT  (branch $BRANCH)"
+echo "push:     git push origin HEAD:$PUSH"
+echo "reminder: the symlinks are untracked. Never 'git add .' or 'git add -A'; commit explicit paths."

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# desc: before a firing: check disk, make sure the dev stack is up, restore the seed; one summary line, one exit code
+# usage: factory preflight
+# Runs, in order and stopping at the first failure: disk-guard, dev-up (without its own seed restore), then [seed] restore.
+# Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; dev up (no-op); seed ok", or
+# "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
+# Exit 0 when every step passed, otherwise the exit code of the first failing step (named in the line):
+# disk-guard 2 (below the floor) or 1; dev-up 1 or 2; seed 3. Changes no git state.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+if [[ $# -gt 0 ]]; then echo "unknown arg: $1" >&2; exit 1; fi
+
+fail() { # fail <step> <rc> <output>
+  echo "factory-preflight: FAILED at $1 (exit $2)"
+  printf '%s\n' "$3" >&2
+  exit "$2"
+}
+
+if OUT="$("$FK_KIT_DIR/cmd/disk-guard" 2>&1)"; then RC=0; else RC=$?; fi
+(( RC == 0 )) || fail disk-guard "$RC" "$OUT"
+FREE="$(printf '%s\n' "$OUT" | sed -n 's/.*: \([0-9][0-9]*\) GB free.*/\1/p' | tail -n 1)"
+DISK="disk ${FREE:-?} GB free"
+
+if OUT="$("$FK_KIT_DIR/cmd/dev-up" --no-seed 2>&1)"; then RC=0; else RC=$?; fi
+(( RC == 0 )) || fail dev-up "$RC" "$OUT"
+if [[ "$OUT" == *"nothing to start"* ]]; then DEV="dev up (no-op)"; else DEV="dev started"; fi
+
+if OUT="$(fk_seed_restore)"; then RC=0; else RC=$?; fi
+(( RC == 0 )) || fail seed "$RC" "$OUT"
+if [[ -z "${FK_SEED_RESTORE:-}" ]]; then SEED="seed skipped (no [seed] restore)"; else
+  LAST="$(printf '%s\n' "$OUT" | tail -n 1 | cut -c1-70)"
+  SEED="seed ok${LAST:+ ($LAST)}"
+fi
+
+echo "factory-preflight: ok - $DISK; $DEV; $SEED"
