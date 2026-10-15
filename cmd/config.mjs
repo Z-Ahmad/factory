@@ -418,7 +418,6 @@ export const SCHEMA = table({
     protected: strs(),
     ephemeral: strs(),
     sweep: strs(),
-    second_size: str(),
     reset_keyboard_prefs: bool(),
   }),
   proof: table({
@@ -435,11 +434,13 @@ export const SCHEMA = table({
       launch_env: strMap(),
       password_from: str(),
       flag_env: strMap(),
+      budgets: str(),
       seconds: int(),
       fps: int(),
       rest_at_s: num(),
       contact_cols: int(),
       contact_max_tiles: int(),
+      contact_height: int(),
       log_markers: strs(),
       fail_markers: strs(),
       verdict: table({
@@ -447,14 +448,39 @@ export const SCHEMA = table({
         ignore_top: num(),
         grid: str(),
         width: int(),
-        flash_warn: int(),
-        flash_fail: int(),
-        hold_warn_ms: int(),
-        hold_fail_ms: int(),
+        flash_warn: num(),
+        flash_fail: num(),
+        hold_warn_ms: num(),
+        hold_fail_ms: num(),
         hold_motion: num(),
+        launch_window_s: num(),
+        launch_search_s: num(),
+        fallback_extra_s: num(),
+        bounce_warn: num(),
+        bounce_fail: num(),
+        bounce_level: num(),
+        bounce_region: num(),
+        bounce_window_s: num(),
+        ref_weight: num(),
+        max_flags: int(),
       }),
     }),
-    matrix: { t: 'table', values: table({ cells: strs(REQ) }) },
+    // A matrix is a list of cell names plus options; the cells themselves are [proof.cell.<name>].
+    matrix: {
+      t: 'table',
+      values: table({ cells: strs(REQ), warm_launch: bool(), seconds: int(), args: strs() }),
+    },
+    // sim = "shooter" (the project's own simulator, as it is) or "fresh" (an ephemeral one, appearance set before install).
+    // device_types = SimDeviceType suffixes; the first one this Mac has wins (absent = the shooter's own type).
+    cell: {
+      t: 'table',
+      values: table({
+        sim: str(REQ),
+        system: str(REQ),
+        app: str(REQ),
+        device_types: strs(),
+      }),
+    },
   }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
@@ -725,9 +751,9 @@ export function getKey(resolved, dotted) {
 // ------------------------------------------------------------------- CLI
 
 const USAGE = `usage: factory config <command>
-  validate          check factory.toml against the schema
-  get <dotted.key>  print one value (lists one per line, tables as JSON)
-  env --sh          print FK_* exports for sourcing in bash`;
+  validate                  check factory.toml against the schema
+  get [--raw] <dotted.key>  print one value (lists one per line, tables as JSON); --raw keeps {placeholders} and ~ as written
+  env --sh                  print FK_* exports for sourcing in bash`;
 
 function main(argv) {
   const rest = [...argv];
@@ -738,6 +764,8 @@ function main(argv) {
     rest.splice(i, 2);
   }
   const [cmd, ...args] = rest;
+  const rawAt = cmd === 'get' ? args.indexOf('--raw') : -1;
+  if (rawAt !== -1) args.splice(rawAt, 1);
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     console.log(USAGE);
     return cmd ? 0 : 2;
@@ -747,7 +775,7 @@ function main(argv) {
     return 2;
   }
   if (cmd === 'get' && args.length !== 1) {
-    console.error('usage: factory config get <dotted.key>');
+    console.error('usage: factory config get [--raw] <dotted.key>');
     return 2;
   }
   if (cmd === 'env' && !args.includes('--sh')) {
@@ -787,7 +815,7 @@ function main(argv) {
   if (cmd === 'validate') {
     console.log(`ok: ${file}`);
   } else if (cmd === 'get') {
-    const r = getKey(result.resolved, args[0]);
+    const r = getKey(rawAt !== -1 ? result.data : result.resolved, args[0]);
     if (!r.found) {
       console.error(`factory config: ${args[0]} is not set in ${file}`);
       return 3;

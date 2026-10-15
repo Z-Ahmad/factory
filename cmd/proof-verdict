@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: score a recorded clip for flashes, holds, bounces and fail markers (verdict.json, flags.png); any mp4, no simulator
+# usage: factory proof-verdict <clip.mp4> [--out <dir>] [--steps <steps.log>] [--json] [--budgets <file.json>] [--scenario <name>] [...]
+# Thresholds come from [proof.ios.verdict], budgets from [proof.ios] budgets. Exit 0 PASS, 4 FAIL, 1 error.
+set -euo pipefail
+exec node "${FK_KIT_DIR:?run this through bin/factory}/proof/verdict/proof-verdict.mjs" "$@"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: grab frames from a simulator recording without seeking (one frame, a contact sheet, or a constant-rate dump)
+# usage: factory clip-frames <clip.mp4> --at <seconds|end> <out.png> | --contact <out.png> [--rate 3] | --dump <dir> [--rate 20]
+# simctl's variable-frame-rate video returns stale frames to ffmpeg -ss; this decodes in order and picks by index.
+set -euo pipefail
+exec node "${FK_KIT_DIR:?run this through bin/factory}/proof/clip-frames.mjs" "$@"

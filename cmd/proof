@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: record a DEBUG scenario on an iOS simulator and judge it: mp4, contact sheet, rest frames, step log, verdict
+# usage: factory proof <scenario> --out <dir> [--udid <sim>] [--seconds N] [--build] [--dd <dir>] [more: see proof/ios/sim-proof-core.sh]
+# Every project value comes from [proof.ios] in factory.toml. macOS with Xcode only (elsewhere: "skipped: needs Xcode", exit 0).
+set -euo pipefail
+exec "${FK_KIT_DIR:?run this through bin/factory}/proof/ios/sim-proof-core.sh" "$@"

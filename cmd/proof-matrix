@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: run one proof scenario across the project's cells (finishes, theme mismatch, second size): matrix.md and a stitched contact sheet
+# usage: factory proof-matrix --scenario <s> --out <dir> [--matrix <name>] [--build --dd <dir>] [--keep-sims] [--plan] [proof args]
+# The matrices and cells are [proof.matrix.*] and [proof.cell.*] in factory.toml. macOS with Xcode only.
+set -euo pipefail
+exec "${FK_KIT_DIR:?run this through bin/factory}/proof/ios/proof-matrix.sh" "$@"

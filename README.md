@@ -6,7 +6,7 @@ You write a short backlog before bed. An orchestrator agent (e.g. Claude Code ru
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.4, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`). Moving in next: the video-proof tools, a safety hook, and the orchestrator skill. The proof tools target the iOS Simulator first.
+> **Status: v0.5, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). Moving in next: a safety hook and the orchestrator skill.
 
 ## Why it exists
 
@@ -35,7 +35,7 @@ Two files:
 
 ## Walkthrough: one night
 
-A made-up app, `example-app`, through one night. Commands marked *(planned)* still live in the original project and move into the kit in later releases.
+A made-up app, `example-app`, through one night. Every command shown is in the kit.
 
 **1. The backlog.** Before the first firing, you write and order it:
 
@@ -55,7 +55,7 @@ A made-up app, `example-app`, through one night. Commands marked *(planned)* sti
 | Preflight | orchestrator | Check free disk, check the dev server is up, update the worktree, reset the test data: `factory preflight` |
 | Ideate (taste items only) | strong model | 2–3 options with side-by-side screenshots. You pick one before anything is built |
 | Implement | worker | Changes the code in the night's worktree; reports back in ≤150 words |
-| Prove | worker | Records the change running in the app with a self-driving test scenario (no manual taps) *(planned: `proof/`)* |
+| Prove | worker | Records the change running in the app with a self-driving test scenario (no manual taps): `factory proof <scenario>` or `factory proof-matrix` |
 | Review | orchestrator | Reads the verdict first, then looks at the flagged frames. At most one round of fixes |
 | Ship | orchestrator | Runs your project's pre-commit checks, commits, pushes to the night's branch |
 | Log | orchestrator | `factory tick --night 12 --item P1 --sha 3f2a91c --pr 41 --log "…"` |
@@ -104,7 +104,7 @@ You need Node 22+, git and bash. The `gh` CLI is needed for pull-request checkli
 ```toml
 [kit]
 repo = "https://github.com/Z-Ahmad/factory.git"
-ref  = "v0.4.0"
+ref  = "v0.5.0"
 
 [project]
 name          = "example-app"
@@ -168,7 +168,11 @@ To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR
 | `factory preflight` | ✓ | Start of every firing: disk-guard, then dev-up, then a test-data reset. One summary line; it names the step that failed |
 | `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` sweeps scratch files and temporary simulators. It checks that no required secret is blank and that every worktree is clean (exit 3 if not), then appends a final line to the log |
 | `factory help` | ✓ | Lists the commands |
-| `proof/` | planned | Video proof scoring and the matrix |
+| `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only) |
+| `factory proof-matrix --scenario <s>` | ✓ | Runs one scenario across the cells in `[proof.cell.*]` (themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails |
+| `factory proof-verdict <clip.mp4>` | ✓ | Scores any recording for flash, hold, bounce and the app's fail markers. No simulator needed |
+| `factory proof-calibrate <manifest.json>` | ✓ | Runs the verdict over your own labelled clips ("this one must fail") and prints a confusion table, so threshold changes are checked against real defects |
+| `factory clip-frames <clip.mp4> …` | ✓ | Grabs frames or contact sheets from a simulator recording without seeking (seeking those files returns stale frames) |
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the main git checkout, so it works from any worktree. Use `FACTORY_TOML=<path>` to name one explicitly.
 

@@ -237,3 +237,41 @@ test('cli: usage errors exit 2', () => {
   assert.equal(cli('valid.toml', 'get').status, 2);
   assert.equal(cli('valid.toml', 'env').status, 2);
 });
+
+// ---- proof sections ------------------------------------------------------
+
+test('cli: get --raw keeps {placeholders} as written, the plain get fills the config ones', () => {
+  assert.equal(cli('valid.toml', 'get', 'proof.ios.app').stdout, 'app/Build/Example.app\n');
+  assert.equal(cli('valid.toml', 'get', '--raw', 'proof.ios.app').stdout, '{dd}/Build/Example.app\n');
+  assert.equal(cli('valid.toml', 'get', 'proof.ios.launch_env.OPEN').stdout, 'example-trip\n');
+  assert.equal(JSON.parse(cli('valid.toml', 'get', '--raw', 'proof.ios.launch_env').stdout).OPEN, '{trip}');
+  assert.equal(cli('valid.toml', 'get', '--raw', 'proof.nope').status, 3);
+  assert.equal(cli('valid.toml', 'get', '--raw').status, 2);
+});
+
+test('proof: matrices, their options and the cells they name are in the schema', () => {
+  const { resolved: c, errors } = load(validText);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(c.proof.matrix.default.cells, ['light', 'dark', 'small']);
+  assert.equal(c.proof.matrix['first-launch'].warm_launch, false);
+  assert.equal(c.proof.matrix['first-launch'].seconds, 30);
+  assert.deepEqual(c.proof.cell.small.device_types, ['iPhone-SE-3rd-generation', 'iPhone-16e']);
+  assert.equal(c.proof.cell.dark.sim, 'shooter');
+});
+
+test('proof: a cell needs sim, system and app; an unknown cell key is a typo', () => {
+  const r = load(validText.replace('sim    = "shooter"\nsystem = "dark"\n', 'system = "dark"\nsimm = "shooter"\n'));
+  const msgs = r.errors.map((e) => e.message);
+  assert.ok(msgs.includes("missing required key 'sim'"));
+  assert.ok(msgs.some((m) => /unknown key 'simm' in \[proof\.cell\.dark\]/.test(m)));
+});
+
+test('proof: [proof.ios.verdict] takes the verdict tool thresholds', () => {
+  const r = load(validText.replace('flash_warn = 4', 'flash_warn = 4.5\nhold_fail_ms = 80\nbounce_window_s = 1.2\nlaunch_search_s = 90'));
+  assert.deepEqual(r.errors, []);
+  const sh = toEnvSh(r.resolved, '/tmp/example/factory.toml');
+  assert.match(sh, /^export FK_PROOF_IOS_VERDICT_FLASH_WARN='4.5'$/m);
+  assert.match(sh, /^export FK_PROOF_IOS_VERDICT_HOLD_FAIL_MS='80'$/m);
+  assert.match(sh, /^export FK_PROOF_IOS_VERDICT_LAUNCH_SEARCH_S='90'$/m);
+  assert.match(sh, /^export FK_PROOF_IOS_BUDGETS='tools\/budgets.json'$/m);
+});

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: run the verdict over a project's own labelled clips and print the confusion table (needs a manifest of clip -> expected)
+# usage: factory proof-calibrate <manifest.json> [--out <dir>] [--tool <proof-verdict.mjs>] [--detail] [--jobs N]
+# The clips stay in the project: the kit holds no recordings. Exit 0 when every clip with an expectation got it, 1 if not.
+set -euo pipefail
+exec node "${FK_KIT_DIR:?run this through bin/factory}/proof/verdict/calibrate.mjs" "$@"

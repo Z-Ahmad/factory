@@ -69,19 +69,50 @@ protected            = ["00000000-0000-0000-0000-000000000000", "Example Phone"]
 reset_keyboard_prefs = true
 
 [proof.ios]
-build        = "scripts/build.sh {dd}"
-dd           = "app"
-app          = "{dd}/Build/Example.app"
-launch_env   = { MODE = "demo", SIGNIN = "demo:{password}", OPEN = "{trip}" }
-rest_at_s    = 4.5
-fail_markers = ["LAYOUT-LOOP"]
+requires      = "darwin"
+build         = "scripts/build.sh {dd}"
+dd            = "app"
+app           = "{dd}/Build/Example.app"
+bundle_id     = "invalid.example.app"
+process       = "Example"
+scenario_env  = "EXAMPLE_SCENARIO"
+env_prefix    = "EXAMPLE_"
+launch_env    = { MODE = "demo", SIGNIN = "demo:{password}", OPEN = "{trip}" }
+password_from = "tools/accounts.mjs:SECRET"
+flag_env      = { appearance = "LOOK", detent = "PANEL" }
+budgets       = "tools/budgets.json"
+rest_at_s     = 4.5
+log_markers   = ["SCENARIO"]
+fail_markers  = ["LAYOUT-LOOP"]
 
 [proof.ios.verdict]
 flash_warn = 4
 grid       = "8x16"
 
+[proof.cell.light]
+sim    = "shooter"
+system = "light"
+app    = "bright"
+
+[proof.cell.dark]
+sim    = "shooter"
+system = "dark"
+app    = "night"
+
+[proof.cell.small]
+sim          = "fresh"
+system       = "light"
+app          = "bright"
+device_types = ["iPhone-SE-3rd-generation", "iPhone-16e"]
+
 [proof.matrix.default]
-cells = ["light", "dark", "size=second"]
+cells = ["light", "dark", "small"]
+
+[proof.matrix.first-launch]
+cells       = ["small"]
+warm_launch = false
+seconds     = 30
+args        = ["--verdict-arg", "--launch-search"]
 
 [phone]
 wipe = ["{dd_root}/dd-device"]
