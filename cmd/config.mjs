@@ -512,7 +512,10 @@ export const SCHEMA = table({
   release: table({
     ios: table({ testflight: str(), build_required: bool(), last_build_file: str() }),
   }),
+  // Read by the orchestrator skill (skill/factory-orchestrator). rules = the project's rules file, a path relative to
+  // the repo root: hard gates, the implementer-brief guardrails, binding lessons, branch targets.
   loop: table({
+    rules: str(),
     models: table({
       implement: str(),
       shoot: str(),

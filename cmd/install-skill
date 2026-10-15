@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# desc: link ~/.claude/skills/factory-orchestrator to this kit's orchestrator skill (idempotent; --uninstall removes the link)
+# usage: factory install-skill [--uninstall] [--dry-run]
+# Makes <skills dir>/factory-orchestrator a symlink to <this kit>/skill/factory-orchestrator, so the skill an orchestrator
+# loads is the one from the kit version the project pins ([kit] ref). The skills dir is $CLAUDE_SKILLS_DIR, else
+# $HOME/.claude/skills. Says what it did, one line:
+#   linked     there was nothing there; the link is made
+#   ok         the link already points at this kit; nothing changed
+#   relinked   the link pointed elsewhere (e.g. another kit version); it now points here
+# A real file or directory in its place is never touched (exit 1): move it away yourself.
+# --uninstall removes the link (whatever kit it points at) and nothing else; no link is "nothing to remove", exit 0.
+# --dry-run says what it would do and changes nothing.
+# Exit 0 done (or nothing to do), 1 refused or a bad argument.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+UNINSTALL=0 DRY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --uninstall) UNINSTALL=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "usage: factory install-skill [--uninstall] [--dry-run]" >&2; exit 1 ;;
+  esac
+done
+
+SRC="$FK_KIT_DIR/skill/factory-orchestrator"
+DIR="${CLAUDE_SKILLS_DIR:-${HOME:?}/.claude/skills}"
+DST="$DIR/factory-orchestrator"
+[[ -f "$SRC/SKILL.md" ]] || fk_die "this kit has no skill at $SRC"
+WOULD=""; [[ "$DRY" == 1 ]] && WOULD="would be "
+
+if [[ "$UNINSTALL" == 1 ]]; then
+  if [[ -L "$DST" ]]; then
+    OLD="$(readlink "$DST")"
+    [[ "$DRY" == 1 ]] || rm "$DST"
+    echo "${WOULD}removed: $DST (was -> $OLD)"
+  elif [[ -e "$DST" ]]; then
+    echo "factory install-skill: $DST is not a symlink; leaving it alone" >&2; exit 1
+  else
+    echo "nothing to remove: no $DST"
+  fi
+  exit 0
+fi
+
+if [[ -L "$DST" ]]; then
+  OLD="$(readlink "$DST")"
+  if [[ "$OLD" == "$SRC" ]]; then echo "ok: $DST -> $SRC"; exit 0; fi
+  [[ "$DRY" == 1 ]] || ln -sfn "$SRC" "$DST"
+  echo "${WOULD}relinked: $DST -> $SRC (was -> $OLD)"
+elif [[ -e "$DST" ]]; then
+  echo "factory install-skill: $DST exists and is not a symlink; move it away first (nothing changed)" >&2; exit 1
+else
+  if [[ "$DRY" == 0 ]]; then mkdir -p "$DIR"; ln -s "$SRC" "$DST"; fi
+  echo "${WOULD}linked: $DST -> $SRC"
+fi

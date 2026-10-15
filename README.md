@@ -6,7 +6,7 @@ You write a short backlog before bed. An orchestrator agent (e.g. Claude Code ru
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.7, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`) and per-night statistics (`stats`). Moving in next: the orchestrator skill and a night-file template.
+> **Status: v0.8, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -104,7 +104,7 @@ You need Node 22+, git and bash. The `gh` CLI is needed for pull-request checkli
 ```toml
 [kit]
 repo = "https://github.com/Z-Ahmad/factory.git"
-ref  = "v0.7.0"
+ref  = "v0.8.0"
 
 [project]
 name          = "example-app"
@@ -151,6 +151,17 @@ scripts/factory help
 
 To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR=~/path/to/factory scripts/factory …`.
 
+**4. Run a night.** Install the orchestrator skill once, write down your project's own rules, and start a night file:
+
+```
+scripts/factory install-skill          # links skill/factory-orchestrator into ~/.claude/skills
+scripts/factory night-new 1 --theme "first run"
+```
+
+- **Your rules file.** Put the rules no script can check in a short file and name it in `factory.toml` (`[loop] rules = "docs/factory-rules.md"`): your hard quality bar, the guardrails every worker brief should carry, the decisions that are settled.
+- **Your backlog.** Fill the night file's Backlog.
+- **Start the loop.** In Claude Code, run `/loop` with a one-line prompt that points at the night file, e.g. `/loop Run the factory night in ~/example-factory/night-1.md`. The skill takes it from there: one item per firing, proofs with verdicts, and a log you read in the morning.
+
 ## Commands
 
 | Command | Status | What it does |
@@ -169,6 +180,8 @@ To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR
 | `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` sweeps scratch files and temporary simulators. It checks that no required secret is blank and that every worktree is clean (exit 3 if not), then appends a final line to the log |
 | `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify`, `gh pr merge`, and starting or killing the dev stack outside `factory dev-up`. Silent when allowed (~45 ms), and it fails open on its own errors |
 | `factory stats [--night N]` | ✓ | Per-night statistics from the agent session transcripts plus GitHub, for charts: wall and active time, subagents by model, tool calls and tool time, estimated model hours, tokens (and cost for models you give prices), PR lines by area, builds, items shipped and blocked, questions asked. Nights are time windows you list in a JSON file; every event is assigned by its own timestamp. Writes `nights-stats.json` and `.csv`, prints a table. Read-only |
+| `factory night-new <N> [--from <prev>] [--theme "…"]` | ✓ | Starts the next night file from the template, carrying over the previous night's open and blocked items, "With the user" and "Needs the phone". Never overwrites |
+| `factory install-skill` | ✓ | Links the `factory-orchestrator` skill into `~/.claude/skills`, so Claude Code loads the loop. `--dry-run`, `--uninstall` |
 | `factory help` | ✓ | Lists the commands |
 | `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only) |
 | `factory proof-matrix --scenario <s>` | ✓ | Runs one scenario across the cells in `[proof.cell.*]` (themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails |
