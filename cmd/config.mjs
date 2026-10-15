@@ -482,6 +482,25 @@ export const SCHEMA = table({
       }),
     },
   }),
+  // `factory stats`: where the agent transcripts live and how a night's numbers are read.
+  //   transcripts   directories holding <session>.jsonl (and <session>/subagents/*.jsonl); a * may stand in a path segment
+  //   nights        the windows file (night -> start, end, PRs, notes); read, never written, by the command
+  //   out           where nights-stats.json and .csv go
+  //   idle_gap_s    two transcript entries closer than this are one stretch of active time (default 600)
+  //   areas         name -> comma-separated globs; a PR file counts toward the first area that matches (rest: "other")
+  //   build_pattern a regex over night-file log lines; capture group 1 is a build number (counted once per night)
+  //   prices        [stats.prices] model -> "input,output,cache_read,cache_write[,cache_write_1h]" in dollars per
+  //                 million tokens (cache_write is the 5-minute rate); no cost is reported for a model with no entry,
+  //                 and the kit ships no prices
+  stats: table({
+    transcripts: strs(),
+    nights: str(),
+    out: str(),
+    idle_gap_s: int(),
+    areas: strMap(),
+    build_pattern: str(),
+    prices: strMap(),
+  }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),
