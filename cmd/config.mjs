@@ -504,6 +504,7 @@ export const SCHEMA = table({
     rounds: int(),
     taste_rounds: int(),
     stuck: str(),
+    allow_merge: bool(),
     stop_after_blocked: int(),
     wake_s: int(),
     usage_limit_wake_s: int(),

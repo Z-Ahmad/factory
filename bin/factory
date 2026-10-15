@@ -67,8 +67,9 @@ command -v node >/dev/null 2>&1 || die "node is required (Node 22 or newer)"
 TOML="$(find_toml)" || die "no factory.toml found (looked up from $PWD, then in the git common root). Add one at the project root, or pass --file / set FACTORY_TOML."
 export FACTORY_TOML="$TOML" FK_KIT_DIR="$KIT"
 
-# `config` reports its own errors, so a broken file can still be inspected.
-if [[ "$CMD" != "config" ]]; then
+# `config` reports its own errors, so a broken file can still be inspected. `hook-guard` runs on every
+# tool call and reads the toml itself (one node start, not two), so it skips the FK_* export.
+if [[ "$CMD" != "config" && "$CMD" != "hook-guard" ]]; then
   ENV_SH="$(node "$KIT/cmd/config.mjs" env --sh)" || exit 1
   eval "$ENV_SH"
 fi
