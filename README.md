@@ -2,7 +2,7 @@
 
 A kit for running an overnight agent factory on a software project: night files, worktrees, disk and dev-stack upkeep, simulator proof runs. Bash and Node, no dependencies. The kit holds no project state and no project values; each project describes itself in a `factory.toml`.
 
-Status: v0.1. The config reader and the dispatcher are in; the commands migrate in next.
+Status: v0.2. The config reader, the dispatcher and `factory tick` are in; the other commands migrate in next.
 
 ## The `factory.toml` contract
 
@@ -12,8 +12,11 @@ A project commits one `factory.toml` at its root. It is a small TOML subset (tab
 factory config validate
 factory config get sim.shooter_udid
 factory config env --sh        # FK_* exports, for bash
+factory tick --night 12 --item P1 --sha 3f2a91c --log "…" [--pr 41] [--blocked "why"] [--dry-run]
 factory help
 ```
+
+`factory tick` checks an item off in the night file (`project.night_file`, `project.item_line`), appends a `project.log_line`, and with `--pr` ticks the same line in the PR body. It finds the GitHub repo from `[git] github = "owner/repo"`, or from `project.main_checkout`'s origin remote, so it runs from any directory.
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the git common root, so it works from any worktree. `FACTORY_TOML` or `--file` name one explicitly.
 

@@ -346,6 +346,7 @@ export const SCHEMA = table({
   ),
   git: table(
     {
+      github: str(),
       worktrees_dir: str(REQ),
       worktree_branch: str(REQ),
       push_branch: str(REQ),

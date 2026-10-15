@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# desc: tick an item in the night file and the PR checklist, and append to the Log
+# usage: factory tick --night N --item <id> --sha <sha> --log "<one line>" [--pr N] [--blocked "<why>"]
+#                     [--file <night.md>] [--pr-body-file <body.md>] [--dry-run]
+# 1. Ticks the item line in the night file ([project] night_file, item_line) to "[x] ... <sha>" (or "[blocked: why]").
+# 2. Appends the [project] log_line to the end of that file (the Log section).
+# 3. With --pr: ticks the same line in the PR body (adds it if missing) and writes it back.
+# --file overrides the night file; --pr-body-file reads the PR body from a file instead of gh;
+# --dry-run edits nothing in the PR and prints the PR body diff instead.
+# gh runs with -R <owner/repo> (from [git] github, else the origin remote of [project] main_checkout),
+# so --pr works from any directory.
+# FK_NOW_HHMM overrides the clock in the log line (for tests).
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+NIGHT="" ITEM="" SHA="" LOG="" PR="" BLOCKED="" FILE="" BODYFILE="" DRY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --night) NIGHT="${2:?}"; shift 2 ;;
+    --item) ITEM="${2:?}"; shift 2 ;;
+    --sha) SHA="${2:?}"; shift 2 ;;
+    --log) LOG="${2:?}"; shift 2 ;;
+    --pr) PR="${2:?}"; shift 2 ;;
+    --blocked) BLOCKED="${2:?}"; shift 2 ;;
+    --file) FILE="${2:?}"; shift 2 ;;
+    --pr-body-file) BODYFILE="${2:?}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+# fill <template> <name> <value> [<name> <value>...]: replaces {name} for the names given, in one
+# pass, so a value is never expanded again and special characters in it stay literal.
+# Any other {word} is left as written. Prints the result and a newline.
+fill() {
+  local tpl="$1"; shift
+  local names="" vars=()
+  while [[ $# -gt 1 ]]; do vars+=("FILL_$1=$2"); names+=" $1"; shift 2; done
+  env "${vars[@]}" FILL_NAMES="$names" FILL_TPL="$tpl" awk '
+    BEGIN {
+      s = ENVIRON["FILL_TPL"]; names = " " ENVIRON["FILL_NAMES"] " "; out = ""
+      while ((i = index(s, "{")) > 0) {
+        out = out substr(s, 1, i - 1); s = substr(s, i)
+        j = index(s, "}")
+        if (j > 0) {
+          name = substr(s, 2, j - 2)
+          if (name ~ /^[A-Za-z_]+$/ && index(names, " " name " ") > 0) {
+            out = out ENVIRON["FILL_" name]; s = substr(s, j + 1); continue
+          }
+        }
+        out = out "{"; s = substr(s, 2)
+      }
+      print out s
+    }'
+}
+
+DEFAULT_ITEM_LINE='- [ ] {id}.'
+DEFAULT_LOG_LINE='{hhmm} · {id} · {sha} · {note}'
+ITEM_LINE="${FK_PROJECT_ITEM_LINE:-$DEFAULT_ITEM_LINE}"
+LOG_LINE="${FK_PROJECT_LOG_LINE:-$DEFAULT_LOG_LINE}"
+[[ "$ITEM_LINE" == *"[ ]"* && "$ITEM_LINE" == *"{id}"* ]] \
+  || fk_die "[project] item_line must contain \"[ ]\" and {id} (got: $ITEM_LINE)"
+
+# item_prefix <mark>: the item line with its "[ ]" replaced by <mark>, e.g. "- [x] K."
+item_prefix() {
+  local pre post
+  pre="$(fill "${ITEM_LINE%%"[ ]"*}" id "$ITEM")"; post="$(fill "${ITEM_LINE#*"[ ]"}" id "$ITEM")"
+  printf '%s%s%s' "$pre" "$1" "$post"
+}
+OPEN="$(item_prefix "[ ]")"
+DONE="$(item_prefix "[x]")"
+
+[[ -n "$ITEM" && -n "$SHA" && -n "$LOG" ]] || { echo "usage: factory tick --night N --item <id> --sha <sha> --log \"<line>\" [--pr N] [--blocked \"<why>\"]" >&2; exit 1; }
+[[ -n "$FILE" ]] || { [[ -n "$NIGHT" ]] || { echo "--night or --file required" >&2; exit 1; }; FILE="$(fill "${FK_PROJECT_NIGHT_FILE:?}" n "$NIGHT")"; }
+[[ -f "$FILE" ]] || { echo "no such file: $FILE" >&2; exit 1; }
+
+if [[ -n "$BLOCKED" ]]; then FILE_MARK="[ ]"; FILE_TAG="[blocked: $BLOCKED]"; PR_MARK="[ ]"; PR_TAG="blocked: $BLOCKED"
+else FILE_MARK="[x]"; FILE_TAG="$SHA"; PR_MARK="[x]"; PR_TAG="$SHA"; fi
+
+# Tick the item line in a file. Prints nothing; exit 3 if the line was not found.
+tick() { # tick <file> <mark> <tag> <sep>
+  WANT="$OPEN" NEWP="$(item_prefix "$2")" TAG="$3" SEP="$4" awk '
+    BEGIN { want = ENVIRON["WANT"]; n = length(want); done = 0 }
+    !done && substr($0, 1, n) == want {
+      print ENVIRON["NEWP"] ENVIRON["SEP"] ENVIRON["TAG"] substr($0, n + 1); done = 1; next }
+    { print }
+    END { exit done ? 0 : 3 }' "$1" > "$1.tmp" && mv "$1.tmp" "$1" || { rm -f "$1.tmp"; return 3; }
+}
+
+if tick "$FILE" "$FILE_MARK" "$FILE_TAG" " "; then echo "ticked $ITEM in $FILE"
+else echo "warning: no '$OPEN' line in $FILE (log line still appended)" >&2; fi
+
+fill "$LOG_LINE" hhmm "${FK_NOW_HHMM:-$(date +%H:%M)}" id "$ITEM" sha "$SHA" note "$LOG" >> "$FILE"
+echo "logged to $FILE"
+
+[[ -n "$PR" ]] || exit 0
+
+# gh_repo: owner/repo for gh -R, so --pr works from any directory.
+gh_repo() {
+  local url
+  if [[ -n "${FK_GIT_GITHUB:-}" ]]; then printf '%s' "$FK_GIT_GITHUB"; return 0; fi
+  url="$(git -C "${FK_PROJECT_MAIN_CHECKOUT:?}" remote get-url origin 2>/dev/null)" \
+    || fk_die "cannot find the GitHub repo: no origin remote in $FK_PROJECT_MAIN_CHECKOUT (set [git] github = \"owner/repo\")"
+  url="${url%/}"; url="${url%.git}"
+  [[ "$url" == *github.com[:/]*/* ]] || fk_die "origin is not a github.com remote: $url (set [git] github = \"owner/repo\")"
+  url="${url##*github.com[:/]}"
+  printf '%s' "$url"
+}
+
+# The repo is needed only when gh runs; resolved in an assignment so a failure stops here.
+REPO=""
+if [[ -z "$BODYFILE" || "$DRY" != 1 ]]; then REPO="$(gh_repo)"; fi
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+if [[ -n "$BODYFILE" ]]; then cp "$BODYFILE" "$TMP/old.md"; else gh pr view "$PR" -R "$REPO" --json body -q .body > "$TMP/old.md"; fi
+cp "$TMP/old.md" "$TMP/new.md"
+if [[ -n "$BLOCKED" ]]; then
+  # Keep the box open; annotate the line.
+  if ! tick "$TMP/new.md" "$PR_MARK" "" ""; then :; fi
+  WANT="$OPEN" TAG=" — $PR_TAG" awk '
+    BEGIN { want = ENVIRON["WANT"]; n = length(want) }
+    substr($0, 1, n) == want && index($0, ENVIRON["TAG"]) == 0 { print $0 ENVIRON["TAG"]; next }
+    { print }' "$TMP/new.md" > "$TMP/new2.md" && mv "$TMP/new2.md" "$TMP/new.md"
+else
+  # Tick the box, then append " — <sha>" to the end of the line.
+  if grep -qF -- "$OPEN" "$TMP/new.md"; then
+    WANT="$OPEN" NEWP="$DONE" TAG=" — $PR_TAG" awk '
+      BEGIN { want = ENVIRON["WANT"]; n = length(want); done = 0 }
+      !done && substr($0, 1, n) == want { print ENVIRON["NEWP"] substr($0, n + 1) ENVIRON["TAG"]; done = 1; next }
+      { print }' "$TMP/new.md" > "$TMP/new2.md" && mv "$TMP/new2.md" "$TMP/new.md"
+  elif grep -qF -- "$DONE" "$TMP/new.md"; then
+    echo "PR line for $ITEM already ticked; leaving it" >&2
+  else
+    printf '\n%s — %s\n' "$DONE" "$PR_TAG" >> "$TMP/new.md"
+  fi
+fi
+
+if [[ "$DRY" == 1 ]]; then
+  echo "--- PR #$PR body diff (dry run, nothing written) ---"
+  diff "$TMP/old.md" "$TMP/new.md" || true
+else
+  gh pr edit "$PR" -R "$REPO" --body-file "$TMP/new.md" >/dev/null
+  echo "updated PR #$PR body"
+fi
