@@ -17,6 +17,8 @@ Worker rules:
   processes you started (`factory read-api up|down` when the project has one).
 - Never edit the files factory.toml lists under [never_touch], never run its never_run_in_worktree scripts here, and
   never save edits to the test seed (cancel, or restore it after).
+- Need something from outside your worktree (an env file, a secret, another checkout's server or build)? Stop and report
+  it; never point tools at the main checkout. A blocked permission prompt stalls the night while the human sleeps.
 - When you check a command's exit code, use `set -o pipefail` or no pipe: `| tail` hides failures.
 - Return at most {words} words: what you did and why, the files, anything you're unsure of. No pasted code.
 ```

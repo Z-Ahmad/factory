@@ -39,6 +39,13 @@ paths = [
 
 [worktree]
 cache_symlinks = ["node_modules", "app/.build"]
+node_modules   = "overlay"
+copy_files     = ["site/.env.public"]
+
+[[worktree.derived]]
+path   = "app/dist"
+source = "app/src"
+build  = "npm run build -w app"
 
 [never_touch]
 paths = ["app/Config/secrets.cfg", "site/.env*"]

@@ -371,7 +371,15 @@ export const SCHEMA = table({
       deploys_prod: bool(),
     },
   },
-  worktree: table({ cache_symlinks: strs() }),
+  worktree: table({
+    cache_symlinks: strs(),
+    node_modules: str(),
+    copy_files: strs(),
+    derived: {
+      t: 'aot',
+      keys: { path: str(REQ), source: str(REQ), build: str(REQ) },
+    },
+  }),
   never_touch: table({
     paths: strs(),
     never_run_in_worktree: strs(),
@@ -655,6 +663,35 @@ function walkStrings(v, path, fn) {
 
 const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+// [worktree] rules the generic schema cannot say: node_modules is one of two words, paths stay inside the
+// checkout, and a derived output is never also a cache symlink.
+function checkWorktree(wt, report) {
+  if (typeof wt !== 'object' || wt === null || Array.isArray(wt)) return;
+  const norm = (p) => p.replace(/^(\.\/)+/, '').replace(/\/+$/, '');
+  const outside = (p) => p === '' || p.startsWith('/') || p.split('/').includes('..');
+  if (typeof wt.node_modules === 'string' && !['overlay', 'link'].includes(wt.node_modules))
+    report('worktree.node_modules', `expected "overlay" or "link", got ${preview(wt.node_modules)}`);
+  const strList = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  strList(wt.copy_files).forEach((p) => {
+    if (outside(norm(p)))
+      report('worktree.copy_files', `${preview(p)} must be a relative path inside the checkout`);
+  });
+  const cached = new Set(strList(wt.cache_symlinks).map(norm));
+  if (!Array.isArray(wt.derived)) return;
+  wt.derived.forEach((d, i) => {
+    if (typeof d !== 'object' || d === null) return;
+    for (const k of ['path', 'source']) {
+      if (typeof d[k] === 'string' && outside(norm(d[k])))
+        report(`worktree.derived.${i}.${k}`, `${preview(d[k])} must be a relative path inside the checkout`);
+    }
+    if (typeof d.path === 'string' && cached.has(norm(d.path)))
+      report(
+        `worktree.derived.${i}.path`,
+        `'${d.path}' is also in [worktree] cache_symlinks; a derived output is linked or built, never both`,
+      );
+  });
+}
+
 /** Returns [{ path, line, message }]; empty when the config is valid. */
 export function validate(data, lines) {
   const errors = [];
@@ -670,6 +707,7 @@ export function validate(data, lines) {
   const report = (path, message) => errors.push({ path, line: lineFor(path), message });
 
   checkTableKeys(SCHEMA, data, [], report);
+  checkWorktree(data.worktree, report);
   walkStrings(data, [], (text, path) => {
     for (const m of text.matchAll(PLACEHOLDER)) {
       const name = m[1];

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# desc: create (or reuse) a project worktree on its factory branch, with the cache symlinks from the main checkout
+# desc: create (or reuse) a project worktree on its factory branch, with caches shared from the main checkout
 # usage: factory worktree <name> [--base <ref>]
 # Creates <[project] main_checkout>/<[git] worktrees_dir>/<name> on branch [git] worktree_branch (name filled in),
 # cut from origin/<[git] push_branch with the name filled in> when that exists, else from --base <ref>, else from the
 # base of the [[targets]] entry with default = true (with a note on stderr).
-# Symlinks each [worktree] cache_symlinks path from the main checkout when it exists there and not yet here.
-# Idempotent: safe to re-run. Exit 0, or 1 on a bad argument or when there is no base to cut from.
+# Then shares what is safe to share from the main checkout, without borrowing anything its branch built:
+#   cache_symlinks  each path is symlinked from the main checkout when it exists there and not yet here. A
+#                   node_modules (with [worktree] node_modules = "overlay", the default) becomes a real directory of
+#                   per-entry links instead, its npm workspace packages linked to THIS worktree's own sources.
+#                   A path whose top folder is not in this branch's checkout is skipped.
+#   copy_files      files copied from the main checkout when missing here (never overwritten).
+#   derived         [[worktree.derived]] outputs (path, source, build): symlinked from the main checkout when
+#                   `source` is identical in both HEADs, else `build` runs in the worktree.
+# Idempotent: safe to re-run. Exit 0; 1 on a bad argument, when there is no base to cut from, or a derived build fails.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 
@@ -54,21 +61,237 @@ else
   fi
 fi
 
+# ---- helpers -------------------------------------------------------------------------------------------------
+
+# top_missing <rel>: true (and says so) when rel's first folder is not in this worktree's checkout, so linking it
+# would leave a stray untracked tree. A single-component path (node_modules) is its own top folder and is never
+# skipped: it is made, not found.
+top_missing() {
+  local rel="$1" top="${1%%/*}"
+  [[ "$rel" == */* ]] || return 1
+  if [[ -e "$WT/$top" || -L "$WT/$top" ]]; then return 1; fi
+  echo "  skip $rel ($top not on this branch)"
+  return 0
+}
+
 link() { # link <relative path>: symlink from main checkout if it exists there and not yet here
   local rel="$1" src="$MAIN/$1" dst="$WT/$1"
   [[ -e "$src" ]] || { echo "  skip $rel (missing in main checkout)"; return 0; }
+  if top_missing "$rel"; then return 0; fi
   if [[ -L "$dst" ]]; then echo "  ok   $rel"; return 0; fi
   if [[ -e "$dst" ]]; then echo "  keep $rel (real path already exists in worktree)"; return 0; fi
   mkdir -p "$(dirname "$dst")"
   ln -s "$src" "$dst"
   echo "  link $rel"
 }
+
+# ws_links <node_modules rel>: the npm workspace packages of THIS worktree (root package.json "workspaces" globs,
+# each matched dir's package.json "name"), one "name<TAB>relative link target" line each. The target is relative to
+# the directory the link lives in, as npm makes it, and points into the worktree, never the main checkout.
+ws_links() {
+  node -e '
+    const fs = require("node:fs"), path = require("node:path");
+    const [wt, rel] = process.argv.slice(1);
+    let pkg;
+    try { pkg = JSON.parse(fs.readFileSync(path.join(wt, "package.json"), "utf8")); } catch { process.exit(0); }
+    const ws = Array.isArray(pkg.workspaces) ? pkg.workspaces : ((pkg.workspaces || {}).packages || []);
+    const dirs = (abs) => {
+      try {
+        return fs.readdirSync(abs, { withFileTypes: true })
+          .filter((e) => e.isDirectory() && e.name !== "node_modules" && !e.name.startsWith(".")).map((e) => e.name);
+      } catch { return []; }
+    };
+    const seg = (s) => new RegExp("^" + s.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$");
+    const expand = (base, segs) => {
+      if (!segs.length) return [base];
+      const [s, ...rest] = segs, abs = path.join(wt, base);
+      if (s === "**") {
+        let out = expand(base, rest);
+        for (const d of dirs(abs)) out = out.concat(expand(path.posix.join(base, d), segs));
+        return out;
+      }
+      if (!/[*?]/.test(s)) return fs.existsSync(path.join(abs, s)) ? expand(path.posix.join(base, s), rest) : [];
+      const re = seg(s);
+      let out = [];
+      for (const d of dirs(abs)) if (re.test(d)) out = out.concat(expand(path.posix.join(base, d), rest));
+      return out;
+    };
+    const norm = (p) => p.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+    const skip = new Set();
+    for (const p of ws) if (p.startsWith("!")) for (const d of expand("", norm(p.slice(1)).split("/"))) skip.add(d);
+    const seen = new Set();
+    for (const p of ws) {
+      if (p.startsWith("!") || norm(p) === "" || norm(p) === ".") continue;
+      for (const d of expand("", norm(p).split("/"))) {
+        if (skip.has(d)) continue;
+        let name;
+        try { name = JSON.parse(fs.readFileSync(path.join(wt, d, "package.json"), "utf8")).name; } catch { continue; }
+        if (typeof name !== "string" || !name || seen.has(name)) continue;
+        seen.add(name);
+        console.log(name + "\t" + path.relative(path.dirname(path.join(wt, rel, name)), path.join(wt, d)));
+      }
+    }
+  ' "$WT" "$1"
+}
+
+NM_WS=""; NM_ADDED=0; NM_FIXED=0; NM_WSN=0
+
+ws_target() { printf '%s\n' "$NM_WS" | awk -F'\t' -v n="$1" '$1 == n { print $2; exit }'; }
+
+# nm_put <dst> <target>: make dst a symlink to target. A correct link stays, a wrong link is replaced (the link
+# only), a real file or directory is never touched.
+nm_put() {
+  local dst="$1" target="$2"
+  if [[ -L "$dst" ]]; then
+    if [[ "$(readlink "$dst")" == "$target" ]]; then return 0; fi
+    rm "${dst:?}"; ln -s "$target" "$dst"; NM_FIXED=$((NM_FIXED + 1)); return 0
+  fi
+  if [[ -e "$dst" ]]; then return 0; fi
+  ln -s "$target" "$dst"; NM_ADDED=$((NM_ADDED + 1))
+}
+
+# nm_main_local <path>: true when path is a symlink into the main checkout but outside any node_modules, which is
+# what an npm workspace link is. Copying it over would pull the main checkout's branch into this worktree.
+nm_main_local() {
+  local p="$1" t d
+  [[ -L "$p" ]] || return 1
+  t="$(readlink "$p")"
+  case "$t" in /*) ;; *) t="$(dirname "$p")/$t" ;; esac
+  d="$(cd -P "$(dirname "$t")" 2>/dev/null && pwd -P)" || return 1
+  d="$d/$(basename "$t")"
+  case "$d" in */node_modules/*) return 1 ;; "$MAIN"/*) return 0 ;; esac
+  return 1
+}
+
+# nm_overlay <src dir> <dst dir> <scope prefix>: one symlink per entry of src (dot entries too). A real @scope
+# directory becomes a real directory with per-entry links. Workspace packages link into this worktree instead.
+nm_overlay() {
+  local sdir="$1" ddir="$2" prefix="$3" e name t
+  while IFS= read -r e; do
+    [[ -n "$e" ]] || continue
+    name="$prefix$e"
+    if [[ -z "$prefix" && "$e" == @* && -d "$sdir/$e" && ! -L "$sdir/$e" ]]; then
+      if [[ -L "$ddir/$e" ]]; then rm "${ddir:?}/${e:?}"; fi
+      mkdir -p "$ddir/$e"
+      nm_overlay "$sdir/$e" "$ddir/$e" "$e/"
+      continue
+    fi
+    t="$(ws_target "$name")"
+    if [[ -n "$t" ]]; then
+      nm_put "$ddir/$e" "$t"; NM_WSN=$((NM_WSN + 1))
+    elif nm_main_local "$sdir/$e"; then
+      # a workspace link in the main checkout for a package this branch does not have: leave it out (and drop a
+      # link an earlier run made for it; only ever the link)
+      if [[ -L "$ddir/$e" ]]; then rm "${ddir:?}/${e:?}"; fi
+    else
+      nm_put "$ddir/$e" "$sdir/$e"
+    fi
+  done < <(ls -A "$sdir")
+}
+
+overlay_node_modules() { # overlay_node_modules <rel>
+  local rel="$1" src="$MAIN/$1" dst="$WT/$1" existed=1 name t scope
+  [[ -d "$src" ]] || { echo "  skip $rel (missing in main checkout)"; return 0; }
+  if top_missing "$rel"; then return 0; fi
+  if [[ -L "$dst" ]]; then
+    rm "${dst:?}"   # the old whole-directory link only, never its target
+    echo "  drop $rel (old whole-directory link to the main checkout; making an overlay)"
+    existed=0
+  elif [[ -e "$dst" && ! -d "$dst" ]]; then
+    echo "  keep $rel (real path already exists in worktree)"; return 0
+  elif [[ ! -d "$dst" ]]; then
+    existed=0
+  fi
+  mkdir -p "$dst"
+  NM_ADDED=0; NM_FIXED=0; NM_WSN=0
+  NM_WS="$(ws_links "$rel")"
+  nm_overlay "$src" "$dst" ""
+  if [[ "$rel" == node_modules ]]; then
+    # the root node_modules always holds every workspace package, as npm makes it
+    while IFS=$'\t' read -r name t; do
+      [[ -n "$name" ]] || continue
+      if [[ -L "$dst/$name" && "$(readlink "$dst/$name")" == "$t" ]]; then continue; fi
+      if [[ "$name" == @*/* ]]; then
+        scope="${name%%/*}"
+        if [[ -L "$dst/$scope" ]]; then rm "${dst:?}/${scope:?}"; fi
+        mkdir -p "$dst/$scope"
+      fi
+      nm_put "$dst/$name" "$t"; NM_WSN=$((NM_WSN + 1))
+    done <<< "$NM_WS"
+  fi
+  if [[ $existed == 0 ]]; then
+    echo "  overlay $rel ($((NM_ADDED + NM_FIXED)) links, $NM_WSN workspace packages -> this worktree)"
+  elif [[ $((NM_ADDED + NM_FIXED)) == 0 ]]; then
+    echo "  ok   $rel (overlay)"
+  else
+    echo "  fresh $rel (overlay refreshed: $NM_ADDED added, $NM_FIXED corrected)"
+  fi
+}
+
+# ---- cache_symlinks ------------------------------------------------------------------------------------------
+
 echo "symlinking caches from $MAIN"
+NODE_MODULES_MODE="${FK_WORKTREE_NODE_MODULES:-overlay}"
 while IFS= read -r rel; do
-  if [[ -n "$rel" ]]; then link "$rel"; fi
+  [[ -n "$rel" ]] || continue
+  if [[ "$NODE_MODULES_MODE" == overlay && "$(basename "$rel")" == node_modules ]]; then overlay_node_modules "$rel"
+  else link "$rel"; fi
 done <<< "${FK_WORKTREE_CACHE_SYMLINKS:-}"
+
+# ---- copy_files ----------------------------------------------------------------------------------------------
+
+if [[ -n "${FK_WORKTREE_COPY_FILES:-}" ]]; then
+  echo "copying files from $MAIN"
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    if [[ ! -f "$MAIN/$rel" ]]; then echo "  skip $rel (missing in main checkout)"; continue; fi
+    if top_missing "$rel"; then continue; fi
+    if [[ -e "$WT/$rel" || -L "$WT/$rel" ]]; then echo "  ok   $rel (already here, not overwritten)"; continue; fi
+    mkdir -p "$(dirname "$WT/$rel")"
+    cp -p "$MAIN/$rel" "$WT/$rel"
+    echo "  copy $rel"
+  done <<< "$FK_WORKTREE_COPY_FILES"
+fi
+
+# ---- derived outputs (after the node_modules overlay, which a build needs) -----------------------------------
+
+BUILD_FAILED=0
+if [[ "${FK_WORKTREE_DERIVED_COUNT:-0}" -gt 0 ]]; then
+  echo "derived outputs (source compared at HEAD: main checkout vs this worktree)"
+  MAIN_HEAD="$(git -C "$MAIN" rev-parse HEAD)"
+  WT_HEAD="$(git -C "$WT" rev-parse HEAD)"
+  for ((i = 0; i < FK_WORKTREE_DERIVED_COUNT; i++)); do
+    v="FK_WORKTREE_DERIVED_${i}_PATH"; d_path="${!v}"
+    v="FK_WORKTREE_DERIVED_${i}_SOURCE"; d_source="${!v}"
+    v="FK_WORKTREE_DERIVED_${i}_BUILD"; d_build="${!v}"
+    if top_missing "$d_path"; then continue; fi
+    if git -C "$MAIN" diff --quiet "$MAIN_HEAD" "$WT_HEAD" -- "$d_source" 2>/dev/null; then
+      link "$d_path"
+      continue
+    fi
+    if [[ -L "$WT/$d_path" ]]; then
+      rm "${WT:?}/${d_path:?}"   # the link only
+      echo "  drop $d_path (link to the main checkout's output)"
+    elif [[ -e "$WT/$d_path" ]]; then
+      echo "  keep $d_path (already built in this worktree; remove it to rebuild)"
+      continue
+    fi
+    echo "  build $d_path ($d_source differs from the main checkout's HEAD)"
+    mkdir -p "$(dirname "$WT/$d_path")"
+    log="$(mktemp "${TMPDIR:-/tmp}/fk-build.XXXXXX")"
+    rc=0
+    ( cd "$WT" && bash -c "$d_build" ) >"$log" 2>&1 || rc=$?
+    if [[ $rc != 0 ]]; then
+      echo "  FAIL build $d_path (exit $rc): $d_build" >&2
+      tail -n 20 "$log" >&2
+      BUILD_FAILED=1
+    fi
+    rm -f "$log"
+  done
+fi
 
 echo
 echo "worktree: $WT  (branch $BRANCH)"
 echo "push:     git push origin HEAD:$PUSH"
 echo "reminder: the symlinks are untracked. Never 'git add .' or 'git add -A'; commit explicit paths."
+exit "$BUILD_FAILED"

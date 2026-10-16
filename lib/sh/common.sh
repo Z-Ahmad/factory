@@ -32,10 +32,17 @@ fk_worktrees() {
     END{ if (p) print p "\t" h "\t" b }'
 }
 
-# fk_dirt <dir>: `git status --porcelain` for a worktree, minus the cache symlinks
-# the kit puts there ([worktree] cache_symlinks, from $FK_WORKTREE_CACHE_SYMLINKS).
+# fk_worktree_hidden: the paths `factory worktree` puts in a worktree and git must not count as dirt, one per
+# line: [worktree] cache_symlinks, copy_files and each derived output path.
+fk_worktree_hidden() {
+  local i n="${FK_WORKTREE_DERIVED_COUNT:-0}" v
+  printf '%s\n' "${FK_WORKTREE_CACHE_SYMLINKS:-}" "${FK_WORKTREE_COPY_FILES:-}"
+  for ((i = 0; i < n; i++)); do v="FK_WORKTREE_DERIVED_${i}_PATH"; printf '%s\n' "${!v:-}"; done
+}
+
+# fk_dirt <dir>: `git status --porcelain` for a worktree, minus what the kit puts there (fk_worktree_hidden).
 fk_dirt() {
-  git -C "$1" status --porcelain 2>/dev/null | SKIP="${FK_WORKTREE_CACHE_SYMLINKS:-}" awk '
+  git -C "$1" status --porcelain 2>/dev/null | SKIP="$(fk_worktree_hidden)" awk '
     BEGIN { n = split(ENVIRON["SKIP"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") hide[a[i]] = 1 }
     { path = substr($0, 4); sub(/\/$/, "", path); if (!(($1 == "??") && (path in hide))) print }'
 }

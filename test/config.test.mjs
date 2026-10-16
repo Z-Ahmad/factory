@@ -148,6 +148,11 @@ test('env --sh output: scalars, lists, tables, array of tables, quoting', () => 
   assert.match(sh, /^export FK_TARGETS_COUNT='2'$/m);
   assert.match(sh, /^export FK_TARGETS_1_DEPLOYS_PROD='true'$/m);
   assert.match(sh, /^export FK_WORKTREE_CACHE_SYMLINKS='node_modules\napp\/.build'$/m);
+  assert.match(sh, /^export FK_WORKTREE_NODE_MODULES='overlay'$/m);
+  assert.match(sh, /^export FK_WORKTREE_COPY_FILES='site\/.env.public'$/m);
+  assert.match(sh, /^export FK_WORKTREE_DERIVED_COUNT='1'$/m);
+  assert.match(sh, /^export FK_WORKTREE_DERIVED_0_SOURCE='app\/src'$/m);
+  assert.match(sh, /^export FK_WORKTREE_DERIVED_0_BUILD='npm run build -w app'$/m);
   assert.match(sh, /^export FK_DEV_READ_API_PORT='3002'$/m);
   assert.match(sh, /^export FK_PROOF_IOS_REST_AT_S='4.5'$/m);
   assert.match(sh, /^export FK_GIT_COMMIT_TRAILER='Co-Authored-By: Example Agent <agent@example.invalid>'$/m);
@@ -165,6 +170,36 @@ test('unknown keys are rejected, so typos do not pass silently', () => {
 test('a placeholder that needs an unset config key is an error', () => {
   const r = load(validText.replace('trip        = "example-trip"\n', ''));
   assert.ok(r.errors.some((e) => /\{trip\} needs seed\.trip/.test(e.message)));
+});
+
+test('[worktree] node_modules must be "overlay" or "link"', () => {
+  const r = load(validText.replace('node_modules   = "overlay"', 'node_modules   = "symlink"'));
+  assert.equal(r.errors.length, 1);
+  assert.equal(r.errors[0].path, 'worktree.node_modules');
+  assert.match(r.errors[0].message, /expected "overlay" or "link", got "symlink"/);
+  assert.deepEqual(load(validText.replace('"overlay"', '"link"')).errors, []);
+});
+
+test('[[worktree.derived]] needs path, source and build, and rejects unknown keys', () => {
+  const r = load(validText.replace('source = "app/src"\n', 'sauce = "app/src"\n'));
+  const msgs = r.errors.map((e) => `${e.path}: ${e.message}`);
+  assert.ok(msgs.includes("worktree.derived.0.source: missing required key 'source'"), msgs.join('\n'));
+  assert.ok(msgs.some((m) => /unknown key 'sauce'/.test(m)), msgs.join('\n'));
+});
+
+test('a derived path that is also a cache symlink is an error', () => {
+  const r = load(validText.replace('["node_modules", "app/.build"]', '["node_modules", "app/dist/"]'));
+  assert.equal(r.errors.length, 1);
+  assert.equal(r.errors[0].path, 'worktree.derived.0.path');
+  assert.match(r.errors[0].message, /'app\/dist' is also in \[worktree\] cache_symlinks/);
+});
+
+test('copy_files and derived paths must stay inside the checkout', () => {
+  let r = load(validText.replace('["site/.env.public"]', '["../secrets/.env"]'));
+  assert.equal(r.errors[0].path, 'worktree.copy_files');
+  assert.match(r.errors[0].message, /relative path inside the checkout/);
+  r = load(validText.replace('source = "app/src"', 'source = "/abs/src"'));
+  assert.equal(r.errors[0].path, 'worktree.derived.0.source');
 });
 
 test('type errors name the key and the offending value', () => {

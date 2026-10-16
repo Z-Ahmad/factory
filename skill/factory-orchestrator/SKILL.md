@@ -55,7 +55,9 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    Never start or kill the dev stack any other way (the hook denies it).
 2. **Worktree.** First firing: `factory worktree night-<n>` (prints the push command), then enter it with
    `EnterWorktree` **before any subagent starts**. Subagents are locked to the worktree you are in when they start or
-   resume; never switch worktrees while one runs. One worktree with running agents at a time.
+   resume; never switch worktrees while one runs. One worktree with running agents at a time. `factory worktree` makes
+   the npm workspace links and derived build outputs match the worktree's own branch, so workers never borrow the
+   main checkout's.
 3. `git fetch origin && git merge --ff-only origin/<push branch>`. The tree must be clean apart from the cache
    symlinks (`git status --porcelain`); a dirty tree you didn't make → stop and log it.
 
