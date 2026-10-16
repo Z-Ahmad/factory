@@ -6,7 +6,7 @@ You write a short backlog before bed. An orchestrator agent (e.g. Claude Code ru
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.8, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.9, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -175,7 +175,7 @@ scripts/factory night-new 1 --theme "first run"
 | `factory dev-up` | ✓ | Starts the dev stack (`[dev] up`) in the background if its ports are down, then resets the test data. Does nothing when it's already up |
 | `factory dev-status` | ✓ | One line per dev port, up or down. Exit 1 if a required port is down |
 | `factory read-api up\|down` | ✓ | Runs a second API server on its own port (`[dev] read_api`) and stops only the one it started |
-| `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent, sharing installed dependencies through symlinks |
+| `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent. Shares installed dependencies and caches from the main checkout through symlinks, but makes npm workspace links and derived build outputs match the worktree's own branch, so a worker never borrows the main checkout's. See [`[worktree]`](#worktree-sharing-from-the-main-checkout) |
 | `factory preflight` | ✓ | Start of every firing: disk-guard, then dev-up, then a test-data reset. One summary line; it names the step that failed |
 | `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` sweeps scratch files and temporary simulators. It checks that no required secret is blank and that every worktree is clean (exit 3 if not), then appends a final line to the log |
 | `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify`, `gh pr merge`, and starting or killing the dev stack outside `factory dev-up`. Silent when allowed (~45 ms), and it fails open on its own errors |
@@ -201,7 +201,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[project]` | yes | Name, main checkout path, state directory, night-file path and line formats |
 | `[git]` | yes | Worktree location and branch naming; `github = "owner/repo"` for PR checklists |
 | `[[targets]]` | yes | Branches work can land on, and which paths go where |
-| `[worktree]` | no | Folders to share into each worktree (e.g. `node_modules`) instead of reinstalling |
+| `[worktree]` | no | What each worktree shares from the main checkout instead of rebuilding: cache folders, `node_modules`, build outputs, public env files |
 | `[never_touch]` | no | Files no agent may edit, and scripts never to run inside a worktree |
 | `[dev]` | no | How to start the dev stack, and which ports mean it is up |
 | `[seed]` | no | Commands to snapshot and restore test data |
@@ -214,6 +214,31 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[loop]` | no | Which model does which role, review rounds, report lengths |
 
 `{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{id}` (item) are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
+
+### `[worktree]`: sharing from the main checkout
+
+`factory worktree` cuts a worktree from the branch you name, which is often not the branch the main checkout is on. So anything it shares must still be right for the *worktree's* branch.
+
+```toml
+[worktree]
+cache_symlinks = ["node_modules", "packages/core/.cache", "app/.build"]
+node_modules   = "overlay"                 # or "link"; default "overlay"
+copy_files     = ["web/.env.local"]        # public values only, see below
+
+[[worktree.derived]]
+path   = "packages/core/dist"              # the output
+source = "packages/core/src"               # the path whose content decides
+build  = "npm run build -w packages/core"  # shell command, run from the worktree root
+```
+
+| Key | What it does |
+|---|---|
+| `cache_symlinks` | Paths symlinked whole from the main checkout when they exist there and not yet in the worktree. A path whose first folder is not in the worktree's checkout (it lives on another branch) is skipped, so no stray untracked tree appears |
+| `node_modules` | `"overlay"` (default): every `cache_symlinks` entry named `node_modules` becomes a real directory holding one symlink per entry of the main checkout's (dot entries too; `@scope/` folders become real folders with per-entry links). Each npm workspace package (the worktree's root `package.json` `workspaces`, each folder's `name`) is linked to the **worktree's** own folder with a relative link, as npm makes it, so the worktree never imports the main checkout's copy. Re-running refreshes the overlay, and replaces an old whole-directory link from an earlier kit version (the link only, never its target). `"link"`: the old behaviour, one symlink to the main checkout's `node_modules` |
+| `copy_files` | Files copied (not linked) from the main checkout when they are missing in the worktree. Never overwritten. Reported as `copy <path>` |
+| `[[worktree.derived]]` | A build output that depends on source. If `source` is identical in the main checkout's HEAD and the worktree's HEAD (`git diff --quiet`), `path` is symlinked from the main checkout; otherwise `build` runs in the worktree, after the `node_modules` overlay exists, and the output is real. An existing link at `path` that now needs a build is removed first (the link only). A failed build is printed on stderr and `factory worktree` exits 1. A `path` must not also be in `cache_symlinks` (`factory config validate` says so) |
+
+**`copy_files` is only for values that are public by construction**, such as env files that end up in a browser bundle. A copy does not follow later edits to the original, and a copied secret sits in another folder, outside the places you guard. Secrets and anything private are never copied: leave them out, and workers must stop and report that they need them (see the worker rules in the skill). Listing a path in `[never_touch]` as well is a good habit.
 
 ## Development
 
