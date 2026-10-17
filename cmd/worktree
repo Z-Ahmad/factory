@@ -238,6 +238,34 @@ while IFS= read -r rel; do
   else link "$rel"; fi
 done <<< "${FK_WORKTREE_CACHE_SYMLINKS:-}"
 
+BUILD_FAILED=0
+
+# ---- packages only this branch installs ----------------------------------------------------------------------
+# The overlay links what the MAIN checkout installed, which is another branch's lockfile. A package only this
+# branch depends on (a main-based worktree when the main checkout sits on a feature branch) would be missing, and
+# its build fails. Fetch each one, at its locked version, into a real directory here (never through a link).
+if [[ "$NODE_MODULES_MODE" == overlay && -d "$WT/node_modules" && ! -L "$WT/node_modules" ]]; then
+  MISSING="$(node "$FK_KIT_DIR/lib/nm-missing.mjs" "$WT")"
+  if [[ -n "$MISSING" ]]; then
+    echo "packages only this branch installs (from its package-lock.json)"
+    packdir="$(mktemp -d "${TMPDIR:-/tmp}/fk-pack.XXXXXX")"
+    while IFS=$'\t' read -r path name version; do
+      [[ -n "$path" ]] || continue
+      parent="$(dirname "$WT/$path")"
+      if [[ -L "$parent" ]]; then echo "  skip $name@$version (its folder is a link to the main checkout)"; continue; fi
+      if ! tgz="$("${FK_NPM:-npm}" pack "$name@$version" --pack-destination "$packdir" --silent 2>/dev/null | tail -n 1)" || [[ -z "$tgz" ]]; then
+        echo "  FAIL fetch $name@$version (npm pack failed; run npm install in the worktree)" >&2
+        BUILD_FAILED=1; continue
+      fi
+      mkdir -p "$WT/$path"
+      tar -xzf "$packdir/$tgz" -C "$WT/$path" --strip-components=1
+      rm -f "$packdir/$tgz"
+      echo "  fetch $path ($name@$version)"
+    done <<< "$MISSING"
+    rm -rf "$packdir"
+  fi
+fi
+
 # ---- copy_files ----------------------------------------------------------------------------------------------
 
 if [[ -n "${FK_WORKTREE_COPY_FILES:-}" ]]; then
@@ -255,7 +283,6 @@ fi
 
 # ---- derived outputs (after the node_modules overlay, which a build needs) -----------------------------------
 
-BUILD_FAILED=0
 if [[ "${FK_WORKTREE_DERIVED_COUNT:-0}" -gt 0 ]]; then
   echo "derived outputs (source compared at HEAD: main checkout vs this worktree)"
   MAIN_HEAD="$(git -C "$MAIN" rev-parse HEAD)"

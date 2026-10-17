@@ -92,6 +92,8 @@ const OPEN = ITEM_LINE.slice(0, ITEM_LINE.indexOf('[ ]') + 3); // "- [ ]"
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const [idPre, idPost] = ITEM_LINE.split('{id}');
 const ID_RE = new RegExp(`^${escapeRe(idPre)}(${idPost ? `.+?(?=${escapeRe(idPost)})` : '\\S+'})`);
+// The same rule as `factory tick`: two or more lowercase words joined by hyphens.
+const SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
 
 /** Sections of a night file: heading text (lowercased) -> body lines. */
 function sections(text) {
@@ -157,6 +159,10 @@ if (opt.from !== null) {
   withUser = trimBlank((section(secs, 'with the user') ?? []).filter((l) => !isComment(l)));
   needsPhone = trimBlank((section(secs, 'needs the phone') ?? []).filter((l) => !isComment(l)));
   prev = `night ${opt.from} (${ids.length} open item${ids.length === 1 ? '' : 's'} carried${ids.length ? `: ${ids.join(', ')}` : ''})`;
+  // [loop] item_ids = "slug" (the default): carried codes still carry, but say which ones `factory tick` will refuse.
+  const codes = (env.FK_LOOP_ITEM_IDS || 'slug') === 'any' ? [] : ids.filter((id) => !SLUG_RE.test(id));
+  if (codes.length)
+    console.error(`factory night-new: warning: carried item IDs that are not plain-English slugs (factory tick refuses them): ${codes.join(', ')}. Rename them in night ${opt.n}'s Backlog, e.g. lifetime-globe.`);
 }
 
 // ------------------------------------------------------------------ render

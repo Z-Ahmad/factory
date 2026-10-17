@@ -33,6 +33,7 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    | `implementer_words` / `shooter_words` | 150 / 80 | report limits in the briefs |
    | `linear` | none | tracker issue prefix and the state to move shipped issues to |
    | `allow_merge` | false | never merge a PR unless this is true or the human says so |
+   | `item_ids` | `slug` | item IDs are plain-English slugs (`lifetime-globe`); `tick` refuses codes like `G3` (`any` turns it off) |
 
 5. Also read once: `factory config get tests` (unit + gate + retry_once), `targets`, `git.push_branch`,
    `git.commit_trailer`, `sim.shooter_udid`, and the matrices (`factory config get proof.matrix`).
@@ -65,6 +66,11 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 
 The first unchecked, unblocked Backlog line, in order. Tags the human may write: `[needs-user]`, `IDEATE`, `TASTE`,
 `no test` (add no test work beyond the gate), `[blocked: why]` (written by `factory tick --blocked`).
+
+**Name items so the human can read them cold.** An item's ID is a plain-English slug of two or more words that says
+what it is (`lifetime-globe`, `footer-flash`), never a code (`G3`, `F1`, `H-web`): the human steps away mid-night and
+comes back to the Log. `factory tick` refuses a code under `item_ids = "slug"`, and `night-new` warns about carried ones.
+In anything the human reads (chat, Log notes, PR bodies, notifications), say what changed in plain words, not just the slug.
 
 **IDEATE / TASTE items are decided before anything is built.** Brief the `ideate` model with the ideate template
 (references/briefs.md) for **2–3 options**, each built as a throwaway DEBUG variant or mock and shot with the **same
