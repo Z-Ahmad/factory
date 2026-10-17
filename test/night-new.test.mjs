@@ -205,6 +205,26 @@ test('night-new follows a custom [project] item_line', () => {
   }
 });
 
+test('night-new warns about carried item IDs that are not plain-English slugs (item_ids = "slug", the default)', () => {
+  const p = project({ toml: (t) => t.replace('item_ids = "any"\n', '') });
+  try {
+    writeFileSync(join(p.state, 'night-3.md'), '## Backlog\n- [ ] G3. a code\n- [ ] lifetime-globe. a slug\n\n## Log\n');
+    const r = p.run(['4', '--from', '3', '--stdout']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /- \[ \] G3\. a code\n- \[ \] lifetime-globe\. a slug/);
+    assert.match(r.stderr, /not plain-English slugs \(factory tick refuses them\): G3\. Rename/);
+    const quiet = project({});
+    try {
+      writeFileSync(join(quiet.state, 'night-3.md'), '## Backlog\n- [ ] G3. a code\n\n## Log\n');
+      assert.doesNotMatch(quiet.run(['4', '--from', '3', '--stdout']).stderr, /slug/);
+    } finally {
+      quiet.cleanup();
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
 test('config: [loop] rules is a known optional string, read by config get', async () => {
   const { load } = await import('../cmd/config.mjs');
   const base = readFileSync(fixture('valid.toml'), 'utf8');

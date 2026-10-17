@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { factory } from './helpers.mjs';
@@ -253,6 +253,63 @@ test('node_modules is a real directory; a workspace package links into the workt
     // main's node_modules is untouched
     assert.deepEqual(t.ls(join(t.main, 'node_modules', '@sg')), ['core', 'extra', 'lib']);
     assert.equal(readlinkSync(join(t.main, 'node_modules', '@sg', 'core')), '../../packages/core');
+  }));
+
+test('packages only the worktree branch installs are fetched at their locked version into real directories', () =>
+  withWs((t) => {
+    // trunk (the worktree's branch) locks packages the main checkout (on "other") never installed
+    const lock = {
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'root' },
+        'node_modules/left-pad': { version: '1.0.0' }, // installed in main: linked, not fetched
+        'node_modules/only-here': { version: '1.2.3' },
+        'node_modules/only-here/node_modules/inner': { version: '0.1.0' }, // under a fetched package
+        'node_modules/@sg/new': { version: '2.0.0' }, // in a scope the overlay makes real
+        'node_modules/left-pad/node_modules/under-link': { version: '9.9.9' }, // under a link to main: left alone
+        'node_modules/@sg/core': { resolved: 'packages/core', link: true }, // workspace link
+        'node_modules/elsewhere': { version: '1.0.0', os: ['win32'] }, // another platform
+      },
+    };
+    t.git(t.main, 'checkout', '-q', 'trunk');
+    writeFileSync(join(t.main, 'package-lock.json'), JSON.stringify(lock));
+    t.git(t.main, 'add', 'package-lock.json');
+    t.git(t.main, 'commit', '-q', '-m', 'lock');
+    t.git(t.main, 'push', '-q', 'origin', 'trunk');
+    t.git(t.main, 'checkout', '-q', 'other');
+    // a stand-in npm: `npm pack <name>@<version> --pack-destination <dir>` writes a tarball and prints its name
+    const bin = join(t.main, '..', 'fake-npm');
+    mkdirSync(bin, { recursive: true });
+    const npm = join(bin, 'npm');
+    writeFileSync(npm, `#!/usr/bin/env bash
+spec="$2"; dest="$4"; name="\${spec%@*}"; version="\${spec##*@}"
+work="$(mktemp -d)"; mkdir -p "$work/package"
+printf '{"name":"%s","version":"%s"}' "$name" "$version" > "$work/package/package.json"
+file="$(echo "$name" | tr -d @ | tr / -)-$version.tgz"
+tar -czf "$dest/$file" -C "$work" package && rm -rf "$work"
+echo "$file"
+`);
+    chmodSync(npm, 0o755);
+    const r = t.wtree('fetch', [], { FK_NPM: npm });
+    assert.equal(r.status, 0, r.stderr);
+    const nm = join(t.dir('fetch'), 'node_modules');
+    const version = (p) => JSON.parse(readFileSync(join(nm, p, 'package.json'), 'utf8')).version;
+    assert.equal(isRealDir(join(nm, 'only-here')), true);
+    assert.equal(version('only-here'), '1.2.3');
+    assert.equal(version('only-here/node_modules/inner'), '0.1.0');
+    assert.equal(isRealDir(join(nm, '@sg', 'new')), true);
+    assert.equal(version('@sg/new'), '2.0.0');
+    assert.match(r.stdout, /fetch node_modules\/only-here \(only-here@1\.2\.3\)/);
+    // nothing was written into the main checkout, nor fetched for a linked, workspace or foreign-platform entry
+    assert.equal(existsSync(join(t.main, 'node_modules', 'left-pad', 'node_modules')), false);
+    assert.equal(existsSync(join(t.main, 'node_modules', 'only-here')), false);
+    assert.equal(existsSync(join(nm, 'elsewhere')), false);
+    assert.equal(readlinkSync(join(nm, 'left-pad')), join(t.main, 'node_modules', 'left-pad'));
+    assert.doesNotMatch(r.stdout, /under-link|elsewhere|@sg\/core/);
+    // a re-run fetches nothing new
+    const again = t.wtree('fetch', [], { FK_NPM: npm });
+    assert.equal(again.status, 0, again.stderr);
+    assert.doesNotMatch(again.stdout, /fetch node_modules/);
   }));
 
 test('a derived output is built when its source differs, and symlinked when identical', () =>

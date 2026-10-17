@@ -286,3 +286,17 @@ test('item_line without "[ ]" or {id} is rejected', () =>
     assert.match(r.stderr, /item_line must contain "\[ \]" and \{id\}/);
     assert.equal(t.read(t.night), NIGHT);
   }));
+
+test('[loop] item_ids = "slug" (the default) refuses letter-number codes and ticks slugs', () =>
+  withProject({ extraToml: (x) => x.replace('item_ids = "any"\n', '') }, (t) => {
+    for (const code of ['B2', 'G3', 'H-web', 'footer', 'Lifetime-Globe', 'lifetime_globe']) {
+      const r = t.tick(['--night', '3', '--item', code, '--sha', 's', '--log', 'x']);
+      assert.equal(r.status, 1, `${code} should be refused`);
+      assert.match(r.stderr, new RegExp(`item ID "${code}" is not a plain-English slug`));
+    }
+    assert.equal(t.read(t.night), NIGHT);
+    writeFileSync(t.night, NIGHT.replace('- [ ] B2.', '- [ ] dark-mode.'));
+    const ok = t.tick(['--night', '3', '--item', 'dark-mode', '--sha', 'abc1234', '--log', 'shipped']);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(t.read(t.night), /- \[x\] dark-mode\. abc1234/);
+  }));

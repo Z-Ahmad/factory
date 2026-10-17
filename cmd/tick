@@ -51,6 +51,11 @@ OPEN="$(item_prefix "[ ]")"
 DONE="$(item_prefix "[x]")"
 
 [[ -n "$ITEM" && -n "$SHA" && -n "$LOG" ]] || { echo "usage: factory tick --night N --item <id> --sha <sha> --log \"<line>\" [--pr N] [--blocked \"<why>\"]" >&2; exit 1; }
+# [loop] item_ids = "slug" (the default): the human steps away mid-night and must read an item's name cold,
+# so an ID is a plain-English kebab slug (lifetime-globe), never a code (G3, F1, H-web).
+if [[ "${FK_LOOP_ITEM_IDS:-slug}" != "any" && ! "$ITEM" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)+$ ]]; then
+  fk_die "item ID \"$ITEM\" is not a plain-English slug (two or more lowercase words joined by hyphens, e.g. lifetime-globe). Rename the backlog line, or set [loop] item_ids = \"any\""
+fi
 [[ -n "$FILE" ]] || { [[ -n "$NIGHT" ]] || { echo "--night or --file required" >&2; exit 1; }; FILE="$(fill "${FK_PROJECT_NIGHT_FILE:?}" n "$NIGHT")"; }
 [[ -f "$FILE" ]] || { echo "no such file: $FILE" >&2; exit 1; }
 

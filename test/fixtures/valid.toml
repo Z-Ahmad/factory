@@ -125,5 +125,6 @@ args        = ["--verdict-arg", "--launch-search"]
 wipe = ["{dd_root}/dd-device"]
 
 [loop]
+item_ids = "any"
 models = { implement = "sonnet", ideate = "opus", banned = ["haiku"] }
 rounds = 1

@@ -524,6 +524,9 @@ export const SCHEMA = table({
   // the repo root: hard gates, the implementer-brief guardrails, binding lessons, branch targets.
   loop: table({
     rules: str(),
+    // "slug" (default): item IDs are plain-English kebab slugs (lifetime-globe), checked by tick and night-new;
+    // "any": no check (projects with letter-number codes like G3).
+    item_ids: str(),
     models: table({
       implement: str(),
       shoot: str(),
