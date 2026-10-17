@@ -36,7 +36,14 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    | `item_ids` | `slug` | item IDs are plain-English slugs (`lifetime-globe`); `tick` refuses codes like `G3` (`any` turns it off) |
 
 5. Also read once: `factory config get tests` (unit + gate + retry_once), `targets`, `git.push_branch`,
-   `git.commit_trailer`, `sim.shooter_udid`, and the matrices (`factory config get proof.matrix`).
+   `git.commit_trailer`, `sim.shooter_udid`, and the matrices (`factory config get proof.matrix`). The disk keys
+   (`factory config get disk` / `sim`) also have defaults when missing:
+
+   | key | default | means |
+   |---|---|---|
+   | `disk.clips` | `delete` | end-night deletes the night's proof `*.mp4` (`keep` leaves them); verdicts, flags, contact sheets and rest frames always stay (§10) |
+   | `disk.tmp_dirs` / `tmp_dirs_globs` | `$TMPDIR` / `*.ktrace *.trace instruments* XcodeDistPipeline.*` | loose traces and upload scratch older than 1 h, swept by `cleanup --only tmp` |
+   | `sim.erase_above_gb` | 6 | end-night `--apply` erases (never deletes) `sim.shooter_udid` and `sim.erase_at_end_night` sims whose data is bigger |
 6. **The hook:** check `.claude/settings.json` runs `factory hook-guard` as a `PreToolUse` hook. If it doesn't, tell the
    human; you can't add it yourself (a settings edit is self-modification, and the classifier refuses it).
 7. Read the design ethos / product docs the rules file names, once. Read the last line of the previous night's Log.
@@ -150,9 +157,21 @@ the earlier night measured.
    the night's worktree: ship it, or save it as `<state_dir>/night-<n>/<id>.patch` and say so.
 2. A final summary line in the Log: what shipped with SHAs, what's blocked and why, the device checks for the human.
 3. `factory end-night --night <n>` (**dry run first**), read it, then `factory end-night --night <n> --apply`.
-   **Exit 3** = a blank secret or a dirty worktree: put that first in the message to the human.
-4. Optional: `factory stats --night <n>` for the night's numbers.
-5. `ScheduleWakeup(stop: true)`, then one PushNotification line: what shipped, what needs the device.
+   **Exit 3** = a blank secret, a dirty worktree or night-file lint errors: put that first in the message to the human.
+   What `--apply` frees, so you never do it by hand:
+   - **The night's proof videos.** Every `*.mp4` under `<shots_dir>` goes (`disk.clips`; `keep` stops it). The evidence
+     stays: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages, logs. So a PR link or a Log note
+     must point at those, never at a clip, and re-judging a clip after end-night is not possible; do it before.
+   - **Bloated simulators.** The shooter sim and `sim.erase_at_end_night` are erased (not deleted) when their data is
+     over `sim.erase_above_gb`; a booted one is skipped while a `recordVideo` runs. Size before and after is in the output.
+   - **Scratch** in `/tmp` and `$TMPDIR` (Instruments traces, TestFlight upload dirs) older than an hour.
+   Never `rm` videos, traces or app containers yourself before this step; if the disk is low mid-night,
+   `factory cleanup` (dry run, then `--apply`) is the same sweep.
+4. Read the `night file:` line of the report. `factory night-lint --night <n>` lists the findings: errors (exit 3) are a
+   missing section or title, a done item without a sha, a duplicate ID; fix those in the file by hand. Warnings (wrong
+   log shape, non-slug ID, extra section) are for the next night's author. `tick` already prints them after every write.
+5. Optional: `factory stats --night <n>` for the night's numbers.
+6. `ScheduleWakeup(stop: true)`, then one PushNotification line: what shipped, what needs the device.
 
 ## 11. The human
 
@@ -165,7 +184,8 @@ The human's attention is the scarce resource; spend it in batches.
   log when they say they're done.
 - Releases (`release.*`) only when the human asks; always pass the build number explicitly.
 - A new night: `factory night-new <n> --from <n-1> --theme "<theme>"`. It carries the open items, "With the user" and
-  "Needs the phone", and refuses to overwrite. The human orders the Backlog.
+  "Needs the phone", and refuses to overwrite. The human orders the Backlog. Write Log lines as `hh:mm · <id> · <sha or
+  status word> · <note>` (`factory tick` does); `factory night-lint` checks the file's shape and never rewrites it.
 
 **Device builds** (`[phone]`): export the branch with `phone.export` into a `mktemp -d` copy (isolation blocks git on
 other worktrees), symlink each `phone.link_from_main` from the main checkout, delete each `phone.wipe` path, run
@@ -198,6 +218,6 @@ hook; show the human the diff or the command and ask.
 | worktrees | `factory worktree <name> [--base <ref>]` |
 | proofs | `factory proof` · `factory proof-matrix` · `factory proof-verdict <mp4>` · `factory clip-frames` · `factory proof-calibrate <manifest>` |
 | a second API | `factory read-api up` / `down` (stops only its own process) |
-| bookkeeping | `factory tick` · `factory night-new` · `factory end-night` · `factory stats` |
+| bookkeeping | `factory tick` · `factory night-new` · `factory night-lint` · `factory end-night` · `factory stats` |
 | upkeep | `factory cleanup [--only <category>] [--apply]` |
 | setup | `factory install-skill [--uninstall]` · `factory hook-guard` (PreToolUse) · `factory config get <key>` |

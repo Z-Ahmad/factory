@@ -418,6 +418,12 @@ export const SCHEMA = table({
     tmp_dir: str(),
     tmp_keep: strs(),
     tmp_globs: strs(),
+    // tmp_dirs: extra scratch directories swept for loose files too (default: $TMPDIR, the per-user temp dir where
+    // Instruments traces and Xcode upload scratch land); tmp_dirs_globs: the only names removed there.
+    tmp_dirs: strs(),
+    tmp_dirs_globs: strs(),
+    // "delete" (default): cleanup's clips category removes every *.mp4 under project.shots_dir; "keep": leaves them.
+    clips: str(),
     archives: table({ glob: str(REQ), keep: int(REQ) }),
   }),
   sim: table({
@@ -426,6 +432,10 @@ export const SCHEMA = table({
     protected: strs(),
     ephemeral: strs(),
     sweep: strs(),
+    // end-night --apply erases (never deletes) shooter_udid and every sim named in erase_at_end_night
+    // (names, UDIDs or globs) whose data dir is larger than erase_above_gb (default 6).
+    erase_above_gb: num(),
+    erase_at_end_night: strs(),
     reset_keyboard_prefs: bool(),
   }),
   proof: table({

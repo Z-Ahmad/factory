@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# desc: list or remove build caches, frame dumps, scratch dirs, old archives, spare simulators and merged agent worktrees
-# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|archives|tmp]... [--frames-age <days>] [--include-night <name>]
+# desc: list or remove build caches, frame dumps, proof videos, scratch files, old archives, spare simulators and merged agent worktrees
+# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|clips|archives|tmp]... [--frames-age <days>] [--include-night <name>] [--night N]
 # Dry-run by default: prints what it WOULD remove with sizes and a total. --apply deletes.
 # Categories (every path, pattern and count comes from factory.toml; [section] key in brackets):
 #   derived-data  <[disk] dd_root>/dd-* not in the keep list ([disk] dd_keep, plus names found by grepping the
@@ -12,8 +12,14 @@
 #                 [git] protected_worktrees are never touched unless --include-night <name>.
 #   frames        <[project] shots_dir>/**/frames/ dirs older than --frames-age days (default [disk] frames_age_days, else 2);
 #                 0 = all (contact/rest/mp4/loose PNGs stay)
+#   clips         every *.mp4 under [project] shots_dir ({n} = --night N, else every night's): the proof videos, which are
+#                 most of a night's disk. verdict.json, flags.png, contact sheets, rest PNGs, montages and logs all stay.
+#                 [disk] clips = "keep" turns the category off (default "delete")
 #   tmp           dirs in [disk] tmp_dir owned by you, mtime > 1h, named by [disk] tmp_globs (dd-* globs are skipped
-#                 when derived-data also runs; [disk] tmp_keep is never touched)
+#                 when derived-data also runs; [disk] tmp_keep is never touched). Also, in each [disk] tmp_dirs entry
+#                 (default $TMPDIR, the per-user temp dir), the top-level files or dirs owned by you, mtime > 1h, named by
+#                 [disk] tmp_dirs_globs (default *.ktrace *.trace instruments* XcodeDistPipeline.*): Instruments traces and
+#                 TestFlight upload scratch. Nothing else in those dirs is touched.
 #   archives      <[disk] archives.glob> in the main checkout + worktrees; keeps the [disk] archives.keep highest build numbers overall
 # Bash 3.2 compatible (macOS /bin/bash). Sizes are `du -sk`. Exit 0, or 1 on a bad argument.
 set -euo pipefail
@@ -22,13 +28,14 @@ set -euo pipefail
 shopt -s extglob   # so [sim] ephemeral can say box-test-+([0-9])
 
 FRAMES_AGE="${FK_DISK_FRAMES_AGE_DAYS:-2}"
-APPLY=0 ONLY="" INCLUDE_NIGHT=""
+APPLY=0 ONLY="" INCLUDE_NIGHT="" NIGHT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=1; shift ;;
     --only) ONLY="$ONLY ${2:?}"; shift 2 ;;
     --frames-age) FRAMES_AGE="${2:?}"; [[ "$FRAMES_AGE" =~ ^[0-9]+$ ]] || { echo "--frames-age wants days (integer)" >&2; exit 1; }; shift 2 ;;
     --include-night) INCLUDE_NIGHT="${2:?}"; shift 2 ;;
+    --night) NIGHT="${2:?}"; [[ "$NIGHT" =~ ^[0-9]+$ ]] || { echo "--night wants a night number" >&2; exit 1; }; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -37,8 +44,11 @@ MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
 cd "$MAIN"
 DD_ROOT="${FK_DISK_DD_ROOT:-}"
 TMP_DIR="${FK_DISK_TMP_DIR:-/tmp}"
+CLIPS_MODE="${FK_DISK_CLIPS:-delete}"
+[[ "$CLIPS_MODE" == delete || "$CLIPS_MODE" == keep ]] || { echo "[disk] clips must be \"delete\" or \"keep\" (got: $CLIPS_MODE)" >&2; exit 1; }
 
 TOTAL_KB=0
+SWEPT=$'\n'   # paths the tmp category already listed, so one named in two places is counted once
 want() { [[ -z "$ONLY" || " $ONLY " == *" $1 "* ]]; }
 kb() { du -sk "$1" 2>/dev/null | awk '{print $1+0}' || true; }
 header() { echo; echo "== $1 =="; }
@@ -205,7 +215,40 @@ if want frames; then
   fi
 fi
 
-# ---- 5. tmp scratch ----
+# ---- 5. proof clips ----
+if want clips; then
+  header "clips (*.mp4 under the shots dir, night ${NIGHT:-all})"
+  if [[ "$CLIPS_MODE" == keep ]]; then
+    echo "  kept: [disk] clips = \"keep\""
+  elif [[ -z "${FK_PROJECT_SHOTS_DIR:-}" ]]; then
+    echo "  skipped: [project] shots_dir is not set"
+  else
+    SHOTS=()
+    while IFS= read -r s; do [[ -n "$s" ]] && SHOTS+=("$s"); done < <(glob_lines "${FK_PROJECT_SHOTS_DIR//\{n\}/${NIGHT:-*}}")
+    CLIPS_N=0 CLIPS_KB=0 CUR_DIR="" CUR_N=0 CUR_KB=0
+    # one line per directory holding clips, so 600 videos do not print 600 lines
+    flush_clips() {
+      if [[ "$CUR_N" -gt 0 ]]; then
+        printf '  %s  %s/ (%d clip%s)\n' "$(fk_human "$CUR_KB" | awk '{printf "%6s", $0}')" "$CUR_DIR" "$CUR_N" "$([[ "$CUR_N" == 1 ]] || echo s)"
+      fi
+      CUR_N=0 CUR_KB=0
+    }
+    if [[ ${#SHOTS[@]} -gt 0 ]]; then
+      while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        if [[ "${f%/*}" != "$CUR_DIR" ]]; then flush_clips; CUR_DIR="${f%/*}"; fi
+        size="$(kb "$f")"
+        CUR_N=$((CUR_N + 1)); CUR_KB=$((CUR_KB + size)); CLIPS_N=$((CLIPS_N + 1)); CLIPS_KB=$((CLIPS_KB + size))
+        TOTAL_KB=$((TOTAL_KB + size))
+        if [[ "$APPLY" == 1 ]]; then rm -f "$f"; fi
+      done < <(find "${SHOTS[@]}" -type f -iname '*.mp4' 2>/dev/null | sort || true)
+      flush_clips
+    fi
+    echo "clips: $CLIPS_N file$([[ "$CLIPS_N" == 1 ]] || echo s), $(fk_human "$CLIPS_KB") $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable) (verdicts, flags, contact sheets and rest frames stay)"
+  fi
+fi
+
+# ---- 6. tmp scratch ----
 if want tmp; then
   TMP_REAL="$(cd "$TMP_DIR" 2>/dev/null && pwd -P || echo "$TMP_DIR")"
   header "tmp (agent scratch in $TMP_REAL, yours, older than 1h)"
@@ -218,12 +261,46 @@ if want tmp; then
   done <<< "${FK_DISK_TMP_GLOBS:-}"
   if [[ ${#NAMES[@]} -gt 0 && -d "$TMP_REAL" ]]; then
     while IFS= read -r d; do
-      if [[ -n "$d" ]] && ! path_in "$d" "${FK_DISK_TMP_KEEP:-}"; then remove_path "$d"; fi
+      if [[ -n "$d" ]] && ! path_in "$d" "${FK_DISK_TMP_KEEP:-}"; then SWEPT="$SWEPT$d"$'\n'; remove_path "$d"; fi
     done < <(find "$TMP_REAL" -mindepth 1 -maxdepth 1 -type d -user "$(id -un)" -mmin +60 \( "${NAMES[@]}" \) 2>/dev/null || true)
   fi
+
+  # The per-user temp dir ($TMPDIR; /var/folders/.../T on macOS) is not /tmp: Instruments traces and Xcode upload
+  # scratch land there, as files or dirs. Only the [disk] tmp_dirs_globs names, only yours, only older than an hour.
+  DEFAULT_TMP_DIRS='$TMPDIR'
+  DEFAULT_TMP_DIRS_GLOBS='*.ktrace
+*.trace
+instruments*
+XcodeDistPipeline.*'
+  UT_DIRS="${FK_DISK_TMP_DIRS-$DEFAULT_TMP_DIRS}"
+  UT_GLOBS="${FK_DISK_TMP_DIRS_GLOBS-$DEFAULT_TMP_DIRS_GLOBS}"
+  UT_NAMES=()
+  while IFS= read -r g; do
+    [[ -n "$g" ]] || continue
+    [[ ${#UT_NAMES[@]} -eq 0 ]] || UT_NAMES+=(-o)
+    UT_NAMES+=(-name "$g")
+  done <<< "$UT_GLOBS"
+  while IFS= read -r ud; do
+    [[ -n "$ud" && ${#UT_NAMES[@]} -gt 0 ]] || continue
+    # $TMPDIR / ${TMPDIR} expand to the environment's; an entry that needs it while it is unset is skipped
+    if [[ "$ud" == *TMPDIR* && -z "${TMPDIR:-}" ]]; then continue; fi
+    ud="${ud//\$\{TMPDIR\}/${TMPDIR:-}}"; ud="${ud//\$TMPDIR/${TMPDIR:-}}"
+    [[ -d "$ud" ]] || continue
+    UD_REAL="$(cd "$ud" && pwd -P)"
+    # never sweep the filesystem root or the home folder, however the config spells the path
+    if [[ "$UD_REAL" == / || "$UD_REAL" -ef "${HOME:-/nonexistent}" ]]; then continue; fi
+    header "tmp (loose scratch in $UD_REAL, yours, older than 1h)"
+    while IFS= read -r d; do
+      [[ -n "$d" ]] || continue
+      if path_in "$d" "${FK_DISK_TMP_KEEP:-}"; then continue; fi
+      if [[ "$SWEPT" == *$'\n'"$d"$'\n'* ]]; then continue; fi
+      SWEPT="$SWEPT$d"$'\n'
+      remove_path "$d"
+    done < <(find "$UD_REAL" -mindepth 1 -maxdepth 1 ! -type l -user "$(id -un)" -mmin +60 \( "${UT_NAMES[@]}" \) 2>/dev/null || true)
+  done <<< "$UT_DIRS"
 fi
 
-# ---- 6. archives ----
+# ---- 7. archives ----
 ARCH_GLOB="${FK_DISK_ARCHIVES_GLOB:-}" ARCH_KEEP="${FK_DISK_ARCHIVES_KEEP:-3}"
 if want archives; then
   header "archives (keep the $ARCH_KEEP highest build numbers)"
@@ -244,4 +321,4 @@ if want archives; then
 fi
 
 echo
-echo "total $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable): $(fk_human "$TOTAL_KB") (derived-data, frames, tmp, archives; sims and worktrees listed above)"
+echo "total $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable): $(fk_human "$TOTAL_KB") (derived-data, frames, clips, tmp, archives; sims and worktrees listed above)"
