@@ -9,6 +9,8 @@
 # --dry-run edits nothing in the PR and prints the PR body diff instead.
 # gh runs with -R <owner/repo> (from [git] github, else the origin remote of [project] main_checkout),
 # so --pr works from any directory.
+# After writing, runs `factory night-lint --quiet --limit 12` on the night file and prints what it finds on stderr;
+# lint findings never change tick's exit status.
 # FK_NOW_HHMM overrides the clock in the log line (for tests).
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -77,6 +79,9 @@ else echo "warning: no '$OPEN' line in $FILE (log line still appended)" >&2; fi
 
 fill "$LOG_LINE" hhmm "${FK_NOW_HHMM:-$(date +%H:%M)}" id "$ITEM" sha "$SHA" note "$LOG" >> "$FILE"
 echo "logged to $FILE"
+
+# Lint the file we just wrote (read-only). Findings go to stderr and never change tick's exit status.
+node "$FK_KIT_DIR/cmd/night-lint.mjs" --file "$FILE" ${NIGHT:+--night "$NIGHT"} --quiet --limit 12 >&2 || true
 
 [[ -n "$PR" ]] || exit 0
 

@@ -34,9 +34,9 @@ const old = (p) => utimesSync(p, LONG_AGO, LONG_AGO);
 
 /**
  * Builds the tree and returns paths plus helpers.
- * `disk` and `extra` are TOML text appended inside [disk] and at the end of the file.
+ * `diskExtra` and `simExtra` are TOML lines appended inside [disk] and [sim]; `extraToml` text goes at the end of the file.
  */
-export function tree({ diskOverrides = {}, gitExtra = '', extraToml = () => '' } = {}) {
+export function tree({ diskOverrides = {}, diskExtra = '', simExtra = '', gitExtra = '', extraToml = () => '' } = {}) {
   const s = scratch();
   const root = realpathSync(s.dir);
   const p = (...a) => join(root, ...a);
@@ -50,6 +50,22 @@ export function tree({ diskOverrides = {}, gitExtra = '', extraToml = () => '' }
   writeFileSync(join(shots(1, 'a'), 'contact.png'), 'x');
   old(join(shots(1, 'a'), 'frames'));
   old(join(shots(1, 'b'), 'frames'));
+
+  // proof clips, each next to evidence that must stay (one nested, one upper-case, one in a night of its own)
+  writeFileSync(join(shots(1, 'a'), 'run.mp4'), 'x');
+  mkdirSync(join(shots(1, 'a'), 'sub'));
+  writeFileSync(join(shots(1, 'a'), 'sub', 'deep.mp4'), 'x');
+  writeFileSync(join(shots(1, 'a'), 'sub', 'verdict.json'), '{}');
+  writeFileSync(join(shots(1, 'b'), 'x.MP4'), 'x');
+  writeFileSync(join(shots(1, 'b'), 'verdict.json'), '{}');
+  writeFileSync(join(shots(2, 'c'), 'c.mp4'), 'x');
+  writeFileSync(join(shots(2, 'c'), 'flags.png'), 'x');
+
+  // the per-user temp dir ($TMPDIR): trace and upload leftovers among files that must stay
+  for (const d of ['XcodeDistPipeline.old', 'instruments-run', 'Run.trace', 'other-dir', 'dd-old1']) mkdirSync(p('utmp', d), { recursive: true });
+  mkdirSync(p('utmp', 'XcodeDistPipeline.new'));
+  for (const f of ['big.ktrace', 'notes.txt', 'my-instruments.log', 'fresh.ktrace']) writeFileSync(p('utmp', f), 'x');
+  for (const f of ['XcodeDistPipeline.old', 'instruments-run', 'Run.trace', 'other-dir', 'dd-old1', 'big.ktrace', 'notes.txt', 'my-instruments.log']) old(p('utmp', f));
 
   // build caches
   for (const d of ['dd-app', 'dd-test-Foo', 'dd-test-kit', 'dd-stale1', 'dd-stale2', 'dd-scripted', 'dd-literal', 'notes'])
@@ -120,8 +136,17 @@ echo "Filesystem 1024-blocks Used Available Capacity Mounted"
 echo "fake 1000 1000 $((gb * 1048576)) 1% /"
 `,
   );
+  // fake pgrep: lists the lines of pgrep.out (a test writes it to pretend `simctl io … recordVideo` is running)
+  writeFileSync(
+    join(bin, 'pgrep'),
+    `#!/usr/bin/env bash
+[[ -s '${p('pgrep.out')}' ]] && { cat '${p('pgrep.out')}'; exit 0; }
+exit 1
+`,
+  );
   chmodSync(join(bin, 'xcrun'), 0o755);
   chmodSync(join(bin, 'df'), 0o755);
+  chmodSync(join(bin, 'pgrep'), 0o755);
 
   const disk = {
     min_gb: 40,
@@ -167,20 +192,26 @@ dd_keep_patterns = ['resolve_dd "[^"]*" +[a-z][a-z-]*', '\\bdd-[a-z][a-z-]*[a-z]
 tmp_dir          = "${p('tmp')}"
 tmp_keep         = ["${p('tmp', 'dd-sim')}"]
 tmp_globs        = ["dd-*", "ee1*", "sg-*", "theme*", "tmp.*"]
-archives         = { glob = "build/App-*.xcarchive", keep = 3 }
+archives         = { glob = "build/App-*.xcarchive", keep = 3 }${diskExtra ? `\n${diskExtra}` : ''}
 
 [sim]
 protected = ["${SHOOTER.replace('A', '7')}", "box-test-kit", "Shooter Phone"]
 ephemeral = ["box-factory-*", "box-opus-*", "box-test-+([0-9])"]
-sweep     = ["box-*"]
+sweep     = ["box-*"]${simExtra ? `\n${simExtra}` : ''}
 ${extraToml(p)}`;
   writeFileSync(p('factory.toml'), toml);
 
-  const env = { FACTORY_TOML: p('factory.toml'), PATH: `${bin}:${process.env.PATH}`, DF_GB: '67' };
+  const env = { FACTORY_TOML: p('factory.toml'), PATH: `${bin}:${process.env.PATH}`, DF_GB: '67', TMPDIR: `${p('utmp')}/`, FK_CORESIM_DIR: p('coresim') };
   const names = (...a) => (existsSync(p(...a)) ? readdirSync(p(...a)).sort() : []);
   const xcrunCalls = () => (existsSync(xcrunLog) ? readFileSync(xcrunLog, 'utf8').trim().split('\n') : []);
   /** Replaces the fixture root in output so expectations don't depend on the scratch path. */
   const clean = (text) => text.split(root).join('<root>');
   const gitOut = (cwd, ...a) => git(cwd, ...a).toString().trim();
-  return { ...s, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, git: gitOut };
+  /** A simulator's data dir under the fake CoreSimulator root, `kb` kilobytes big. */
+  const simData = (udid, kb) => {
+    mkdirSync(p('coresim', udid, 'data'), { recursive: true });
+    writeFileSync(p('coresim', udid, 'data', 'blob'), Buffer.alloc(kb * 1024, 1));
+  };
+  const pgrepSays = (text) => writeFileSync(p('pgrep.out'), text);
+  return { ...s, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, simData, pgrepSays, git: gitOut };
 }

@@ -8,12 +8,31 @@ import { alive, freePort, isUp, startServer, waitFor } from './procs.mjs';
 
 const SECRET_VALUE = 'zz-not-a-real-secret-9f3';
 
+// A night file that lints clean (the fixture project is named "fixture").
+const NIGHT_TEXT = `# fixture factory: night 1
+- **Date:** 2026-10-17 · **Theme:** a test
+- **Branch target:** \`nightly/night-1\` → \`trunk\` (app)
+- **The human:** asleep
+- **Rules:** load the factory-orchestrator skill. This file holds state, not rules.
+- **Previous night:** none
+
+## Backlog
+- [x] lifetime-globe. abc1234 **Done**
+
+## With the user
+
+## Needs the phone
+
+## Log
+`;
+
 // The synthetic tree plus: [dev] ports, [seed], a secret file with a checked key, a night file,
 // a fake `gh`, an upstream night branch one commit ahead of the phone worktree, and (with `clean`)
 // none of the leftover dirt the base tree has.
-async function night({ clean = false, secret = `API_TOKEN = ${SECRET_VALUE}\n`, prAnswer = '[{"number":7,"state":"OPEN","isDraft":true}]' } = {}) {
+async function night({ clean = false, secret = `API_TOKEN = ${SECRET_VALUE}\n`, prAnswer = '[{"number":7,"state":"OPEN","isDraft":true}]', simExtra = '' } = {}) {
   const [a, b, c] = [await freePort(), await freePort(), await freePort()];
   const t = tree({
+    simExtra,
     gitExtra: 'phone_worktree     = "phone"',
     extraToml: (p) => `
 [worktree]
@@ -33,7 +52,7 @@ restore = "echo seeded >> ${p('seed.log')}; echo Restore done."
   });
   mkdirSync(join(t.main, 'cfg'));
   if (secret !== null) writeFileSync(join(t.main, 'cfg', 'secrets.cfg'), secret);
-  writeFileSync(join(t.state ?? t.p('state'), 'night-1.md'), '# Night 1\n\n## Log\n');
+  writeFileSync(join(t.state ?? t.p('state'), 'night-1.md'), NIGHT_TEXT);
   // an upstream night branch one commit past what the worktrees were cut from
   writeFileSync(join(t.main, 'next.txt'), 'next');
   t.git(t.main, 'add', 'next.txt');
@@ -54,7 +73,7 @@ if [[ "$1 $2" == "pr list" ]]; then echo '${prAnswer}'; else exit 1; fi
   );
   chmodSync(join(t.p('bin'), 'gh'), 0o755);
   const env = { ...t.env, FK_NOW_HHMM: '03:21' };
-  const end = (args = []) => factory(['end-night', '--night', '1', ...args], { env, cwd: t.main });
+  const end = (args = [], more = {}) => factory(['end-night', '--night', '1', ...args], { env: { ...env, ...more }, cwd: t.main });
   const kids = [];
   const up = async (...ports) => { for (const p of ports) kids.push(await startServer(t.root, p)); };
   const done = () => { for (const k of kids) k.kill('SIGKILL'); t.cleanup(); };
@@ -78,7 +97,12 @@ test('dry run: every step reports, nothing is done, dirty worktrees give exit 3'
     assert.equal(r.status, 3, r.stderr);
     const out = t.clean(r.stdout);
     assert.match(out, /^factory-end-night: dry run \(night 1; pass --apply to act\)\n/);
-    for (const h of ['1 disk', '2 simulators', '3 emulator seed', '4 secrets', '5 worktrees', '6 branch / PR', '7 log']) assert.match(out, new RegExp(`== ${h} ==`));
+    for (const h of ['1 disk', '2 simulators', '3 emulator seed', '4 secrets', '5 worktrees', '6 branch / PR', '7 log', '8 night file']) assert.match(out, new RegExp(`== ${h} ==`));
+    assert.match(out, /\n {2}night-lint: clean\nnight file: clean\n/);
+    // the proof videos of THIS night are counted (3 clips); night 2's are not
+    assert.match(out, /clips \(\*\.mp4 under the shots dir, night 1\)/);
+    assert.match(out, /\n {2}clips: 3 files, \S+ reclaimable /);
+    assert.ok(!out.includes('night-2/shots/c/ ('));
     assert.match(out, /disk: 67 GB free on \//);
     // sims: cleanup's three, plus the one [sim] sweep match that is neither ephemeral nor protected
     assert.match(out, /sims: 3 via factory-cleanup \+ 1 other box-\* = 4 would be removed \(kept .*box-test-kit/);
@@ -92,15 +116,16 @@ test('dry run: every step reports, nothing is done, dirty worktrees give exit 3'
     assert.match(out, /dirty worktrees: agent-dirty,night-1,phone\n/);
     assert.match(out, /origin\/nightly\/night-1 tip: \w{8} {2}next/);
     assert.match(out, /pr: PR #7 OPEN \(draft\)/);
-    assert.match(out, /would append to <root>\/state\/night-1\.md:\n {2}03:21 · end-night · \w{8} · — · disk 67 GB free; sims removed 4; seed would seed; token ok; dirty worktrees: agent-dirty,night-1,phone; PR #7 OPEN \(draft\)/);
-    assert.match(out, /factory-end-night: done \(exit 3: token empty or dirty worktree\)\n$/);
+    assert.match(out, /would append to <root>\/state\/night-1\.md:\n {2}03:21 · end-night · \w{8} · — · disk 67 GB free; clips \S+ to free; sims removed 4; seed would seed; token ok; dirty worktrees: agent-dirty,night-1,phone; PR #7 OPEN \(draft\)/);
+    assert.match(out, /factory-end-night: done \(exit 3: token empty, dirty worktree or night-file errors\)\n$/);
     assert.ok(!r.stdout.includes(SECRET_VALUE));
     // nothing happened
     assert.deepEqual(t.xcrunCalls(), []);
     assert.equal(t.read(t.seedLog), '');
     assert.equal(t.git(join(t.wt, 'phone'), 'rev-parse', 'HEAD'), phoneBefore);
-    assert.equal(t.read(t.nightFile), '# Night 1\n\n## Log\n');
+    assert.equal(t.read(t.nightFile), NIGHT_TEXT);
     assert.deepEqual(t.names('tmp'), ['dd-fresh', 'dd-old1', 'dd-sim', 'ee1-new', 'ee1-old', 'sg-abc', 'theme-x', 'tmp.zzz', 'unrelated']);
+    assert.ok(t.names('state', 'night-1', 'shots', 'a').includes('run.mp4') && t.names('utmp').includes('big.ktrace'));
   }));
 
 test('clean tree, secret set: exit 0', () =>
@@ -138,7 +163,16 @@ test('--apply: removes the sims, seeds, fast-forwards phone, logs one line; exit
     assert.match(out, /safe to remove: git worktree remove <root>\/main\/\.worktrees\/agent-merged\n/);
     assert.ok(!/safe to remove: .*agent-ahead/.test(out)); // it has a commit of its own
     assert.equal(t.git(join(t.wt, 'phone'), 'rev-parse', 'HEAD'), upstream);
-    assert.equal(t.read(t.nightFile), `# Night 1\n\n## Log\n03:21 · end-night · ${upstream.slice(0, 8)} · — · disk 67 GB free; sims removed 4; seed ok; token ok; dirty worktrees: none; PR #7 OPEN (draft)\n`);
+    const logged = t.read(t.nightFile);
+    assert.ok(logged.startsWith(NIGHT_TEXT));
+    assert.match(logged.slice(NIGHT_TEXT.length), new RegExp(`^03:21 · end-night · ${upstream.slice(0, 8)} · — · disk 67 GB free; clips \\S+ freed; sims removed 4; seed ok; token ok; dirty worktrees: none; PR #7 OPEN \\(draft\\)\\n$`));
+    // this night's videos are gone, everything else of the night stays, the next night's videos are untouched
+    assert.deepEqual(t.names('state', 'night-1', 'shots', 'a'), ['contact.png', 'sub']);
+    assert.deepEqual(t.names('state', 'night-1', 'shots', 'b'), ['verdict.json']);
+    assert.deepEqual(t.names('state', 'night-2', 'shots', 'c'), ['c.mp4', 'flags.png']);
+    assert.match(out, /\n {2}clips: 3 files, \S+ removed /);
+    assert.deepEqual(t.names('utmp'), ['XcodeDistPipeline.new', 'dd-old1', 'fresh.ktrace', 'my-instruments.log', 'notes.txt', 'other-dir']);
+    assert.match(out, /\nnight file: clean\n/); // the end-night line it just appended lints clean too
     assert.match(out, /appended to <root>\/state\/night-1\.md/);
     assert.deepEqual(t.names('tmp'), ['dd-fresh', 'dd-sim', 'ee1-new', 'unrelated']); // cleanup frames+tmp ran too
     // a second run changes nothing more about phone
@@ -174,7 +208,7 @@ test('an empty secret exits 3, names the key and file, never prints the value', 
     assert.match(r.stdout, /!!!! fix: you run tools\/bootstrap\.sh from the main checkout \(/);
     assert.match(r.stdout, /token: EMPTY/);
     assert.match(r.stdout, /token EMPTY; dirty worktrees: none/);
-    assert.match(r.stdout, /factory-end-night: done \(exit 3: token empty or dirty worktree\)/);
+    assert.match(r.stdout, /factory-end-night: done \(exit 3: token empty, dirty worktree or night-file errors\)/);
   }));
 
 test('a missing secret file exits 3; a missing key exits 3; the last assignment decides', () => {
@@ -266,4 +300,93 @@ test('bad arguments exit 1', () =>
     const r = t.end(['--bogus']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /unknown arg: --bogus/);
+  }));
+
+// ---- simulators that bloat: erased (never deleted), only above [sim] erase_above_gb ----
+
+const SHOOTER = '11111111-0000-0000-0000-00000000000A'; // "Shooter Phone", Booted
+const PLAIN = '11111111-0000-0000-0000-000000000008'; // "Plain Phone", Shutdown
+const ERASE_CONF = `shooter_udid = "${SHOOTER}"\nerase_at_end_night = ["Plain Phone"]\nerase_above_gb = 0.001`; // ~1 MB, so a test needs no big files
+const eraseCalls = (t) => t.xcrunCalls().filter((c) => /erase|shutdown (11111111-0000-0000-0000-00000000000[A8])/.test(c));
+
+test('erase: only a sim whose data dir is over the threshold; shutdown + erase, never delete; sizes reported', () =>
+  withNight({ clean: true, simExtra: ERASE_CONF }, async (t) => {
+    await t.up(t.ports.a, t.ports.b);
+    t.simData(SHOOTER, 3000); // over ~1 MB
+    t.simData(PLAIN, 100); // under it
+    const dry = t.end();
+    const dryOut = t.clean(dry.stdout);
+    assert.match(dryOut, /erase: Shooter Phone \(\S+\) data \S+ is over 0\.001 GB; would shut down and erase it \(the sim stays\)/);
+    assert.match(dryOut, /erase: Plain Phone \(\S+\) data \S+ is not over 0\.001 GB; left alone/);
+    assert.deepEqual(t.xcrunCalls(), []);
+
+    const r = t.end(['--apply']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /erase: Shooter Phone \(\S+\) data \S+ -> \S+: erased/);
+    assert.match(r.stdout, /erase: Plain Phone \(\S+\) data \S+ is not over 0\.001 GB; left alone/);
+    assert.deepEqual(eraseCalls(t), [`simctl shutdown ${SHOOTER}`, `simctl erase ${SHOOTER}`]);
+    assert.ok(!t.xcrunCalls().some((c) => c.includes(`delete ${SHOOTER}`) || c.includes(PLAIN)), 'never deleted, and the small one untouched');
+    assert.match(r.stdout, /sims erased 1;/); // in the log line
+  }));
+
+test('erase: a name or UDID in erase_at_end_night counts; under the default 6 GB nothing is erased', () =>
+  withNight({ clean: true, simExtra: `erase_at_end_night = ["${PLAIN}", "Shooter*"]` }, async (t) => {
+    await t.up(t.ports.a, t.ports.b);
+    t.simData(PLAIN, 3000);
+    t.simData(SHOOTER, 3000);
+    const r = t.end(['--apply']);
+    assert.match(r.stdout, /erase: Plain Phone \(\S+\) data \S+ is not over 6 GB; left alone/);
+    assert.match(r.stdout, /erase: Shooter Phone \(\S+\) data \S+ is not over 6 GB; left alone/);
+    assert.deepEqual(eraseCalls(t), []);
+    // lower the bar and the UDID entry and the glob entry both match
+    writeFileSync(t.p('factory.toml'), readFileSync(t.p('factory.toml'), 'utf8').replace('erase_at_end_night', 'erase_above_gb = 0.001\nerase_at_end_night'));
+    t.end(['--apply']);
+    assert.deepEqual(eraseCalls(t).sort(), [`simctl erase ${PLAIN}`, `simctl erase ${SHOOTER}`, `simctl shutdown ${PLAIN}`, `simctl shutdown ${SHOOTER}`].sort());
+  }));
+
+test('erase: a booted sim is left alone while simctl recordVideo runs; a shut-down one is not affected', () =>
+  withNight({ clean: true, simExtra: ERASE_CONF }, async (t) => {
+    await t.up(t.ports.a, t.ports.b);
+    t.simData(SHOOTER, 3000);
+    t.simData(PLAIN, 3000);
+    t.pgrepSays('4242\n');
+    const r = t.end(['--apply']);
+    assert.match(r.stdout, /erase: Shooter Phone \(\S+\) data \S+ is over 0\.001 GB but is booted and simctl recordVideo may be running \(4242\); left alone/);
+    assert.match(r.stdout, /erase: Plain Phone \(\S+\) data \S+ -> \S+: erased/);
+    assert.deepEqual(eraseCalls(t), [`simctl shutdown ${PLAIN}`, `simctl erase ${PLAIN}`]);
+  }));
+
+test('erase: skipped off macOS; nothing configured prints nothing', () => {
+  return Promise.all([
+    withNight({ clean: true, simExtra: ERASE_CONF }, async (t) => {
+      t.simData(SHOOTER, 3000);
+      const r = t.end(['--apply'], { FK_UNAME: 'Linux' });
+      assert.match(r.stdout, /erase: skipped: needs Xcode/);
+      assert.deepEqual(t.xcrunCalls(), []);
+    }),
+    withNight({ clean: true }, async (t) => {
+      const r = t.end(['--apply']);
+      assert.ok(!r.stdout.includes('erase:'));
+    }),
+  ]);
+});
+
+// ---- the night file is linted ----
+
+test('night-lint: errors make end-night exit 3 and are listed; warnings alone do not', () =>
+  withNight({ clean: true }, async (t) => {
+    await t.up(t.ports.a, t.ports.b);
+    writeFileSync(t.nightFile, NIGHT_TEXT.replace('## Log\n', '## Extras\n\n## Log\n')); // an extra section: a warning
+    let r = t.end();
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(r.stdout, /\n {4}warn {3}line \d+: extra section "## Extras"/);
+    assert.match(r.stdout, /\nnight file: 0 errors, 1 warning\n/);
+
+    writeFileSync(t.nightFile, NIGHT_TEXT.replace('## Needs the phone\n\n', '')); // a missing section: an error
+    r = t.end();
+    assert.equal(r.status, 3, r.stdout);
+    assert.match(r.stdout, /\n {4}error {2}missing section "## Needs the phone"/);
+    assert.match(r.stdout, /\nnight file: 1 error, 0 warnings\n/);
+    assert.match(r.stdout, /factory-end-night: done \(exit 3: token empty, dirty worktree or night-file errors\)/);
+    assert.equal(t.read(t.nightFile), NIGHT_TEXT.replace('## Needs the phone\n\n', '')); // lint never rewrites
   }));

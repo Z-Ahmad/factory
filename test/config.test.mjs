@@ -310,3 +310,19 @@ test('proof: [proof.ios.verdict] takes the verdict tool thresholds', () => {
   assert.match(sh, /^export FK_PROOF_IOS_VERDICT_LAUNCH_SEARCH_S='90'$/m);
   assert.match(sh, /^export FK_PROOF_IOS_BUDGETS='tools\/budgets.json'$/m);
 });
+
+test('disk and sim: clips, $TMPDIR sweeps and the simulator erase keys are in the schema', () => {
+  const add = (text, table, lines) => text.replace(`[${table}]\n`, `[${table}]\n${lines}\n`);
+  let text = add(validText, 'disk', 'clips = "keep"\ntmp_dirs = ["$TMPDIR", "$TMPDIR/sub"]\ntmp_dirs_globs = ["*.ktrace"]');
+  text = add(text, 'sim', 'erase_above_gb = 0.5\nerase_at_end_night = ["Shooter *", "ABC"]');
+  const r = load(text);
+  assert.deepEqual(r.errors, []);
+  const sh = toEnvSh(r.resolved, '/tmp/example/factory.toml');
+  assert.match(sh, /^export FK_DISK_CLIPS='keep'$/m);
+  assert.match(sh, /^export FK_DISK_TMP_DIRS='\$TMPDIR\n\$TMPDIR\/sub'$/m);
+  assert.match(sh, /^export FK_SIM_ERASE_ABOVE_GB='0.5'$/m);
+  assert.match(sh, /^export FK_SIM_ERASE_AT_END_NIGHT='Shooter \*\nABC'$/m);
+  // wrong types are caught
+  const bad = load(add(add(validText, 'disk', 'clips = true'), 'sim', 'erase_above_gb = "six"'));
+  assert.equal(bad.errors.length, 2);
+});

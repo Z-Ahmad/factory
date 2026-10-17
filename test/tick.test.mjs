@@ -118,8 +118,66 @@ test('an item with no open line: warns, still logs, exits 0', () =>
     const r = t.tick(['--night', '3', '--item', 'NOPE', '--sha', '0', '--log', 'x']);
     assert.equal(r.status, 0);
     assert.equal(r.stdout, `logged to ${t.night}\n`);
-    assert.equal(r.stderr, `warning: no '- [ ] NOPE.' line in ${t.night} (log line still appended)\n`);
+    assert.ok(r.stderr.startsWith(`warning: no '- [ ] NOPE.' line in ${t.night} (log line still appended)\n`), r.stderr); // then the lint, see below
     assert.equal(t.read(t.night), NIGHT + '09:05 · NOPE · 0 · x\n');
+  }));
+
+// A night file in the shape night-new writes (the project is "example-app"), so the lint has nothing to say.
+const CLEAN_NIGHT = `# example-app factory: night 3
+- **Date:** 2026-10-17 · **Theme:** a test
+- **Branch target:** \`factory/night-3\` → \`dev\` (app)
+- **The human:** asleep
+- **Rules:** load the factory-orchestrator skill. This file holds state, not rules.
+- **Previous night:** none
+
+## Backlog
+- [ ] dark-mode. **Add dark mode to settings** · IDEATE
+
+## With the user
+
+## Needs the phone
+
+## Log
+`;
+
+test('lint: tick prints what night-lint finds on stderr, and its own exit code and stdout are unchanged', () =>
+  withProject({}, (t) => {
+    const r = t.tick(['--night', '3', '--item', 'B2', '--sha', 'abc1234', '--log', 'dark mode done']);
+    assert.equal(r.status, 0, r.stderr); // the fixture night file has lint ERRORS; tick still succeeds
+    assert.equal(r.stdout, `ticked B2 in ${t.night}\nlogged to ${t.night}\n`);
+    assert.match(r.stderr, new RegExp(`^night-lint: ${t.night.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`));
+    assert.match(r.stderr, /\n {2}error {2}missing section "## With the user"\n/);
+    assert.match(r.stderr, /\n {2}warn {3}line 1: header: missing "- \*\*Date:\*\*/);
+    assert.match(r.stderr, /\nnight-lint: 3 errors, 5 warnings\n$/);
+    // the file is only ever changed by tick itself
+    assert.equal(t.read(t.night), NIGHT.replace('- [ ] B2. Add', '- [x] B2. abc1234 Add') + '09:05 · B2 · abc1234 · dark mode done\n');
+  }));
+
+test('lint: a clean night file makes tick print nothing extra; a stray line is only a warning', () =>
+  withProject({}, (t) => {
+    writeFileSync(t.night, CLEAN_NIGHT);
+    let r = t.tick(['--night', '3', '--item', 'dark-mode', '--sha', 'abc1234', '--log', 'done']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, ''); // --quiet: silent when there is nothing to report
+    assert.match(t.read(t.night), /^- \[x\] dark-mode\. abc1234 \*\*Add dark mode/m);
+
+    writeFileSync(t.night, t.read(t.night).replace('## With the user', 'a stray sentence\n\n## With the user'));
+    r = t.tick(['--night', '3', '--item', 'dark-mode', '--sha', 'abc1234', '--log', 'again']);
+    assert.equal(r.status, 0);
+    assert.match(r.stderr, /warn {3}line \d+: not an item line \(- \[ \] \{id\}\.\): a stray sentence/);
+    assert.match(r.stderr, /night-lint: 0 errors, 1 warning\n$/);
+  }));
+
+test('lint: tick prints at most 12 findings and counts the rest', () =>
+  withProject({}, (t) => {
+    const many = Array.from({ length: 20 }, (_, i) => `- [ ] item-${i}. Title`).join('\n');
+    const prose = Array.from({ length: 16 }, (_, i) => `prose ${i}`).join('\n'); // each a warning: not an item line
+    writeFileSync(t.night, CLEAN_NIGHT.replace('- [ ] dark-mode. **Add dark mode to settings** · IDEATE', `${many}\n${prose}`));
+    const r = t.tick(['--night', '3', '--item', 'item-1', '--sha', 'abc1234', '--log', 'x']);
+    assert.equal(r.status, 0);
+    assert.equal(r.stderr.split('\n').filter((l) => /^ {2}(warn|error)/.test(l)).length, 12);
+    assert.match(r.stderr, /\n {2}\.\.\. 4 more \(factory night-lint --file /);
+    assert.match(r.stderr, /night-lint: 0 errors, 16 warnings\n$/);
   }));
 
 test('an already ticked item is left alone (and warns)', () =>

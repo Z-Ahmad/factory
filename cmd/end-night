@@ -2,9 +2,14 @@
 # desc: end-of-night sweep: free disk, remove spare simulators, re-seed, check secrets, report worktrees and the PR, log one line
 # usage: factory end-night --night N [--apply] [--stop-emulators]
 # Dry-run by default: prints what it WOULD do. --apply does it. Every step prints one result line; all steps always run.
-#   1 disk       cleanup frames+tmp+sims (frames-age 0), then free GB on /
+#   1 disk       cleanup frames+clips+tmp+sims (frames-age 0), then free GB on /. clips = this night's proof videos
+#                ([disk] clips = "keep" leaves them); the size freed is reported. tmp includes $TMPDIR leftovers
+#                (traces, TestFlight upload scratch).
 #   2 sims       any other simulator matching [sim] sweep that cleanup's sims category doesn't match
-#                (never one in [sim] protected, by name or UDID)
+#                (never one in [sim] protected, by name or UDID). Then bloated ones are ERASED (shutdown + erase, never
+#                deleted): [sim] shooter_udid and every [sim] erase_at_end_night entry (name, UDID or glob) whose data dir
+#                is over [sim] erase_above_gb (default 6). Size before and after is reported. A booted sim is left alone
+#                while any `simctl io ... recordVideo` runs. macOS only.
 #   3 seed       [dev] wait_ports all listening -> [seed] restore (from the main checkout); --stop-emulators then SIGTERMs
 #                whatever listens on the [dev] all_ports (PIDs found via lsof, no pkill)
 #   4 token      read-only: each [never_touch] secret_nonempty file must exist and have a non-empty value for its key
@@ -14,8 +19,9 @@
 #                branch. Lists stale ones as "safe to remove". Deletes nothing.
 #   6 pr         the branch tip + PR state via gh
 #   7 log        --apply appends one summary line ([project] log_line) to the night file
-# Exit 0 normally; exit 3 if a secret is empty or missing, or a worktree has uncommitted work (after finishing every step);
-# exit 1 on a bad argument or a missing repo.
+#   8 night file `factory night-lint` on the night file (after the line above is appended); listed in the report
+# Exit 0 normally; exit 3 if a secret is empty or missing, a worktree has uncommitted work, or the night file has lint
+# errors (after finishing every step); exit 1 on a bad argument or a missing repo.
 # FK_NOW_HHMM overrides the clock in the log line (for tests).
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -62,7 +68,7 @@ g fetch origin --quiet 2>/dev/null || echo "  (git fetch origin failed; using lo
 
 # ---- 1. disk ----
 header "1 disk"
-CLEAN_ARGS=(--only frames --only tmp --only sims --frames-age 0)
+CLEAN_ARGS=(--only frames --only clips --only tmp --only sims --frames-age 0 --night "$NIGHT")
 if [[ "$APPLY" == 1 ]]; then CLEAN_ARGS=(--apply "${CLEAN_ARGS[@]}"); fi
 CLEAN_RC=0
 CLEAN_OUT="$("$FK_KIT_DIR/cmd/cleanup" "${CLEAN_ARGS[@]}" 2>&1)" || CLEAN_RC=$?
@@ -70,6 +76,7 @@ printf '%s\n' "$CLEAN_OUT" | sed 's/^/  /'
 if (( CLEAN_RC != 0 )); then echo "  (cleanup exited $CLEAN_RC)"; fi
 # sims cleanup handles = the indented "name (UDID, state)" lines in its sims section
 SIMS_N="$(printf '%s\n' "$CLEAN_OUT" | awk '/^== sims ==/{s=1; next} /^== /{s=0} s && /\([0-9A-F-]+, [A-Za-z]+\)$/ {n++} END{print n+0}')"
+CLIPS_NOTE="$(printf '%s\n' "$CLEAN_OUT" | sed -n 's/^clips: [0-9]* files\{0,1\}, \([0-9.]*[KMG]\) .*/\1/p' | head -n 1)"
 FREE="$(fk_free_gb /)"
 echo "disk: ${FREE} GB free on /"
 
@@ -97,6 +104,49 @@ elif [[ -n "$SWEEP" ]]; then
   echo "  skipped: needs Xcode"
 fi
 SIMS_TOTAL=$((SIMS_N + EXTRA))
+
+# Erase (never delete) the simulators that bloat: reinstalling an app leaves dead containers behind, and a shooter
+# sim that lives for weeks reaches 10 GB. An erase puts it back to factory state and keeps its UDID.
+ERASE_GB="${FK_SIM_ERASE_ABOVE_GB:-6}"
+ERASE_LIST="${FK_SIM_SHOOTER_UDID:-}"$'\n'"${FK_SIM_ERASE_AT_END_NIGHT:-}"
+ERASED=0
+dir_kb() { du -sk "$1" 2>/dev/null | awk '{print $1+0}' || true; }
+recording_pids() { pgrep -f 'simctl io .*recordVideo' 2>/dev/null | tr '\n' ' ' || true; }
+if [[ -n "${ERASE_LIST//[$'\n']/}" ]]; then
+  if fk_is_darwin && command -v xcrun >/dev/null 2>&1; then
+    DEV_DIR="${FK_CORESIM_DIR:-$HOME/Library/Developer/CoreSimulator/Devices}"
+    ERASE_KB="$(awk -v g="$ERASE_GB" 'BEGIN { printf "%d", g * 1048576 }')"
+    ERASE_RE='^[[:space:]]+(.+)[[:space:]]+\(([0-9A-F-]{36})\)[[:space:]]+\(([A-Za-z]+)\)'
+    while IFS= read -r line; do
+      [[ "$line" =~ $ERASE_RE ]] || continue
+      name="${BASH_REMATCH[1]}"; udid="${BASH_REMATCH[2]}"; state="${BASH_REMATCH[3]}"
+      glob_in "$udid" "$ERASE_LIST" || glob_in "$name" "$ERASE_LIST" || continue
+      before="$(dir_kb "$DEV_DIR/$udid/data")"
+      if (( before <= ERASE_KB )); then
+        echo "  erase: $name ($udid) data $(fk_human "$before") is not over ${ERASE_GB} GB; left alone"
+        continue
+      fi
+      if [[ "$state" == Booted ]]; then
+        rec="$(command -v pgrep >/dev/null 2>&1 && recording_pids || echo "unknown (no pgrep)")"
+        if [[ -n "${rec// /}" ]]; then
+          echo "  erase: $name ($udid) data $(fk_human "$before") is over ${ERASE_GB} GB but is booted and simctl recordVideo may be running (${rec% }); left alone"
+          continue
+        fi
+      fi
+      if [[ "$APPLY" == 1 ]]; then
+        xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
+        if xcrun simctl erase "$udid" >/dev/null 2>&1; then
+          ERASED=$((ERASED + 1))
+          echo "  erase: $name ($udid) data $(fk_human "$before") -> $(fk_human "$(dir_kb "$DEV_DIR/$udid/data")"): erased"
+        else echo "  erase: $name ($udid) data $(fk_human "$before"): erase failed" >&2; fi
+      else
+        echo "  erase: $name ($udid) data $(fk_human "$before") is over ${ERASE_GB} GB; would shut down and erase it (the sim stays)"
+      fi
+    done < <(xcrun simctl list devices 2>/dev/null || true)
+  else
+    echo "  erase: skipped: needs Xcode"
+  fi
+fi
 echo "sims: $SIMS_N via factory-cleanup + $EXTRA other ${SWEEP:+$(join_lines "$SWEEP") }= $SIMS_TOTAL $([[ "$APPLY" == 1 ]] && echo removed || echo "would be removed") (kept $(join_lines "${FK_SIM_PROTECTED:-}"))"
 
 # ---- 3. emulator seed ----
@@ -231,7 +281,10 @@ echo "pr: $PR"
 
 # ---- 7. log ----
 header "7 log"
-SUMMARY="disk ${FREE} GB free; sims removed ${SIMS_TOTAL}; seed ${SEED}; token ${TOKEN}; dirty worktrees: ${DIRTY_LIST:-none}; ${PR}"
+EXTRA_NOTE=""
+if [[ -n "$CLIPS_NOTE" && "$CLIPS_NOTE" != 0K ]]; then EXTRA_NOTE="; clips ${CLIPS_NOTE} $([[ "$APPLY" == 1 ]] && echo freed || echo "to free")"; fi
+if (( ERASED > 0 )); then EXTRA_NOTE="${EXTRA_NOTE}; sims erased ${ERASED}"; fi
+SUMMARY="disk ${FREE} GB free${EXTRA_NOTE}; sims removed ${SIMS_TOTAL}; seed ${SEED}; token ${TOKEN}; dirty worktrees: ${DIRTY_LIST:-none}; ${PR}"
 LINE="$(fk_fill "${FK_PROJECT_LOG_LINE:-$DEFAULT_LOG_LINE}" hhmm "${FK_NOW_HHMM:-$(date +%H:%M)}" id end-night sha "$TIP" note "— · ${SUMMARY}")"
 if [[ "$APPLY" == 1 ]]; then
   if [[ -f "$NIGHT_FILE" ]]; then printf '%s\n' "$LINE" >> "$NIGHT_FILE"; echo "  appended to $NIGHT_FILE"
@@ -239,6 +292,20 @@ if [[ "$APPLY" == 1 ]]; then
 else echo "  would append to $NIGHT_FILE:"; fi
 echo "  $LINE"
 
+# ---- 8. night file lint (read-only; errors make the exit 3, warnings only print) ----
+header "8 night file"
+if [[ -f "$NIGHT_FILE" ]]; then
+  LINT_RC=0
+  LINT_OUT="$(node "$FK_KIT_DIR/cmd/night-lint.mjs" --file "$NIGHT_FILE" --night "$NIGHT" 2>&1)" || LINT_RC=$?
+  printf '%s\n' "$LINT_OUT" | sed 's/^/  /'
+  if (( LINT_RC == 1 )); then EXIT=3; fi
+  LINT_STATE="$(printf '%s\n' "$LINT_OUT" | tail -n 1)"
+else
+  echo "  no such file: $NIGHT_FILE (not linted)"
+  LINT_STATE="no night file"
+fi
+echo "night file: ${LINT_STATE#night-lint: }"
+
 echo
-echo "factory-end-night: done (exit $EXIT$([[ $EXIT == 3 ]] && echo ": token empty or dirty worktree"))"
+echo "factory-end-night: done (exit $EXIT$([[ $EXIT == 3 ]] && echo ": token empty, dirty worktree or night-file errors"))"
 exit "$EXIT"

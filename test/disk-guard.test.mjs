@@ -36,7 +36,7 @@ test('below min: runs the [disk] low_cleanup categories, reports again, exits 0 
     assert.ok(!/== derived-data ==/.test(out) && !/== archives/.test(out) && !/== worktrees/.test(out));
     assert.match(out, /factory-disk-guard: 45 GB free after cleanup\n$/);
     assert.deepEqual(t.names('tmp'), ['dd-fresh', 'dd-sim', 'ee1-new', 'unrelated']);
-    assert.deepEqual(t.names('state', 'night-2', 'shots', 'c'), []); // frames-age 0 takes the new dump too
+    assert.deepEqual(t.names('state', 'night-2', 'shots', 'c'), ['c.mp4', 'flags.png']); // frames-age 0 takes the new dump too; clips are not in the default low_cleanup
     assert.equal(t.xcrunCalls().length, 4);
   }));
 

@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.9, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.11, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -174,14 +174,15 @@ scripts/factory night-new 1 --theme "first run"
 | `factory config get <key>` | ✓ | Prints one value, e.g. `factory config get git.github` |
 | `factory config env --sh` | ✓ | Prints every value as `FK_*` shell exports |
 | `factory tick` | ✓ | Checks off a backlog item in the night file and the PR checklist, and appends a log line. `--blocked "why"`, `--dry-run`, `--pr N` |
-| `factory cleanup` | ✓ | Lists what can be freed: old proof frames, stale build folders, temp files, extra archives, throwaway simulators, merged agent worktrees. Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>` |
+| `factory cleanup` | ✓ | Lists what can be freed: old proof frames, **proof videos (`clips`)**, stale build folders, temp files (in `/tmp` and in `$TMPDIR`), extra archives, throwaway simulators, merged agent worktrees. Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>`, `--night N` (limits `clips` to one night). See [`[disk]` and `[sim]`: what end-night frees](#disk-and-sim-what-end-night-frees) |
 | `factory disk-guard` | ✓ | Prints free disk space. Below `[disk] min_gb` it runs `cleanup --apply` on frames, temp files and simulators. Exits 2 if space is still below `floor_gb`, so the loop stops |
 | `factory dev-up` | ✓ | Starts the dev stack (`[dev] up`) in the background if its ports are down, then resets the test data. Does nothing when it's already up |
 | `factory dev-status` | ✓ | One line per dev port, up or down. Exit 1 if a required port is down |
 | `factory read-api up\|down` | ✓ | Runs a second API server on its own port (`[dev] read_api`) and stops only the one it started |
 | `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent. Shares installed dependencies and caches from the main checkout through symlinks, but makes npm workspace links and derived build outputs match the worktree's own branch, so a worker never borrows the main checkout's. See [`[worktree]`](#worktree-sharing-from-the-main-checkout) |
 | `factory preflight` | ✓ | Start of every firing: disk-guard, then dev-up, then a test-data reset. One summary line; it names the step that failed |
-| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` sweeps scratch files and temporary simulators. It checks that no required secret is blank and that every worktree is clean (exit 3 if not), then appends a final line to the log |
+| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` deletes the night's proof videos, sweeps scratch files and temporary simulators, and **erases** a simulator whose data has bloated (`[sim] shooter_udid`, `erase_at_end_night`). It checks that no required secret is blank, that every worktree is clean and that the night file lints without errors (exit 3 if not), then appends a final line to the log |
+| `factory night-lint [--night N \| --file <path>]` | ✓ | Checks a night file against the shape `night-new` writes and `tick` appends to: title, header bullets, the four sections in order, backlog lines per `[project] item_line`, log lines per `log_line`. Read-only, never rewrites. Errors exit 1; warnings print and exit 0. `tick` runs it after every write; `end-night` runs it and fails on errors. See [`night-lint`](#night-lint-what-it-checks) |
 | `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify`, `gh pr merge`, and starting or killing the dev stack outside `factory dev-up`. Silent when allowed (~45 ms), and it fails open on its own errors |
 | `factory stats [--night N]` | ✓ | Per-night statistics from the agent session transcripts plus GitHub, for charts: wall and active time, subagents by model, tool calls and tool time, estimated model hours, tokens (and cost for models you give prices), PR lines by area, builds, items shipped and blocked, questions asked. Nights are time windows you list in a JSON file; every event is assigned by its own timestamp. Writes `nights-stats.json` and `.csv`, prints a table. Read-only |
 | `factory night-new <N> [--from <prev>] [--theme "…"]` | ✓ | Starts the next night file from the template, carrying over the previous night's open and blocked items, "With the user" and "Needs the phone". Never overwrites |
@@ -209,8 +210,8 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[never_touch]` | no | Files no agent may edit, and scripts never to run inside a worktree |
 | `[dev]` | no | How to start the dev stack, and which ports mean it is up |
 | `[seed]` | no | Commands to snapshot and restore test data |
-| `[disk]` | no | Free-space thresholds, and what cleanup may delete |
-| `[sim]` | no | Simulator ids and names: the one proofs run on, protected ones, throwaway patterns |
+| `[disk]` | no | Free-space thresholds, and what cleanup may delete: caches, frames, **proof videos (`clips`)**, scratch in `/tmp` and `$TMPDIR` |
+| `[sim]` | no | Simulator ids and names: the one proofs run on, protected ones, throwaway patterns, and which ones end-night **erases** when they bloat |
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[stats]` | no | Where the session transcripts are, the nights (windows) file, the output folder, code areas, an optional price table |
@@ -243,6 +244,34 @@ build  = "npm run build -w packages/core"  # shell command, run from the worktre
 | `[[worktree.derived]]` | A build output that depends on source. If `source` is identical in the main checkout's HEAD and the worktree's HEAD (`git diff --quiet`), `path` is symlinked from the main checkout; otherwise `build` runs in the worktree, after the `node_modules` overlay exists, and the output is real. An existing link at `path` that now needs a build is removed first (the link only). A failed build is printed on stderr and `factory worktree` exits 1. A `path` must not also be in `cache_symlinks` (`factory config validate` says so) |
 
 **`copy_files` is only for values that are public by construction**, such as env files that end up in a browser bundle. A copy does not follow later edits to the original, and a copied secret sits in another folder, outside the places you guard. Secrets and anything private are never copied: leave them out, and workers must stop and report that they need them (see the worker rules in the skill). Listing a path in `[never_touch]` as well is a good habit.
+
+### `[disk]` and `[sim]`: what end-night frees
+
+A night's disk goes to proof videos, dead simulator app containers and tool scratch. `factory end-night --night N --apply` (and `factory cleanup`) take them back, and keep the evidence that matters: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages and logs.
+
+| Key | Default | What it does |
+|---|---|---|
+| `[disk] clips` | `"delete"` | `"delete"`: the `clips` cleanup category removes every `*.mp4` under `[project] shots_dir` (`{n}` = the night; a bare `factory cleanup` takes every night's, `--night N` one). `"keep"`: leaves them. `end-night` runs it for the night being closed, in a dry run too, and reports the size. |
+| `[disk] tmp_dirs` | `["$TMPDIR"]` | Extra scratch directories the `tmp` category also sweeps for loose **files or directories**. `$TMPDIR` is the per-user temp dir (`/var/folders/…/T/` on macOS), where Instruments traces and TestFlight upload scratch land; `/tmp` stays `[disk] tmp_dir`. `[]` turns it off. A `$TMPDIR/sub` entry works too. |
+| `[disk] tmp_dirs_globs` | `["*.ktrace", "*.trace", "instruments*", "XcodeDistPipeline.*"]` | The only names removed from `tmp_dirs`, and only top-level entries owned by you with an mtime over an hour old. Nothing else in `$TMPDIR` is touched. (`tmp_globs` still applies to `tmp_dir` alone.) |
+| `[sim] erase_above_gb` | `6` | End-night `--apply` **erases** (`simctl shutdown` + `simctl erase`, never delete) `[sim] shooter_udid` and every `erase_at_end_night` sim whose `data` directory is bigger than this many GB (decimals allowed). Reinstalling the app leaves dead containers behind; an erase takes them with it and keeps the UDID. |
+| `[sim] erase_at_end_night` | `[]` | More simulators to erase when bloated: names, UDIDs or globs. |
+
+End-night prints each sim's size before and after (a dry run says "would shut down and erase"). A booted simulator is left alone while any `simctl io … recordVideo` runs. The erase is macOS-only and skips cleanly elsewhere. Add `"clips"` to `[disk] low_cleanup` if `disk-guard` should also drop videos when space runs low (off by default).
+
+### `night-lint`: what it checks
+
+`factory night-lint [--night N | --file <path>] [--quiet] [--limit K]` reads the night file and never writes it. It checks the shape `night-new` renders and `tick` appends to, using `[project] item_line` and `log_line`:
+
+- **Title:** `# <name> factory: night N`, first line.
+- **Header bullets:** `Date` and `Theme` (one line), `Branch target`, `The human`, `Rules`, `Previous night`.
+- **Sections, in order:** `## Backlog`, `## With the user`, `## Needs the phone`, `## Log`.
+- **Backlog lines** (per `item_line`): an `[ ]` or `[x]` mark; an ID (a plain-English slug when `[loop] item_ids = "slug"`, the default); a sha (7–40 hex) right after the ID on `[x]` lines; then tags (`[...]` groups, or the words `IDEATE`, `TASTE`, `"no test"`). Indented lines continue the item.
+- **Log lines** (per `log_line`): `hh:mm · <id> · <sha or status word> · <note>`. The note may itself contain ` · `. The ID is a backlog ID, a free slug (`plan`, `phone`, `kit`, `morning`, `lesson`, `end-night`) or `TF <n>`. Two exceptions: one `FINAL (night N) · <summary>` line, and a line that is exactly `STOP`.
+
+**Errors** (exit 1) are what breaks the tools or the ledger: no title line or the wrong night number; a required section missing, repeated or out of order; a backlog line `tick` cannot parse (no ID); a done item without a sha; a duplicate backlog ID. **Warnings** (printed, exit 0) are everything else: a missing header bullet, an extra `##` section, a non-slug ID, a broken tag, a log line in the wrong shape, an unknown log ID, a second `FINAL` line, prose in the Backlog. Nights written before these rules existed warn a lot; that is expected, and nothing rewrites them.
+
+`tick` runs `night-lint --quiet --limit 12` after every write and prints the findings on stderr; its own exit code and stdout do not change. `end-night` runs it as step 8 (after appending its log line), lists the result, and exits 3 on errors, like a dirty worktree. Exit 2 is a bad argument or a missing file.
 
 ## Development
 
