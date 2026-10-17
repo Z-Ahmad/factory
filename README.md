@@ -2,7 +2,11 @@
 
 **Tooling for letting AI coding agents work through your backlog unattended, without shipping work that only looks done.**
 
-You write a short backlog before bed. An orchestrator agent (e.g. Claude Code running in a loop) takes one item at a time. It hands each item to a worker agent, which writes the code and records a video proof of the change running in the app. A script scores that video for visual defects. The orchestrator commits only what passes. In the morning you read one pull request and a log of what shipped, what got stuck, and what needs your eyes.
+**TL;DR**
+- **Plan**: Build a backlog connected to Linear or GitHub, then send it to an orchestrator.
+- **Execute**: Worker agents write the code and record video proofs of the running app changes.
+- **Verify**: A script scores the videos for visual bugs, and the orchestrator commits only what passes.
+- **Review**: Every morning, you just review one combined PR and a status log of what shipped, got stuck, or needs your eyes
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
