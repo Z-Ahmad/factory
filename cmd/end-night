@@ -2,7 +2,7 @@
 # desc: end-of-night sweep: free disk, remove spare simulators, re-seed, check secrets, report worktrees and the PR, log one line
 # usage: factory end-night --night N [--apply] [--stop-emulators]
 # Dry-run by default: prints what it WOULD do. --apply does it. Every step prints one result line; all steps always run.
-#   1 disk       cleanup frames+clips+tmp+sims (frames-age 0), then free GB on /. clips = this night's proof videos
+#   1 disk       cleanup frames+clips+tmp+sims+stale derived-data (frames-age 0; [disk] dd_auto = false skips derived-data), then free GB on /. clips = this night's proof videos
 #                ([disk] clips = "keep" leaves them); the size freed is reported. tmp includes $TMPDIR leftovers
 #                (traces, TestFlight upload scratch).
 #   2 sims       any other simulator matching [sim] sweep that cleanup's sims category doesn't match
@@ -69,6 +69,8 @@ g fetch origin --quiet 2>/dev/null || echo "  (git fetch origin failed; using lo
 # ---- 1. disk ----
 header "1 disk"
 CLEAN_ARGS=(--only frames --only clips --only tmp --only sims --frames-age 0 --night "$NIGHT")
+# stale derived data goes too ([disk] dd_auto = false turns it off); in-use builds are never stale
+if [[ "${FK_DISK_DD_AUTO:-true}" != false ]]; then CLEAN_ARGS+=(--only derived-data); fi
 if [[ "$APPLY" == 1 ]]; then CLEAN_ARGS=(--apply "${CLEAN_ARGS[@]}"); fi
 CLEAN_RC=0
 CLEAN_OUT="$("$FK_KIT_DIR/cmd/cleanup" "${CLEAN_ARGS[@]}" 2>&1)" || CLEAN_RC=$?

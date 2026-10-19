@@ -36,7 +36,8 @@ test('dry run decides per category and deletes nothing', () =>
     assert.match(out, /^factory-cleanup: dry run \(pass --apply to delete\)/);
     // derived-data: stale dd dirs go, kept names (listed, matched by glob, found in scripts) stay; dd-* scratch is theirs too
     assert.match(out, /keep list \(derived from scripts \+ base\):  app test-kit scripted literal  and test-\*/);
-    for (const gone of ['cache/dd-stale1', 'cache/dd-stale2', 'tmp/dd-old1', 'tmp/dd-fresh']) assert.ok(out.includes(`<root>/${gone}\n`), gone);
+    for (const gone of ['cache/dd-stale1', 'cache/dd-stale2']) assert.match(out, new RegExp(`<root>/${gone} {2}\\(stale \\d+h\\)\n`), gone);
+    for (const gone of ['tmp/dd-old1', 'tmp/dd-fresh']) assert.ok(out.includes(`<root>/${gone}\n`), gone);
     for (const kept of ['dd-app', 'dd-test-Foo', 'dd-test-kit', 'dd-scripted', 'dd-literal', 'notes', 'dd-sim'])
       assert.ok(!out.includes(`/${kept}\n`), kept);
     // sims: only ephemeral names, never a protected name or id

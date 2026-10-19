@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# desc: report free disk space; below the minimum, run cleanup (frames, tmp, sims) and stop the night if still under the floor
+# desc: report free disk space; below the minimum, run cleanup (frames, tmp, sims, stale derived-data) and stop the night if still under the floor
 # usage: factory disk-guard [--min <GB>] [--floor <GB>]
 # Prints free GB on /. Below --min ([disk] min_gb, default 40): runs `factory cleanup --apply` on the
-# [disk] low_cleanup categories (default frames, tmp, sims) with --frames-age 0, then prints free GB again.
+# [disk] low_cleanup categories (default frames, tmp, sims, derived-data) with --frames-age 0, then prints free GB again.
 # Exit 0 when fine, 2 when still below --floor ([disk] floor_gb, default 20) so the orchestrator stops,
 # 1 on a bad argument.
 set -euo pipefail
@@ -11,7 +11,8 @@ set -euo pipefail
 MIN="${FK_DISK_MIN_GB:-40}" FLOOR="${FK_DISK_FLOOR_GB:-20}"
 LOW_CLEANUP="${FK_DISK_LOW_CLEANUP:-frames
 tmp
-sims}"
+sims
+derived-data}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --min) MIN="${2:?}"; shift 2 ;;

@@ -41,6 +41,9 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 
    | key | default | means |
    |---|---|---|
+   | `disk.dd_stale_hours` | 6 | derived data with no file written for this long is stale; a build in use never is |
+   | `disk.dd_roots_extra` / `dd_extra_keep` | `[]` / Xcode's shared caches (`ModuleCache.noindex` …) | extra roots (e.g. `~/Library/Developer/Xcode/DerivedData`) pruned by the same age rule |
+   | `disk.dd_auto` | `true` | `preflight` prunes stale derived data every firing (`dd pruned N (X freed)` in its line) and `end-night --apply` does too; `false` = manual `factory cleanup` only |
    | `disk.clips` | `delete` | end-night deletes the night's proof `*.mp4` (`keep` leaves them); verdicts, flags, contact sheets and rest frames always stay (§10) |
    | `disk.tmp_dirs` / `tmp_dirs_globs` | `$TMPDIR` / `*.ktrace *.trace instruments* XcodeDistPipeline.*` | loose traces and upload scratch older than 1 h, swept by `cleanup --only tmp` |
    | `sim.erase_above_gb` | 6 | end-night `--apply` erases (never deletes) `sim.shooter_udid` and `sim.erase_at_end_night` sims whose data is bigger |
@@ -58,7 +61,7 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 
 ## 2. Preflight: every firing
 
-1. `factory preflight` prints one line: disk-guard → dev-up → seed restore. Non-zero names the failing step:
+1. `factory preflight` prints one line: stale-derived-data prune → disk-guard → dev-up → seed restore. Non-zero names the failing step:
    disk 2 → stop; dev-up 1/2 → read its stderr, retry `factory dev-up` once, then stop and log; seed 3 → log and stop.
    Never start or kill the dev stack any other way (the hook denies it).
 2. **Worktree.** First firing: `factory worktree night-<n>` (prints the push command), then enter it with
@@ -90,8 +93,8 @@ scenario and cell**, frames side by side, plus a recommendation, in `<state_dir>
 
 Templates with slots: **references/briefs.md**. Fill every slot; a missing slot is a bug in the brief.
 - **Implementer** (`models.implement`, foreground): the item text verbatim; the rules file's guardrails paragraph,
-  pasted whole; the hard gates; the unit-test line (`tests.unit`); the reference source when porting (required slot:
-  the file(s) and constants to copy exactly); the worktree path; ≤ `implementer_words`.
+  pasted whole; the hard gates; the unit-test line (`tests.unit`); the reference when the feature exists elsewhere (required
+  slot: what it does, and which approved-look constants carry over, by file); the worktree path; ≤ `implementer_words`.
 - **Shooter** (`models.shoot`): the item's Prove line, the scenario(s), the matrix to run, the out dir
   (`<shots_dir>/<id>-<label>`), its own simulator UDID; ≤ `shooter_words`, paths first.
 - One simulator per agent, named by UDID on every call. The shooter sim (`sim.shooter_udid`) serves one agent at a time;
@@ -164,6 +167,8 @@ the earlier night measured.
      must point at those, never at a clip, and re-judging a clip after end-night is not possible; do it before.
    - **Bloated simulators.** The shooter sim and `sim.erase_at_end_night` are erased (not deleted) when their data is
      over `sim.erase_above_gb`; a booted one is skipped while a `recordVideo` runs. Size before and after is in the output.
+   - **Stale derived data** (no write for `disk.dd_stale_hours`) in `disk.dd_root` and `dd_roots_extra`; builds in use stay.
+     `factory cleanup` also drops the `disk.dd_root` builds and `sim.ephemeral` sims named for an agent worktree it removes.
    - **Scratch** in `/tmp` and `$TMPDIR` (Instruments traces, TestFlight upload dirs) older than an hour.
    Never `rm` videos, traces or app containers yourself before this step; if the disk is low mid-night,
    `factory cleanup` (dry run, then `--apply`) is the same sweep.

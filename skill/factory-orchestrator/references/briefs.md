@@ -31,8 +31,9 @@ You are implementing backlog item {id} for {project}, night {n}. Model: {models.
 Item (verbatim from the night file):
 {item_text}
 
-Reference source (required when porting; else "none"): {reference_source}
-  Port constants, curves and timings exactly from these files; review compares your frames with a recording of them.
+Reference (what the feature does elsewhere, and which approved-look constants carry over, named by file; else "none"):
+  {reference_source}
+  Read it for behaviour. Copy exactly only the constants named here; design the rest for this platform.
 
 Guardrails (the project's own, from {rules_file}; they bind):
 {guardrails_paragraph}
@@ -105,4 +106,4 @@ leave them clearly marked for the implementer. Return at most {words} words.
 | `{guardrails_paragraph}`, `{hard_gates}`, `{rules_file}` | the rules file (`loop.rules`) |
 | `{tests.unit}`, `{tests.gate}` | `factory config get tests` |
 | `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the rules file's matrix table; the item; `proof.ios.dd` |
-| `{reference_source}` | the item, or the rules file's "port from the reference first" rule |
+| `{reference_source}` | the item, plus the rules file's rule on what carries over between platforms (an exact port only for a look the human approved) |

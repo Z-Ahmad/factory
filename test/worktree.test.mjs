@@ -471,9 +471,10 @@ test('fk_dirt hides copied files and derived outputs along with the cache symlin
 
 // ---- preflight ----
 
-async function preflightProject({ restore = 'echo seeded >> {seedlog}; echo All matches.', up = () => 'true', timeout = 2 } = {}) {
+async function preflightProject({ restore = 'echo seeded >> {seedlog}; echo All matches.', up = () => 'true', timeout = 2, treeOpts = {} } = {}) {
   const a = await freePort();
   const t = tree({
+    ...treeOpts,
     extraToml: (p) => `
 [dev]
 up         = "${up(p, a)}"
@@ -561,4 +562,25 @@ test('preflight touches no git state and takes no arguments', () =>
     assert.equal(t.git(t.main, 'for-each-ref'), before);
     assert.equal(t.git(t.main, 'worktree', 'list'), worktrees);
     assert.equal(t.run(['--now']).status, 1);
+  }));
+
+test('preflight: prunes stale derived data first, leaves a build in use, and says how much it freed', () =>
+  withPreflight({ treeOpts: { diskOverrides: { dd_auto: true } } }, async (t) => {
+    mkdirSync(t.p('cache', 'dd-busy'));
+    writeFileSync(t.p('cache', 'dd-busy', 'obj.o'), 'x'); // written just now: in use
+    t.kids.push(await startServer(t.root, t.port));
+    const r = t.run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^factory-preflight: ok - dd pruned 2 \(\S+ freed\); disk 67 GB free; dev up \(no-op\); seed ok/);
+    assert.equal(r.stdout.split('\n').filter(Boolean).length, 1);
+    assert.deepEqual(t.names('cache'), ['dd-app', 'dd-busy', 'dd-literal', 'dd-scripted', 'dd-test-Foo', 'dd-test-kit', 'notes']);
+  }));
+
+test('preflight: dd_auto = false leaves derived data alone and adds nothing to the line', () =>
+  withPreflight({}, async (t) => {
+    t.kids.push(await startServer(t.root, t.port));
+    const r = t.run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.includes('dd pruned'));
+    assert.ok(t.names('cache').includes('dd-stale1'));
   }));

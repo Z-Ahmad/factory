@@ -63,7 +63,7 @@ guardrails by eye:
 - motion that the finger can't interrupt (a scenario that grabs mid-flight should show it follow or reverse);
 - two states' text on screen at once, or a fade through an empty container;
 - a control visible but inert, or a second surface where the project has one;
-- a port that drifted from its reference: compare with a recording of the reference side by side, frame for frame.
+- a carried-over constant that drifted from its reference: compare with a recording of the reference side by side, frame for frame.
 
 ## 6. Agent reports
 

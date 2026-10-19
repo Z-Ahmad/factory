@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # desc: before a firing: check disk, make sure the dev stack is up, restore the seed; one summary line, one exit code
 # usage: factory preflight
+# First (not a step that can fail): unless [disk] dd_auto = false, `cleanup --apply --only derived-data` prunes stale
+# derived-data (no file changed for [disk] dd_stale_hours, default 6; in-use builds are left alone) and adds
+# "dd pruned N (X freed)" to the line when it removed something.
 # Runs, in order and stopping at the first failure: disk-guard, dev-up (without its own seed restore), then [seed] restore.
 # Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; dev up (no-op); seed ok", or
 # "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
@@ -16,6 +19,14 @@ fail() { # fail <step> <rc> <output>
   printf '%s\n' "$3" >&2
   exit "$2"
 }
+
+DD=""
+if [[ "${FK_DISK_DD_AUTO:-true}" != false ]] && { [[ -n "${FK_DISK_DD_ROOT:-}" ]] || [[ -n "${FK_DISK_DD_ROOTS_EXTRA:-}" ]]; }; then
+  PRUNE="$("$FK_KIT_DIR/cmd/cleanup" --apply --only derived-data 2>&1 || true)"
+  N="$(printf '%s\n' "$PRUNE" | sed -n 's/^derived-data: \([0-9][0-9]*\) stale.*, \([0-9.]*[KMG]\) freed.*/\1/p' | tail -n 1)"
+  G="$(printf '%s\n' "$PRUNE" | sed -n 's/^derived-data: \([0-9][0-9]*\) stale.*, \([0-9.]*[KMG]\) freed.*/\2/p' | tail -n 1)"
+  if [[ -n "$N" && "$N" != 0 ]]; then DD="dd pruned $N ($G freed); "; fi
+fi
 
 if OUT="$("$FK_KIT_DIR/cmd/disk-guard" 2>&1)"; then RC=0; else RC=$?; fi
 (( RC == 0 )) || fail disk-guard "$RC" "$OUT"
@@ -33,4 +44,4 @@ if [[ -z "${FK_SEED_RESTORE:-}" ]]; then SEED="seed skipped (no [seed] restore)"
   SEED="seed ok${LAST:+ ($LAST)}"
 fi
 
-echo "factory-preflight: ok - $DISK; $DEV; $SEED"
+echo "factory-preflight: ok - ${DD}$DISK; $DEV; $SEED"

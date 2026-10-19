@@ -36,7 +36,7 @@ const old = (p) => utimesSync(p, LONG_AGO, LONG_AGO);
  * Builds the tree and returns paths plus helpers.
  * `diskExtra` and `simExtra` are TOML lines appended inside [disk] and [sim]; `extraToml` text goes at the end of the file.
  */
-export function tree({ diskOverrides = {}, diskExtra = '', simExtra = '', gitExtra = '', extraToml = () => '' } = {}) {
+export function tree({ simsExtra = [], diskOverrides = {}, diskExtra = '', simExtra = '', gitExtra = '', extraToml = () => '' } = {}) {
   const s = scratch();
   const root = realpathSync(s.dir);
   const p = (...a) => join(root, ...a);
@@ -70,6 +70,9 @@ export function tree({ diskOverrides = {}, diskExtra = '', simExtra = '', gitExt
   // build caches
   for (const d of ['dd-app', 'dd-test-Foo', 'dd-test-kit', 'dd-stale1', 'dd-stale2', 'dd-scripted', 'dd-literal', 'notes'])
     mkdirSync(p('cache', d), { recursive: true });
+  // stale1 and stale2 were last written long ago; the age rule only takes dirs nobody has touched
+  old(p('cache', 'dd-stale1'));
+  old(p('cache', 'dd-stale2'));
 
   // scratch dir
   const tmpNames = ['dd-old1', 'dd-sim', 'ee1-old', 'ee1-new', 'sg-abc', 'theme-x', 'tmp.zzz', 'unrelated', 'dd-fresh'];
@@ -110,7 +113,7 @@ export function tree({ diskOverrides = {}, diskExtra = '', simExtra = '', gitExt
   const bin = p('bin');
   mkdirSync(bin);
   const xcrunLog = p('xcrun.log');
-  const list = SIMS.map(([n, u, st]) => `    ${n} (${u}) (${st}) `).join('\n');
+  const list = [...SIMS, ...simsExtra].map(([n, u, st]) => `    ${n} (${u}) (${st}) `).join('\n');
   writeFileSync(
     join(bin, 'xcrun'),
     `#!/usr/bin/env bash
@@ -153,9 +156,10 @@ exit 1
     floor_gb: 20,
     low_cleanup: ['frames', 'tmp', 'sims'],
     frames_age_days: 2,
+    dd_auto: false,
     ...diskOverrides,
   };
-  const q = (v) => (Array.isArray(v) ? `[${v.map(q).join(', ')}]` : typeof v === 'number' ? String(v) : `"${v}"`);
+  const q = (v) => (Array.isArray(v) ? `[${v.map(q).join(', ')}]` : typeof v === 'number' || typeof v === 'boolean' ? String(v) : `"${v}"`);
   const toml = `[kit]
 repo = "https://example.invalid/factory.git"
 ref  = "v0.0.0"
@@ -185,6 +189,7 @@ min_gb           = ${disk.min_gb}
 floor_gb         = ${disk.floor_gb}
 low_cleanup      = ${q(disk.low_cleanup)}
 frames_age_days  = ${disk.frames_age_days}
+dd_auto          = ${disk.dd_auto}
 dd_root          = "${p('cache')}"
 dd_keep          = ["app", "test-kit", "test-*"]
 dd_keep_derive   = ["ios/scripts/*.sh"]
@@ -213,5 +218,10 @@ ${extraToml(p)}`;
     writeFileSync(p('coresim', udid, 'data', 'blob'), Buffer.alloc(kb * 1024, 1));
   };
   const pgrepSays = (text) => writeFileSync(p('pgrep.out'), text);
-  return { ...s, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, simData, pgrepSays, git: gitOut };
+  /** Sets a dir's mtime (and its direct children's) `hours` ago. */
+  const ago = (path, hours) => {
+    const d = new Date(Date.now() - hours * 3600e3);
+    utimesSync(path, d, d);
+  };
+  return { ...s, ago, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, simData, pgrepSays, git: gitOut };
 }

@@ -351,6 +351,9 @@ export const SCHEMA = table({
       worktree_branch: str(REQ),
       push_branch: str(REQ),
       agent_worktrees: str(),
+      // glob for agent branches (e.g. "factory/lane-*"): cleanup strips its literal prefix to get the lane slug its
+      // derived data and simulators are named for
+      agent_branches: str(),
       protected_worktrees: strs(),
       phone_worktree: str(),
       never_push: strs(),
@@ -415,6 +418,13 @@ export const SCHEMA = table({
     dd_keep: strs(),
     dd_keep_derive: strs(),
     dd_keep_patterns: strs(),
+    // Stale-build pruning: a derived-data dir with nothing modified for dd_stale_hours (default 6) is stale.
+    // dd_roots_extra: more roots whose child dirs are pruned the same way (e.g. "~/Library/Developer/Xcode/DerivedData");
+    // dd_extra_keep: globs never pruned there. dd_auto (default true): preflight and end-night prune stale dirs themselves.
+    dd_stale_hours: int(),
+    dd_roots_extra: strs(),
+    dd_extra_keep: strs(),
+    dd_auto: bool(),
     tmp_dir: str(),
     tmp_keep: strs(),
     tmp_globs: strs(),
