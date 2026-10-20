@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "A kit for running an overnight agent factory on a project. Configured by the project's factory.toml.",
   "private": true,
   "license": "UNLICENSED",

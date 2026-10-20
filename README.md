@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.13, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.14, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -188,8 +188,11 @@ scripts/factory night-new 1 --theme "first run"
 | `factory night-new <N> [--from <prev>] [--theme "…"]` | ✓ | Starts the next night file from the template, carrying over the previous night's open and blocked items, "With the user" and "Needs the phone". Never overwrites |
 | `factory install-skill` | ✓ | Links the `factory-orchestrator` skill into `~/.claude/skills`, so Claude Code loads the loop. `--dry-run`, `--uninstall` |
 | `factory help` | ✓ | Lists the commands |
-| `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only) |
+| `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only). `--orientation landscape` turns the simulator first and back after (see [orientation](#proof-orientation-builder-slots-and-same-load-compares)); `verdict.json` records the load at the start and end of the clip |
 | `factory proof-matrix --scenario <s>` | ✓ | Runs one scenario across the cells in `[proof.cell.*]` (themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails |
+| `factory proof-compare --scenario <s> --base <ref>` | ✓ | Base and patch side by side at the same load: builds the base once in its own worktree, alternates base and patch runs on one simulator, writes `compare.md` and a `COMPARE` line with median holds and loads. `--base-dd` for a prebuilt base, `--slot` to gate each run |
+| `factory slot wait --dd <name>` | ✓ | The builder-slot gate: blocks until fewer than `[slot] builders` (default 2) other builds, proofs and leftover booted simulators run and the load is under `[slot] max_load`, and prints why it waits. `slot status` for one line |
+| `factory wip-save <worktree> --base <ref> --out <patch>` | ✓ | Saves a stopped agent's uncommitted work as a `git diff --binary` patch (modes, binaries, deletions) without running git in its worktree: exports `<base>` (plus `--on <patch>`) to a scratch repo, copies the worktree's files over, and checks the patch applies |
 | `factory proof-verdict <clip.mp4>` | ✓ | Scores any recording for flash, hold, bounce and the app's fail markers. No simulator needed |
 | `factory proof-calibrate <manifest.json>` | ✓ | Runs the verdict over your own labelled clips ("this one must fail") and prints a confusion table, so threshold changes are checked against real defects |
 | `factory clip-frames <clip.mp4> …` | ✓ | Grabs frames or contact sheets from a simulator recording without seeking (seeking those files returns stale frames) |
@@ -217,6 +220,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[stats]` | no | Where the session transcripts are, the nights (windows) file, the output folder, code areas, an optional price table |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
+| `[slot]`, `[wip]` | no | The builder-slot gate's limits; what `wip-save` never copies |
 | `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch); `item_ids = "slug"` (default) makes `tick` refuse item IDs that aren't plain-English slugs (`lifetime-globe`, not `G3`), `"any"` turns it off |
 
 `{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{id}` (item) are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
@@ -231,6 +235,18 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[preflight] keep_awake_hours` | `12` | How long each `caffeinate` lasts; a later preflight starts a new one if it has ended. |
 
 The proof commands check the build they install, too: without `--build`, `factory proof` and `proof-matrix` print an `app:` line (when it was built and from which commit; matrix.md starts with it) and warn when the installed app is older than the source. `[proof.ios] sources` (git pathspecs, default the whole tree) says which changes count; `[proof.ios] stale_app = "refuse"` makes a stale app exit 3 instead of warning.
+
+### Proof orientation, builder slots and same-load compares
+
+| Key | Default | What it does |
+|---|---|---|
+| `[proof.ios] orientation_cmd` | unset | A command that turns a simulator: `{udid}`, `{orientation}` and `{dd}` are filled in, run from the project root. `factory proof --orientation landscape` runs it before install and runs it again with `portrait` after the clip (on failure too: a turn persists on the simulator). Simulators have no rotate command, so a project typically drives `XCUIDevice.shared.orientation` from a UI-test method with `xcodebuild test-without-building`; that costs a test-runner launch, so it happens once per proof. |
+| `[proof.ios] orientation_env` | unset | An environment variable the app reads at launch, set to the orientation (`env_prefix` is prepended, as for `flag_env`). Either key, or both, may be set. |
+| `[proof.cell.<c>] orientation` | unset | The cell runs with `--orientation <o>`; `proof-matrix --orientation <o>` is the default for cells without one. matrix.md shows it next to the device. |
+| `[slot] builders` | `2` | How many builds and proofs may run at once, the caller included. A booted simulator no running proof uses (a stopped agent's) counts as one, `[sim] protected` ones never. |
+| `[slot] max_load` | unset | The highest 1-minute load average `slot wait` starts at. |
+| `[slot] poll_s` / `timeout_s` | `15` / `3600` | How often `slot wait` looks, and when it gives up (exit 2). |
+| `[wip] exclude` | `xcuserdata .build DerivedData node_modules .DS_Store` | Names or paths `wip-save` never copies (the worktree's `.gitignore` applies too, and so do `[worktree] cache_symlinks` and `copy_files`). Setting it replaces the list; add secrets files that are not gitignored. |
 
 ### `[worktree]`: sharing from the main checkout
 

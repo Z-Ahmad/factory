@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # usage: factory proof <scenario> --out <dir> [--udid <sim>] [--seconds N] [--fps 20] [--build] [--dd <deriveddata>]
 #                      [--env KEY=VAL ...] [--no-install] [--keep-frames] [--system-appearance light|dark] [--warm-resume]
-#                      [--no-gate] [--verdict-skip S] [--verdict-arg ARG ...] [--plan]
+#                      [--no-gate] [--verdict-skip S] [--verdict-arg ARG ...] [--orientation <o>] [--source-root <dir>|none]
+#                      [--plan]
 #                      [--<flag> VAL ...]   one per key of [proof.ios] flag_env (e.g. --appearance), and --trip when launch_env
 #                                           has a {trip} (default: [seed] trip)
 # Scenario -> reviewable evidence with no taps and no Simulator.app: installs the built app on a SIMULATOR, boots it headless,
@@ -13,7 +14,8 @@
 #   rest-start.png / rest-end.png   a settled frame just after launch ([proof.ios] rest_at_s) / the last frame
 #   steps.log          the simulator log lines containing a [proof.ios] log_markers or fail_markers text
 #   verdict.json       the machine verdict (verdict/proof-verdict.mjs): flash/ghost, hold/stall, bounce and fail-marker findings
-#                      with timestamps, worst values, PASS/FAIL; plus one `VERDICT: PASS|FAIL (...)` line in the output
+#                      with timestamps, worst values, PASS/FAIL, and the 1-minute load when the clip started and ended
+#                      ("load": {"start", "end"}: a hold measured under load is the load's); plus one `VERDICT:` line
 #   flags.png          only when something is flagged: each flagged event as a before / flagged / after frame triple
 # Exit 0 PASS, 4 FAIL (a FAIL verdict; 0 with --no-gate), 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 error.
 # --no-gate: record and write the verdict, but exit 0 on a FAIL.
@@ -22,6 +24,11 @@
 # --warm-resume: after the clip's N seconds, background the app (Settings comes forward), wait 2s, foreground the same process
 # (no relaunch), and record 4s more.
 # --system-appearance is the SIMULATOR's own light/dark, set before install/launch.
+# --source-root: the tree the app was built from, for the stale-app check (default the project root; none skips it).
+# --orientation <o> (e.g. landscape, portrait): [proof.ios] orientation_env, when set, hands <o> to the app (env_prefix
+# prepended, as for flag_env); [proof.ios] orientation_cmd, when set, turns the simulator before install
+# ({udid} {orientation} {dd} filled in, run from the project root) and turns it back to portrait after the clip, on
+# failure too, since a turn persists on the simulator. At least one of the two must be set. Portrait needs neither.
 # --plan: print the launch environment the run would use (the password shown as <password>) and stop; touches no simulator.
 # Simulators only: never a physical device. Needs ffmpeg, and node.
 set -euo pipefail
@@ -46,7 +53,7 @@ FLAG_NAMES="$(node -e '
 flag_known() { printf '%s\n' "$FLAG_NAMES" | grep -qxF -- "$1"; }
 
 UDID="${FK_SIM_SHOOTER_UDID:-}" SCENARIO="" OUT="" SECONDS_REC="${FK_PROOF_IOS_SECONDS:-20}" BUILD=0 DD_ARG="" FPS="${FK_PROOF_IOS_FPS:-20}"
-KEEP_FRAMES=0 INSTALL=1 SYSTEM_APPEARANCE="" WARM_RESUME=0 GATE=1 VERDICT_SKIP="" PLAN=0
+KEEP_FRAMES=0 INSTALL=1 SYSTEM_APPEARANCE="" WARM_RESUME=0 GATE=1 VERDICT_SKIP="" PLAN=0 ORIENTATION="" SOURCE_ROOT="$FK_ROOT"
 EXTRA_ENV=() VERDICT_ARGS=() FLAG_VALUES=()   # FLAG_VALUES: "name=value"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,6 +74,8 @@ while [[ $# -gt 0 ]]; do
     --verdict-skip) VERDICT_SKIP="${2:?}"; shift 2 ;;
     --verdict-arg) VERDICT_ARGS+=("${2:?}"); shift 2 ;;
     --plan) PLAN=1; shift ;;
+    --orientation) ORIENTATION="${2:?}"; shift 2 ;;
+    --source-root) SOURCE_ROOT="${2:?}"; shift 2 ;;
     --*) if flag_known "${1#--}"; then FLAG_VALUES+=("${1#--}=${2?${1} wants a value}"); shift 2
          else echo "unknown arg: $1" >&2; exit 1; fi ;;
     *) if [[ -z "$SCENARIO" ]]; then SCENARIO="$1"; shift; else echo "unexpected arg: $1" >&2; exit 1; fi ;;
@@ -75,6 +84,12 @@ done
 [[ -n "$UDID" && -n "$SCENARIO" && ( -n "$OUT" || "$PLAN" == 1 ) ]] || { echo "usage: factory proof <scenario> --out <dir> [--udid <sim>] [options]; see the header of $0" >&2; exit 1; }
 [[ "$SECONDS_REC" =~ ^[0-9]+$ ]] || { echo "--seconds must be an integer" >&2; exit 1; }
 [[ -z "$VERDICT_SKIP" || "$VERDICT_SKIP" =~ ^[0-9.]+$ ]] || { echo "--verdict-skip must be a number of seconds" >&2; exit 1; }
+[[ -z "$ORIENTATION" || "$ORIENTATION" =~ ^[a-z][a-z-]*$ ]] || { echo "--orientation wants a word like landscape or portrait" >&2; exit 1; }
+[[ "$ORIENTATION" == portrait ]] && ORIENTATION=""
+ORIENT_CMD="$(fk_proof_json proof.ios.orientation_cmd)"
+if [[ -n "$ORIENTATION" && -z "$ORIENT_CMD" && -z "${FK_PROOF_IOS_ORIENTATION_ENV:-}" ]]; then
+  echo "--orientation $ORIENTATION: set [proof.ios] orientation_cmd (turns the simulator) and/or orientation_env (tells the app)" >&2; exit 1
+fi
 if [[ -n "$SYSTEM_APPEARANCE" ]]; then
   [[ "$SYSTEM_APPEARANCE" == light || "$SYSTEM_APPEARANCE" == dark ]] || { echo "--system-appearance is light or dark" >&2; exit 1; }
 fi
@@ -108,12 +123,15 @@ build_env() { # build_env <password to substitute>
     [[ -n "$k" ]] || continue
     if flag_given "$k" && [[ -n "$(flag_value "$k")" ]]; then printf '%s\t%s\n' "${PREFIX}${v}" "$(flag_value "$k")"; fi
   done < <(node -e 'for (const [k, v] of Object.entries(JSON.parse(process.argv[1]))) console.log(k + "\t" + v)' "$FLAG_ENV_JSON")
+  if [[ -n "$ORIENTATION" && -n "${FK_PROOF_IOS_ORIENTATION_ENV:-}" ]]; then printf '%s\t%s\n' "${PREFIX}${FK_PROOF_IOS_ORIENTATION_ENV}" "$ORIENTATION"; fi
   for kv in ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do printf '%s\t%s\n' "${kv%%=*}" "${kv#*=}"; done
 }
 
 if [[ "$PLAN" == 1 ]]; then
   echo "bundle:   $BUNDLE_ID (process $PROCESS)"
   echo "scenario: $SCENARIO on ${UDID} for ${SECONDS_REC}s @ ${FPS}fps"
+  if [[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]]; then echo "orientation: $ORIENTATION, turned by: $ORIENT_CMD (and back to portrait after)"
+  elif [[ -n "$ORIENTATION" ]]; then echo "orientation: $ORIENTATION (launch env only)"; fi
   echo "launch environment (SIMCTL_CHILD_*):"
   build_env "<password>" | sed 's/^/  /'
   exit 0
@@ -135,14 +153,27 @@ APP="$(fk_proof_app "$DD")"
 [[ -d "$APP" ]] || { echo "no built app at $APP (pass --build)" >&2; exit 1; }
 # Which build this is; without --build, a warning (or, with [proof.ios] stale_app = "refuse", exit 3) when the app is older
 # than the source.
-APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
-echo "$APP_LINE"
+if [[ "$SOURCE_ROOT" != none ]]; then
+  APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$SOURCE_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
+  echo "$APP_LINE"
+fi
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 rm -rf "$OUT/frames"
 if [[ "$KEEP_FRAMES" == 1 ]]; then FRAMES_DIR="$OUT/frames"; mkdir -p "$FRAMES_DIR"; else FRAMES_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sim-proof-frames.XXXXXX")"; fi
-cleanup_frames() { [[ "$KEEP_FRAMES" == 1 ]] || rm -rf "$FRAMES_DIR"; }
+TURNED=0
+# turn <orientation>: [proof.ios] orientation_cmd for this simulator.
+turn() {
+  ( cd "$FK_ROOT" && bash -c "$(fk_fill "$ORIENT_CMD" udid "$UDID" orientation "$1" dd "$(printf '%q' "$DD")")" ) >>"$OUT/orientation.log" 2>&1
+}
+cleanup_frames() {
+  [[ "$KEEP_FRAMES" == 1 ]] || rm -rf "$FRAMES_DIR"
+  if [[ "$TURNED" == 1 ]]; then
+    TURNED=0
+    turn portrait || echo "warning: could not turn $UDID back to portrait (see $OUT/orientation.log); it stays turned" >&2
+  fi
+}
 trap cleanup_frames EXIT
 VIDEO="$OUT/$SCENARIO.mp4"
 rm -f "$VIDEO"
@@ -151,6 +182,11 @@ echo "installing on ${UDID}..."
 xcrun simctl boot "$UDID" 2>/dev/null || true   # already-booted is fine
 xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
 if [[ -n "$SYSTEM_APPEARANCE" ]]; then xcrun simctl ui "$UDID" appearance "$SYSTEM_APPEARANCE"; fi
+if [[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]]; then
+  echo "turning $UDID to $ORIENTATION..."
+  TURNED=1
+  turn "$ORIENTATION" || { echo "[proof.ios] orientation_cmd failed for $ORIENTATION; tail of $OUT/orientation.log:" >&2; tail -15 "$OUT/orientation.log" >&2; exit 1; }
+fi
 if [[ "$INSTALL" == 1 ]]; then xcrun simctl install "$UDID" "$APP"; fi
 
 while IFS=$'\t' read -r k v; do
@@ -166,6 +202,7 @@ sleep 1.5
 kill -0 "$REC_PID" 2>/dev/null || { echo "recorder died:" >&2; cat "$OUT/record.log" >&2; exit 1; }
 
 LAUNCH_AT=$SECONDS
+LOAD_START="$(fk_load1)"
 echo "launching scenario '$SCENARIO' for ${SECONDS_REC}s..."
 xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
 sleep "$SECONDS_REC"
@@ -182,6 +219,7 @@ if [[ "$WARM_RESUME" == 1 ]]; then
   SECONDS_REC=$((SECONDS_REC + 6))
 fi
 
+LOAD_END="$(fk_load1)"
 kill -INT "$REC_PID" 2>/dev/null || true
 wait "$REC_PID" 2>/dev/null || true
 trap cleanup_frames EXIT
@@ -223,7 +261,7 @@ if [[ ${#LOG_MARKERS[@]} -gt 0 ]]; then
   STEPS="$(grep -c -F "${GREP_ARGS[@]}" "$OUT/steps.log" || true)"
 fi
 echo
-echo "== sim-proof: $SCENARIO on $UDID (${DUR%.*}s clip, launch took $((SECONDS - LAUNCH_AT))s wall) =="
+echo "== sim-proof: $SCENARIO on $UDID (${DUR%.*}s clip, launch took $((SECONDS - LAUNCH_AT))s wall${ORIENTATION:+, $ORIENTATION}) =="
 echo "video:       $VIDEO"
 echo "contact:     $OUT/contact.png"
 echo "rest frames: $OUT/rest-start.png  $OUT/rest-end.png"
@@ -245,7 +283,15 @@ if [[ ${#LOG_MARKERS[@]} -gt 0 && "$STEPS" -eq 0 ]]; then echo "note: no ${LOG_M
 # any other non-zero is the tool itself failing.
 VERDICT_RC=0
 node "$FK_KIT_DIR/proof/verdict/proof-verdict.mjs" "$VIDEO" --out "$OUT" --steps "$OUT/steps.log" --scenario "$SCENARIO" ${VERDICT_SKIP:+--skip-start "$VERDICT_SKIP"} ${VERDICT_ARGS[@]+"${VERDICT_ARGS[@]}"} ${VERDICT_IGNORE[@]+"${VERDICT_IGNORE[@]}"} || VERDICT_RC=$?
+if [[ -s "$OUT/verdict.json" ]]; then
+  node -e '
+    const fs = require("fs"), [f, s, e] = process.argv.slice(1), n = (x) => (x === "" ? null : Number(x))
+    const v = JSON.parse(fs.readFileSync(f, "utf8")); v.load = { start: n(s), end: n(e) }
+    fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n")
+  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}"
+fi
 echo "verdict:     $OUT/verdict.json"
+echo "load:        ${LOAD_START:-?} at the start, ${LOAD_END:-?} at the end (1-minute average)"
 if [[ "$VERDICT_RC" == 4 ]]; then
   if [[ "$GATE" == 1 ]]; then echo "FAIL: the verdict is a FAIL (open flags.png first; --no-gate records without failing)" >&2; exit 4; fi
   echo "note: verdict FAIL ignored (--no-gate)"

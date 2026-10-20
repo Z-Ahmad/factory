@@ -475,6 +475,10 @@ export const SCHEMA = table({
       // stale_app: "warn" (default) or "refuse" when proof / proof-matrix run without --build on an app older than them
       sources: strs(),
       stale_app: str(),
+      // --orientation <o>: orientation_cmd turns the simulator ({udid} {orientation} {dd}) before the clip and back to
+      // portrait after; orientation_env hands <o> to the app (env_prefix prepended). Either may be unset.
+      orientation_cmd: str(),
+      orientation_env: str(),
       verdict: table({
         skip_start_s: num(),
         ignore_top: num(),
@@ -511,6 +515,7 @@ export const SCHEMA = table({
         system: str(REQ),
         app: str(REQ),
         device_types: strs(),
+        orientation: str(),
       }),
     },
   }),
@@ -537,6 +542,12 @@ export const SCHEMA = table({
   // xcode_probe: an extra command that must print an "iOS Simulator" row, rerun only when Xcode or CoreSimulator changes;
   // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12), stopped by end-night.
   preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
+  // `factory slot`: builders = how many builds/proofs may run at once (you included, default 2); max_load = the highest
+  // 1-minute load to start at (default: no limit); poll_s (15) and timeout_s (3600) for `slot wait`.
+  slot: table({ builders: int(), max_load: num(), poll_s: int(), timeout_s: int() }),
+  // `factory wip-save`: names or paths never copied from the worktree into the saved patch (default xcuserdata .build
+  // DerivedData node_modules .DS_Store; setting it replaces the list)
+  wip: table({ exclude: strs() }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),
@@ -586,7 +597,7 @@ export const REFS = {
   dd: 'proof.ios.dd',
   trip: 'seed.trip',
 };
-export const RUNTIME = ['n', 'id', 'hhmm', 'sha', 'note', 'ref', 'build', 'password', 'name'];
+export const RUNTIME = ['n', 'id', 'hhmm', 'sha', 'note', 'ref', 'build', 'password', 'name', 'udid', 'orientation'];
 
 // ------------------------------------------------------------ validation
 

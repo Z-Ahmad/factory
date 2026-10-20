@@ -115,7 +115,7 @@ The shooter runs `factory proof <scenario> --out <dir> --udid <sim>` or
 Which matrix for which item: the rules file. Exit **0** PASS, **4** FAIL, **1** a tooling error.
 - **A FAIL verdict blocks the item.** Round limits never override it, and "good, with a known flicker" doesn't ship.
 - A tooling error is not a pass: fix the tool or the scenario, or block the item.
-- An existing clip can be re-judged with no simulator: `factory proof-verdict <clip.mp4>`.
+- Re-judge a clip with no simulator: `factory proof-verdict <clip.mp4>`. A hold FAIL at a high load → `proof-compare`.
 
 ## 6. Review
 
@@ -159,7 +159,8 @@ the earlier night measured.
 - **No heartbeat turns.** A firing with nothing to do ends with the wakeup or the stop, not a "still waiting" message.
 - A worker or you hit a usage or session limit (a 429, "session limit") → one Log line **with the reset time** the error
   gives, `ScheduleWakeup` for just after it (else `usage_limit_wake_s`), then resume the same item: an agent that shares
-  your worktree by `SendMessage`; an isolated one is rebuilt from its saved patch by a fresh agent, never resumed.
+  your worktree by `SendMessage`; an isolated one is never resumed: `factory wip-save` its worktree, then a fresh agent
+  starts from that patch.
 - Spend on proofs, not on more agents: review, not parallelism, is the bottleneck.
 
 **Context is the budget.** Every tool call resends an agent's whole context, so a 600k-token agent costs several times a
@@ -167,9 +168,8 @@ fresh one per call, and one long agent can spend the account's limit for every l
 - A `models.implement` / `models.rescue` agent does the design rounds, then hands back a patch (`<state_dir>/night-<n>/
   <id>.patch`). The rest (remaining proofs, re-checks, merges) goes to a fresh `models.shoot` agent started from that
   patch, or you run the commands yourself.
-- Never two high-effort `implement` / `rescue` agents at once.
-- An agent past `loop.wrap_context_k` thousand tokens (default 400; the harness shows its size) wraps up: it finishes
-  the step, saves its patch and reports.
+- Never two high-effort `implement` / `rescue` agents at once. An agent past `loop.wrap_context_k` thousand tokens
+  (default 400; the harness shows its size) wraps up: it finishes the step, saves its patch and reports.
 
 ## 10. End of night
 
@@ -240,7 +240,8 @@ hook; show the human the diff or the command and ask.
 |---|---|
 | every firing | `factory preflight` · `factory dev-status` (review) · `factory disk-guard` |
 | worktrees | `factory worktree <name> [--base <ref>]` |
-| proofs | `factory proof` · `factory proof-matrix` · `factory proof-verdict <mp4>` · `factory clip-frames` · `factory proof-calibrate <manifest>` |
+| proofs | `factory proof` · `proof-matrix` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` · `proof-calibrate` |
+| builds, stopped agents | `factory slot wait --dd <name>` before every build or proof · `factory wip-save <worktree> --base <ref> --out <patch>` |
 | a second API | `factory read-api up` / `down` (stops only its own process) |
 | bookkeeping | `factory tick` · `factory night-new` · `factory night-lint` · `factory end-night` · `factory stats` |
 | upkeep | `factory cleanup [--only <category>] [--apply]` |

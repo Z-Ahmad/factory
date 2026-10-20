@@ -6,6 +6,8 @@
 #   [proof.matrix.<name>]  cells = ["<cell>", ...]  plus optional warm_launch (default true), seconds, args
 #   [proof.cell.<cell>]    sim = "shooter" | "fresh", system = "light" | "dark", app = "<the app's own finish>",
 #                          device_types = ["<SimDeviceType suffix>", ...]   (the first one this Mac has wins; absent = the shooter's type)
+#                          orientation = "landscape" | ...   (optional: the cell runs `factory proof --orientation <o>`, which
+#                          turns the sim and back once per cell; --orientation <o> here is the default for cells without one)
 # sim = "shooter" runs on --udid (default [sim] shooter_udid) as it is. sim = "fresh" gets an ephemeral simulator, named from the
 # first [sim] ephemeral pattern (its trailing * replaced by <cell>-<rand>), whose system appearance is set BEFORE the app is
 # installed, so the launch snapshot is honest; it is deleted when its cell is done and on exit/failure/Ctrl-C (unless --keep-sims).
@@ -19,7 +21,7 @@
 # Writes into <out>:
 #   <cell>/             the usual proof artifacts (mp4, contact.png, verdict.json, flags.png when flagged, run.log)
 #   matrix.md           one row per cell: device, launch, system / app appearance, verdict, worst flash, worst hold ms, worst bounce,
-#                       fail-marker count, flags.png
+#                       fail-marker count, flags.png, the 1-minute load when the clip started and ended
 #   matrix-contact.png  every cell's contact sheet scaled to one height, side by side under a label band (label.swift)
 # and ends with `MATRIX: PASS|FAIL (n/m cells; launches: <cell> first|warm, ...)`. Exit 0 every cell PASS, 4 any cell FAIL,
 # 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 a tooling error. matrix.md starts with the "app:" line (which
@@ -33,7 +35,7 @@ fk_require_darwin
 HERE="$FK_KIT_DIR/proof/ios"
 BUNDLE_ID="${FK_PROOF_IOS_BUNDLE_ID:?set [proof.ios] bundle_id}"
 
-UDID="${FK_SIM_SHOOTER_UDID:-}" SCENARIO="" OUT="" MATRIX="default" BUILD=0 DD_ARG="" KEEP_SIMS=0 PLAN=0
+UDID="${FK_SIM_SHOOTER_UDID:-}" SCENARIO="" OUT="" MATRIX="default" BUILD=0 DD_ARG="" KEEP_SIMS=0 PLAN=0 ORIENTATION_DEFAULT=""
 PASS_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --dd) DD_ARG="${2:?}"; shift 2 ;;
     --keep-sims) KEEP_SIMS=1; shift ;;
     --plan) PLAN=1; shift ;;
+    --orientation) ORIENTATION_DEFAULT="${2:?}"; shift 2 ;;
     --appearance|--system-appearance|--no-gate|--no-install)
       echo "$1 is set per cell by the matrix ([proof.cell.*] in factory.toml); run \`factory proof\` directly for a one-off" >&2; exit 1 ;;
     *) PASS_ARGS+=("$1"); shift ;;
@@ -53,7 +56,7 @@ done
 [[ -n "$SCENARIO" && ( -n "$OUT" || "$PLAN" == 1 ) ]] || { echo "usage: factory proof-matrix --scenario <s> --out <dir> [--matrix <name>] [--build --dd <dd>] [--keep-sims] [proof args]; see the header of $0" >&2; exit 1; }
 [[ -n "$UDID" ]] || { echo "no shooter simulator: pass --udid or set [sim] shooter_udid" >&2; exit 1; }
 
-# The cells of the chosen matrix, one per line: name, sim, system, app, deviceTypes ("-" = none), tab separated.
+# The cells of the chosen matrix, one per line: name, sim, system, app, deviceTypes, orientation ("-" = none), tab separated.
 # Then the matrix options on the first line: warm_launch (default true: launch the app once unrecorded on a fresh sim),
 # seconds (default for --seconds when the caller passes none), args (extra `factory proof` args for every cell).
 PLAN_TEXT="$(node -e '
@@ -67,9 +70,9 @@ PLAN_TEXT="$(node -e '
     if (!c) fail("matrix \"" + name + "\" names an undefined cell: " + n + " (define [proof.cell." + n + "])")
     if (c.sim !== "shooter" && c.sim !== "fresh") fail("cell " + n + ": sim must be \"shooter\" or \"fresh\", got \"" + c.sim + "\"")
     if (c.system !== "light" && c.system !== "dark") fail("cell " + n + ": system must be \"light\" or \"dark\", got \"" + c.system + "\"")
-    console.log([n, c.sim, c.system, c.app, (c.device_types || []).join(",") || "-"].join("\t"))
+    console.log([n, c.sim, c.system, c.app, (c.device_types || []).join(",") || "-", c.orientation || process.argv[4] || "-"].join("\t"))
   }
-' "$(fk_proof_json proof.matrix)" "$(fk_proof_json proof.cell)" "$MATRIX")" || exit 1
+' "$(fk_proof_json proof.matrix)" "$(fk_proof_json proof.cell)" "$MATRIX" "$ORIENTATION_DEFAULT")" || exit 1
 IFS=$'\t' read -r _ WARM DEFAULT_SECONDS DEFAULT_ARGS <<<"$(printf '%s\n' "$PLAN_TEXT" | head -n 1)"
 CELLS="$(printf '%s\n' "$PLAN_TEXT" | tail -n +2)"
 if [[ "$DEFAULT_SECONDS" != "-" && " ${PASS_ARGS[*]-} " != *" --seconds "* ]]; then PASS_ARGS+=(--seconds "$DEFAULT_SECONDS"); fi
@@ -77,7 +80,7 @@ if [[ "$DEFAULT_ARGS" != "-" ]]; then read -r -a MATRIX_ARGS <<<"$DEFAULT_ARGS";
 
 if [[ "$PLAN" == 1 ]]; then
   echo "matrix $MATRIX: $SCENARIO on shooter $UDID (warm launch on fresh sims: $([[ "$WARM" == 1 ]] && echo yes || echo no))"
-  printf '%s\n' "$CELLS" | awk -F'\t' '{ printf "  %-12s sim %-8s system %-5s app %-12s device types %s\n", $1, $2, $3, $4, $5 }'
+  printf '%s\n' "$CELLS" | awk -F'\t' '{ printf "  %-12s sim %-8s system %-5s app %-12s device types %s%s\n", $1, $2, $3, $4, $5, ($6 == "-" ? "" : "  orientation " $6) }'
   [[ ${#PASS_ARGS[@]} -eq 0 ]] || echo "  proof args: ${PASS_ARGS[*]}"
   exit 0
 fi
@@ -215,13 +218,14 @@ PASSED=0 TOTAL=0 FAILED=0 ERRORED=0
 SIM_PROOF="$HERE/sim-proof-core.sh"
 MARKER_RE="$(fk_proof_fail_markers | paste -sd'|' -)"
 
-while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES; do
+while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
   TOTAL=$((TOTAL + 1))
   CELL_DIR="$OUT/$CELL"
   rm -rf "$CELL_DIR"; mkdir -p "$CELL_DIR"
   echo
   echo "== cell $CELL: system $SYSTEM, app $APPEARANCE ($SIMKIND sim) =="
-  CELL_UDID="$UDID" DEVICE_TYPE="$SHOOTER_TYPE" CELL_RC=0 NO_INSTALL=() LAUNCH_KIND=warm
+  CELL_UDID="$UDID" DEVICE_TYPE="$SHOOTER_TYPE" CELL_RC=0 NO_INSTALL=() LAUNCH_KIND=warm ORIENT_ARGS=()
+  if [[ "$ORIENT" != "-" ]]; then ORIENT_ARGS=(--orientation "$ORIENT"); fi
   if [[ "$SIMKIND" == fresh ]]; then
     if [[ "$TYPES" != "-" ]]; then
       PICK="$(pick_device_type "$TYPES")"
@@ -249,7 +253,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES; do
 
   if [[ "$CELL_RC" == 0 ]]; then
     "$SIM_PROOF" --udid "$CELL_UDID" --scenario "$SCENARIO" --out "$CELL_DIR" --dd "$DD" \
-      --appearance "$APPEARANCE" --system-appearance "$SYSTEM" --no-gate ${NO_INSTALL[@]+"${NO_INSTALL[@]}"} ${PASS_ARGS[@]+"${PASS_ARGS[@]}"} </dev/null >"$CELL_DIR/run.log" 2>&1 || CELL_RC=$?
+      --appearance "$APPEARANCE" --system-appearance "$SYSTEM" --no-gate ${NO_INSTALL[@]+"${NO_INSTALL[@]}"} ${ORIENT_ARGS[@]+"${ORIENT_ARGS[@]}"} ${PASS_ARGS[@]+"${PASS_ARGS[@]}"} </dev/null >"$CELL_DIR/run.log" 2>&1 || CELL_RC=$?
     grep -E "^(VERDICT:|($MARKER_RE):)" "$CELL_DIR/run.log" || true
     if [[ "$CELL_RC" != 0 ]]; then echo "factory proof failed for cell $CELL (exit $CELL_RC); tail of $CELL_DIR/run.log:" >&2; tail -15 "$CELL_DIR/run.log" >&2; fi
   fi
@@ -257,17 +261,18 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES; do
   if [[ "$CELL_RC" == 0 && -s "$CELL_DIR/verdict.json" ]]; then
     RES="$(node -e '
       const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
-      console.log([v.verdict, v.flash.worstScore, v.hold.worstMs, v.bounce.worstScore, v.layoutLoop.count, v.flagsPng || "-"].join("\t"))
+      const l = v.load || {}, f = (x) => (x == null ? "?" : x)
+      console.log([v.verdict, v.flash.worstScore, v.hold.worstMs, v.bounce.worstScore, v.layoutLoop.count, v.flagsPng || "-", f(l.start) + "→" + f(l.end)].join("\t"))
     ' "$CELL_DIR/verdict.json")"
-    IFS=$'\t' read -r VERDICT FLASH HOLD BOUNCE LOOPS FLAGS <<<"$RES"
+    IFS=$'\t' read -r VERDICT FLASH HOLD BOUNCE LOOPS FLAGS LOAD <<<"$RES"
     PX="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$CELL_DIR/$SCENARIO.mp4" 2>/dev/null || true)"
     case "$VERDICT" in PASS) PASSED=$((PASSED + 1)) ;; *) FAILED=$((FAILED + 1)) ;; esac
   else
-    VERDICT="ERROR" FLASH="-" HOLD="-" BOUNCE="-" LOOPS="-" FLAGS="-" PX="" ERRORED=$((ERRORED + 1))
+    VERDICT="ERROR" FLASH="-" HOLD="-" BOUNCE="-" LOOPS="-" FLAGS="-" LOAD="-" PX="" ERRORED=$((ERRORED + 1))
   fi
   [[ "$FLAGS" == "-" ]] && FLAGS_CELL="-" || FLAGS_CELL="\`${FLAGS#"$OUT/"}\`"
   KINDS+=("$CELL $LAUNCH_KIND")
-  ROWS+=("| $CELL | $DEVICE${PX:+ ($PX px)} | $LAUNCH_KIND | $SYSTEM | $APPEARANCE | **$VERDICT** | $FLASH | $HOLD | $BOUNCE | $LOOPS | $FLAGS_CELL |")
+  ROWS+=("| $CELL | $DEVICE${PX:+ ($PX px)}$([[ "$ORIENT" == "-" ]] || echo ", $ORIENT") | $LAUNCH_KIND | $SYSTEM | $APPEARANCE | **$VERDICT** | $FLASH | $HOLD | $BOUNCE | $LOOPS | $FLAGS_CELL | $LOAD |")
   [[ -s "$CELL_DIR/contact.png" ]] && CONTACTS+=("$CELL|$VERDICT|$DEVICE${PX:+ $PX} · system $SYSTEM · app $APPEARANCE|$CELL_DIR/contact.png")
   delete_ephemeral
 done <<<"$CELLS"
@@ -278,8 +283,8 @@ done <<<"$CELLS"
   echo
   echo "$APP_LINE"$'\n'
   [[ ${#PASS_ARGS[@]} -eq 0 ]] || echo "sim-proof args: \`${PASS_ARGS[*]}\`"$'\n'
-  echo "| cell | device | launch | system | app | verdict | worst flash | worst hold ms | worst bounce | LAYOUT-LOOP | flags |"
-  echo "|---|---|---|---|---|---|---|---|---|---|---|"
+  echo "| cell | device | launch | system | app | verdict | worst flash | worst hold ms | worst bounce | LAYOUT-LOOP | flags | load start→end |"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
   printf '%s\n' "${ROWS[@]}"
 } >"$OUT/matrix.md"
 

@@ -2,6 +2,30 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.14.0 (2026-10-20)
+
+### Builder slots, enforced
+
+- New `factory slot wait --dd <name>` (and `slot status`): blocks until fewer than `[slot] builders` (default 2, you included) other builds and proofs run, and the 1-minute load is at or under `[slot] max_load` when that is set. Builds are real `xcodebuild … -derivedDataPath` runs and `factory proof` runs, counted once per derived-data folder; your own `--dd` doesn't count. A booted simulator that no running proof is using (a stopped agent's) counts as a builder; `[sim] protected` ones and your `--udid` never do. It prints why it waits, once per reason, then `slot: go`, and exits 2 after `timeout_s`.
+- Proofs record the 1-minute load at the start and end of the clip in `verdict.json` (`"load": {"start", "end"}`) and in a new matrix.md column.
+
+### Same-load compares
+
+- New `factory proof-compare --scenario <s> --base <ref>`. It builds the base once in a `compare-<sha8>` worktree, which is kept for the next compare. It then alternates base and patch runs on one simulator (base, patch, then patch, base…) for `--runs` rounds and writes `compare.md` with each run's verdict, holds, flash, bounce and load. It ends with a `COMPARE:` line of median holds and loads, and warns when the two sides' loads differ by more than a quarter. `--base-dd` takes a prebuilt base; `--slot` gates every run.
+- `factory proof --source-root <dir>|none` points the stale-app check at the tree the app was built from.
+
+### Saving a stopped isolated agent's work
+
+- New `factory wip-save <worktree> --base <ref> [--on <patch>] --out <patch>`. It writes the worktree's uncommitted work as a `git diff --binary` patch, without running git in that worktree: modes (+x), binaries, new and deleted files. It exports the base (plus `--on`) to a scratch repo, copies the worktree's files over, and checks that the patch applies. The worktree's `.gitignore`, `[wip] exclude`, `[worktree] cache_symlinks` and `copy_files` stay out.
+
+### Orientation
+
+- `factory proof --orientation <o>`. `[proof.ios] orientation_cmd` turns the simulator before install and back to portrait after the clip, including on failure; `orientation_env` hands the orientation to the app. A matrix cell can set `orientation`, and `proof-matrix --orientation` sets the default for cells without one.
+
+### Skill
+
+- Briefs: `slot wait` before every build or proof; on a hold FAIL at high load, `proof-compare` before blaming the patch; `--orientation` for iPad and landscape items. A stopped isolated agent's work is saved with `wip-save`.
+
 ## v0.13.0 (2026-10-20)
 
 ### Preflight catches a broken Xcode

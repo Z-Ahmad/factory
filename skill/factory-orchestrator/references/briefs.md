@@ -13,6 +13,7 @@ Worker rules:
   other simulator call too. Never set shared tool defaults. Never touch the human's device.
 - Scratch goes in `mktemp -d` and is deleted when you're done: frame strips, profiler traces (they run to GBs), build
   copies. No loose /tmp/<name> folders. Delete any simulator you create.
+- Before any xcodebuild or proof: `factory slot wait --dd {dd}` (the builder-slot gate; two builders at most).
 - Never start or stop the shared dev stack. If you need your own server, run it on a separate port and kill only the
   processes you started (`factory read-api up|down` when the project has one).
 - Never edit the files factory.toml lists under [never_touch], never run its never_run_in_worktree scripts here, and
@@ -65,6 +66,10 @@ Run:
   factory proof-matrix --scenario {scenario} --matrix {matrix} --out {shots_dir}/{id}-{label} [--build --dd {dd}] [{flags}]
   and/or factory proof {scenario} --out {shots_dir}/{id}-{label} --udid {udid} [{flags}]
 Which matrix: the rules file's table. A FAIL (exit 4) is a result, not an error: report it, don't rerun until it passes.
+Before every build or proof: factory slot wait --dd {dd} --udid {udid} (blocks while too much else runs; report its lines).
+A hold FAIL with a high load in verdict.json: factory proof-compare --scenario {scenario} --base {base_ref} --udid {udid}
+  --out {shots_dir}/{id}-compare, and report its COMPARE line. iPad and landscape items: add --orientation landscape, or use
+  a matrix whose cells set orientation.
 
 Interactive checks only when no scenario can express the check: name the simulator on every call, prove one known-good tap
 lands before trusting any tap, and fall back to a scenario if it doesn't.
@@ -109,5 +114,6 @@ leave them clearly marked for the implementer. Return at most {words} words.
 | `{guardrails_paragraph}`, `{hard_gates}`, `{rules_file}` | the rules file (`loop.rules`) |
 | `{tests.unit}`, `{tests.gate}` | `factory config get tests` |
 | `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the rules file's matrix table; the item; `proof.ios.dd` |
+| `{base_ref}` | the item's base: the night branch's merge base, or the commit before the patch |
 | `{wrap_context_k}`, `{patch_path}` | `loop.wrap_context_k` (default 400); `<state_dir>/night-<n>/<id>.patch` |
 | `{reference_source}` | the item, plus the rules file's rule on what carries over between platforms (an exact port only for a look the human approved) |

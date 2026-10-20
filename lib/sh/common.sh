@@ -19,6 +19,13 @@ fk_port_up() {
 # fk_free_gb [path]: whole GB free on the volume holding path (default /).
 fk_free_gb() { df -k "${1:-/}" | awk 'NR==2 {printf "%d", $4/1048576}'; }
 
+# fk_load1: the 1-minute load average ("3.21"); nothing when it cannot be read.
+fk_load1() {
+  local l
+  if l="$(sysctl -n vm.loadavg 2>/dev/null)"; then awk '{ print ($1 == "{" ? $2 : $1) }' <<< "$l"
+  elif [[ -r /proc/loadavg ]]; then awk '{ print $1 }' /proc/loadavg; fi
+}
+
 # fk_human <kilobytes>: 1536 -> 2M, 3145728 -> 3.0G
 fk_human() {
   awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1fG", k/1048576; else if (k >= 1024) printf "%.0fM", k/1024; else printf "%dK", k }'

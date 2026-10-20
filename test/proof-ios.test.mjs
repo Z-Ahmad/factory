@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { factory, fixture, scratch } from './helpers.mjs';
 
@@ -114,6 +114,81 @@ test('proof-matrix --plan: the cells of a matrix with their sim kind, appearance
     // a seconds value the caller passed is kept
     const mine = t.run('proof-matrix', ['--scenario', 'scrub', '--matrix', 'first-launch', '--seconds', '12', '--plan']);
     assert.match(mine.stdout, /proof args: --seconds 12 --verdict-arg --launch-search$/m);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('proof --plan --orientation: orientation_env hands it to the app; portrait needs nothing; neither key is an error', () => {
+  const t = project((s) => s.replace('env_prefix    = "EXAMPLE_"\n', 'env_prefix    = "EXAMPLE_"\norientation_env = "ORIENTATION"\n'));
+  try {
+    const r = t.run('proof', ['scrub', '--orientation', 'landscape', '--plan']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^orientation: landscape \(launch env only\)$/m);
+    assert.deepEqual(envLines(r.stdout).slice(-2), ['EXAMPLE_SCENARIO\tscrub', 'EXAMPLE_ORIENTATION\tlandscape']);
+    const portrait = t.run('proof', ['scrub', '--orientation', 'portrait', '--plan']);
+    assert.ok(!portrait.stdout.includes('ORIENTATION') && !portrait.stdout.includes('orientation:'));
+    assert.equal(t.run('proof', ['scrub', '--orientation', 'Side ways', '--plan']).status, 1);
+  } finally {
+    t.cleanup();
+  }
+  const bare = project();
+  try {
+    const r = bare.run('proof', ['scrub', '--orientation', 'landscape', '--plan']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /set \[proof\.ios\] orientation_cmd .* and\/or orientation_env/);
+    assert.equal(bare.run('proof', ['scrub', '--orientation', 'portrait', '--plan']).status, 0);
+  } finally {
+    bare.cleanup();
+  }
+  const turned = project((s) => s.replace('env_prefix    = "EXAMPLE_"\n', 'env_prefix    = "EXAMPLE_"\norientation_cmd = "scripts/turn.sh {udid} {orientation} {dd}"\n'));
+  try {
+    const r = turned.run('proof', ['scrub', '--orientation', 'landscape', '--plan']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^orientation: landscape, turned by: scripts\/turn\.sh \{udid\} \{orientation\} \{dd\} \(and back to portrait after\)$/m);
+    assert.ok(!r.stdout.includes('ORIENTATION'));
+  } finally {
+    turned.cleanup();
+  }
+});
+
+test('proof --orientation: orientation_cmd turns the sim before install, and back to portrait when the run fails', () => {
+  const t = project((s) => s.replace('env_prefix    = "EXAMPLE_"\n', 'env_prefix    = "EXAMPLE_"\norientation_cmd = "echo {udid} {orientation} {dd} >> turns.log"\n'));
+  try {
+    const bin = join(t.dir, 'bin');
+    mkdirSync(bin);
+    const stub = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+    // simctl knows the sim, installs nothing, and records no video: the run fails after the turn
+    stub('xcrun', `echo "$*" >> '${join(t.dir, 'xcrun.log')}'
+case "$*" in "simctl list devices") echo "    Phone (ABC) (Booted)" ;; *recordVideo*) sleep 3 ;; esac`);
+    stub('ffmpeg', 'exit 0');
+    stub('ffprobe', 'exit 0');
+    const dd = join(t.dir, 'dd');
+    mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
+    writeFileSync(join(dd, 'Build', 'Example.app', 'Example'), 'bin');
+    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out'), '--seconds', '0', '--orientation', 'landscape'], {
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /no video written/);
+    assert.equal(readFileSync(join(t.dir, 'turns.log'), 'utf8'), `ABC landscape ${dd}\nABC portrait ${dd}\n`);
+    const calls = readFileSync(join(t.dir, 'xcrun.log'), 'utf8');
+    assert.ok(calls.indexOf('simctl install') > 0, calls); // turned first, then installed
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('proof-matrix --plan: a cell orientation, and --orientation as the default for cells without one', () => {
+  const t = project((s) => s.replace('[proof.cell.dark]\n', '[proof.cell.dark]\norientation = "landscape"\n'));
+  try {
+    let r = t.run('proof-matrix', ['--scenario', 'scrub', '--plan']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^\s+dark\s+sim shooter\s+system dark\s+app night\s+device types -  orientation landscape$/m);
+    assert.match(r.stdout, /^\s+light\s+sim shooter\s+system light\s+app bright\s+device types -$/m);
+    r = t.run('proof-matrix', ['--scenario', 'scrub', '--orientation', 'portrait', '--plan']);
+    assert.match(r.stdout, /^\s+light\s+.*device types -  orientation portrait$/m);
+    assert.match(r.stdout, /^\s+dark\s+.*orientation landscape$/m);
   } finally {
     t.cleanup();
   }

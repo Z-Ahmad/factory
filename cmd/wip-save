@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# desc: save a worktree's uncommitted work as a git patch without running git in that worktree (for a stopped isolated agent)
+# usage: factory wip-save <worktree> --base <ref> [--on <patch>] --out <patch>
+# Session isolation refuses git in another agent's worktree, and a stopped isolated agent must not be resumed by message,
+# so its work is read as plain files: <base> (a commit in this repo) is exported to a scratch repo, --on <patch> (the
+# patch the agent started from) is applied on top, the worktree's files replace that tree, and the difference is written
+# to --out as a `git diff --binary` patch: modes (+x), new, deleted and binary files included. The worktree's own
+# .gitignore decides what is junk, and these are never copied: .git, [wip] exclude (default xcuserdata .build DerivedData
+# node_modules .DS_Store), [worktree] cache_symlinks and copy_files (env files from the main checkout).
+# The patch is checked to apply cleanly on <base> (+ --on), and is relative to that: apply it after --on.
+# Submodules are not supported (their checkouts would be saved as plain files).
+# Prints one summary line. Exit 0 when written (an empty patch says "no changes"), 1 on an error. Git runs only in the
+# repo you are in (for `git archive`; else the main checkout) and in the scratch repo; nothing in the worktree is written.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+WT="" BASE="" ON="" OUT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="${2:?}"; shift 2 ;;
+    --on) ON="${2:?}"; shift 2 ;;
+    --out) OUT="${2:?}"; shift 2 ;;
+    -*) echo "unknown arg: $1" >&2; exit 1 ;;
+    *) if [[ -z "$WT" ]]; then WT="$1"; shift; else echo "unexpected arg: $1" >&2; exit 1; fi ;;
+  esac
+done
+[[ -n "$WT" && -n "$BASE" && -n "$OUT" ]] || { echo "usage: factory wip-save <worktree> --base <ref> [--on <patch>] --out <patch>" >&2; exit 1; }
+[[ -d "$WT" ]] || fk_die "no such worktree: $WT"
+WT="$(cd "$WT" && pwd -P)"
+if [[ -n "$ON" ]]; then [[ -f "$ON" ]] || fk_die "no such patch: $ON"; ON="$(cd "$(dirname "$ON")" && pwd -P)/$(basename "$ON")"; fi
+mkdir -p "$(dirname "$OUT")"
+OUT="$(cd "$(dirname "$OUT")" && pwd -P)/$(basename "$OUT")"
+# The repo <base> is read from: the one you are in (your own worktree), else the main checkout.
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || echo "${FK_PROJECT_MAIN_CHECKOUT:?}")"
+SHA="$(git -C "$REPO" rev-parse --verify -q "$BASE^{commit}")" || fk_die "--base $BASE is not a commit in $REPO"
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/wip-save.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+R="$TMP/tree"
+mkdir "$R"
+g() { git -C "$R" -c user.name=wip-save -c user.email=wip-save@invalid -c commit.gpgsign=false -c core.fileMode=true "$@"; }
+git -C "$REPO" archive "$SHA" | tar -x -C "$R"
+g init -q
+g add -A -f
+g commit -q --allow-empty -m base
+if [[ -n "$ON" ]]; then
+  g apply --index --binary "$ON" || fk_die "--on $ON does not apply on $BASE"
+  g commit -q --allow-empty -m on
+fi
+
+# The worktree's files replace the tree: tracked files go first, so the agent's deletions show.
+g ls-files -z | (cd "$R" && xargs -0 rm -f)
+EXCL=(--exclude .git)
+while IFS= read -r x; do [[ -n "$x" ]] && EXCL+=(--exclude "$x"); done <<< "${FK_WIP_EXCLUDE-xcuserdata
+.build
+DerivedData
+node_modules
+.DS_Store}"
+while IFS= read -r x; do [[ -n "$x" ]] && EXCL+=(--exclude "${x%/}"); done <<< "${FK_WORKTREE_CACHE_SYMLINKS:-}
+${FK_WORKTREE_COPY_FILES:-}"
+tar -C "$WT" -cf - "${EXCL[@]}" . | tar -C "$R" -xpf -
+g add -A
+g diff --cached --binary --no-renames HEAD > "$OUT"
+
+FROM="$BASE${ON:+ + $(basename "$ON")}"
+if [[ ! -s "$OUT" ]]; then echo "wip-save: no changes in $WT against $FROM ($OUT is empty)"; exit 0; fi
+# It must apply where it will be applied.
+g reset -q --hard HEAD
+g apply --check --binary "$OUT" || fk_die "the patch does not apply back on $FROM (kept at $OUT)"
+STATS="$(g apply --numstat "$OUT" | awk '{ n++; if ($1 != "-") a += $1; if ($2 != "-") d += $2 } END { printf "%d files (+%d -%d)", n, a, d }')"
+MODES="$(grep -cE '^(new file mode|new mode) 100755' "$OUT" || true)"
+[[ "$MODES" == 0 ]] && MODES="" || MODES=", $MODES made executable"
+echo "wip-save: $OUT: $STATS$MODES; applies on $FROM"

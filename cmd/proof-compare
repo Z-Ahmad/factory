@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# desc: compare base and patch on one scenario at the same load: alternating runs, holds and loads side by side in compare.md
+# usage: factory proof-compare --scenario <s> --out <dir> (--base <ref> | --base-dd <dd>) [--dd <dd>] [--build] [--runs N] [--udid <sim>] [--slot] [proof args]
+# See the header of proof/ios/proof-compare.sh. macOS with Xcode only.
+set -euo pipefail
+exec "${FK_KIT_DIR:?run this through bin/factory}/proof/ios/proof-compare.sh" "$@"
