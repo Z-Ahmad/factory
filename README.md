@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.12, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.13, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -180,8 +180,8 @@ scripts/factory night-new 1 --theme "first run"
 | `factory dev-status` | ✓ | One line per dev port, up or down. Exit 1 if a required port is down |
 | `factory read-api up\|down` | ✓ | Runs a second API server on its own port (`[dev] read_api`) and stops only the one it started |
 | `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent. Shares installed dependencies and caches from the main checkout through symlinks, but makes npm workspace links and derived build outputs match the worktree's own branch, so a worker never borrows the main checkout's. See [`[worktree]`](#worktree-sharing-from-the-main-checkout) |
-| `factory preflight` | ✓ | Start of every firing: prune stale derived data (`[disk] dd_auto`), disk-guard, then dev-up, then a test-data reset. One summary line; it names the step that failed |
-| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` deletes the night's proof videos, sweeps scratch files and temporary simulators, and **erases** a simulator whose data has bloated (`[sim] shooter_udid`, `erase_at_end_night`). It checks that no required secret is blank, that every worktree is clean and that the night file lints without errors (exit 3 if not), then appends a final line to the log |
+| `factory preflight` | ✓ | Start of every firing: prune stale derived data (`[disk] dd_auto`), disk-guard, an **Xcode check** (exit 4 when Xcode can't build for the simulator), **keep-awake** (one night-long `caffeinate`), then dev-up, then a test-data reset. One summary line; it names the step that failed. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
+| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` deletes the night's proof videos, sweeps scratch files and temporary simulators, stops preflight's `caffeinate`, and **erases** a simulator whose data has bloated (`[sim] shooter_udid`, `erase_at_end_night`). It checks that no required secret is blank, that every worktree is clean and that the night file lints without errors (exit 3 if not), then appends a final line to the log |
 | `factory night-lint [--night N \| --file <path>]` | ✓ | Checks a night file against the shape `night-new` writes and `tick` appends to: title, header bullets, the four sections in order, backlog lines per `[project] item_line`, log lines per `log_line`. Read-only, never rewrites. Errors exit 1; warnings print and exit 0. `tick` runs it after every write; `end-night` runs it and fails on errors. See [`night-lint`](#night-lint-what-it-checks) |
 | `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify`, `gh pr merge`, and starting or killing the dev stack outside `factory dev-up`. Silent when allowed (~45 ms), and it fails open on its own errors |
 | `factory stats [--night N]` | ✓ | Per-night statistics from the agent session transcripts plus GitHub, for charts: wall and active time, subagents by model, tool calls and tool time, estimated model hours, tokens (and cost for models you give prices), PR lines by area, builds, items shipped and blocked, questions asked. Nights are time windows you list in a JSON file; every event is assigned by its own timestamp. Writes `nights-stats.json` and `.csv`, prints a table. Read-only |
@@ -211,14 +211,26 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[dev]` | no | How to start the dev stack, and which ports mean it is up |
 | `[seed]` | no | Commands to snapshot and restore test data |
 | `[disk]` | no | Free-space thresholds, and what cleanup may delete: caches, frames, **proof videos (`clips`)**, scratch in `/tmp` and `$TMPDIR` |
+| `[preflight]` | no | The Xcode check (on for iOS projects) and the night-long keep-awake `caffeinate`. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
 | `[sim]` | no | Simulator ids and names: the one proofs run on, protected ones, throwaway patterns, and which ones end-night **erases** when they bloat |
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[stats]` | no | Where the session transcripts are, the nights (windows) file, the output folder, code areas, an optional price table |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
-| `[loop]` | no | Which model does which role, review rounds, report lengths; `item_ids = "slug"` (default) makes `tick` refuse item IDs that aren't plain-English slugs (`lifetime-globe`, not `G3`), `"any"` turns it off |
+| `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch); `item_ids = "slug"` (default) makes `tick` refuse item IDs that aren't plain-English slugs (`lifetime-globe`, not `G3`), `"any"` turns it off |
 
 `{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{id}` (item) are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
+
+### `[preflight]`: Xcode and keep-awake
+
+| Key | Default | What it does |
+|---|---|---|
+| `[preflight] xcode` | on when `[proof.ios]` is set | `xcodebuild -checkFirstLaunchStatus` must pass and `xcrun simctl list devices available` must list an iOS simulator. An App Store update of Xcode can leave it needing `sudo xcodebuild -runFirstLaunch` (an admin password): then every build, test and proof fails with exit 70, and agents burn hours on workarounds. Preflight exits **4** instead, prints the fix and says to stop the night and notify the human. The line notes "App Store auto-update on" when it is. macOS only; `false` turns it off. |
+| `[preflight] xcode_probe` | unset | An extra command run from the main checkout that must print an `iOS Simulator` row, e.g. `xcodebuild -project ios/App.xcodeproj -scheme App -showdestinations -skipPackageUpdates`. It is slow (15 s or more), so it reruns only when `xcodebuild -version` or CoreSimulator's version changed since it last passed, which is exactly what an Xcode update changes. |
+| `[preflight] keep_awake` | `true` | macOS: preflight makes sure one `caffeinate -dimsu` runs (PID in `<state_dir>/caffeinate.pid`), so the Mac doesn't sleep mid-night; `end-night --apply` stops it. A closed MacBook lid sleeps the Mac anyway. |
+| `[preflight] keep_awake_hours` | `12` | How long each `caffeinate` lasts; a later preflight starts a new one if it has ended. |
+
+The proof commands check the build they install, too: without `--build`, `factory proof` and `proof-matrix` print an `app:` line (when it was built and from which commit; matrix.md starts with it) and warn when the installed app is older than the source. `[proof.ios] sources` (git pathspecs, default the whole tree) says which changes count; `[proof.ios] stale_app = "refuse"` makes a stale app exit 3 instead of warning.
 
 ### `[worktree]`: sharing from the main checkout
 

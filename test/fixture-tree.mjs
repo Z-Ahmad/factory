@@ -34,9 +34,10 @@ const old = (p) => utimesSync(p, LONG_AGO, LONG_AGO);
 
 /**
  * Builds the tree and returns paths plus helpers.
- * `diskExtra` and `simExtra` are TOML lines appended inside [disk] and [sim]; `extraToml` text goes at the end of the file.
+ * `diskExtra`, `simExtra` and `preflightExtra` are TOML lines appended inside [disk], [sim] and [preflight] (where
+ * keep_awake = false unless preflightExtra sets it, so tests never start a caffeinate); `extraToml` text goes at the end of the file.
  */
-export function tree({ simsExtra = [], diskOverrides = {}, diskExtra = '', simExtra = '', gitExtra = '', extraToml = () => '' } = {}) {
+export function tree({ simsExtra = [], preflightExtra = '', diskOverrides = {}, diskExtra = '', simExtra = '', gitExtra = '', extraToml = () => '' } = {}) {
   const s = scratch();
   const root = realpathSync(s.dir);
   const p = (...a) => join(root, ...a);
@@ -203,6 +204,9 @@ archives         = { glob = "build/App-*.xcarchive", keep = 3 }${diskExtra ? `\n
 protected = ["${SHOOTER.replace('A', '7')}", "box-test-kit", "Shooter Phone"]
 ephemeral = ["box-factory-*", "box-opus-*", "box-test-+([0-9])"]
 sweep     = ["box-*"]${simExtra ? `\n${simExtra}` : ''}
+
+[preflight]
+${/^keep_awake\s*=/m.test(preflightExtra) ? '' : 'keep_awake = false\n'}${preflightExtra}
 ${extraToml(p)}`;
   writeFileSync(p('factory.toml'), toml);
 

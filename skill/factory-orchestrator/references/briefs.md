@@ -21,6 +21,8 @@ Worker rules:
   it; never point tools at the main checkout. A blocked permission prompt stalls the night while the human sleeps.
 - When you check a command's exit code, use `set -o pipefail` or no pipe: `| tail` hides failures.
 - Return at most {words} words: what you did and why, the files, anything you're unsure of. No pasted code.
+- Context is the budget: once you pass ~{wrap_context_k}k tokens, or when told to wrap up, finish the current step, save
+  your diff to {patch_path} (`git diff` against the base, plus new files) and report. A fresh agent takes it from there.
 ```
 
 ## Implementer
@@ -50,7 +52,8 @@ Docs: update the docs the rules file names when you change contracts, routes, st
 ```
 
 Round 2+ goes by `SendMessage` to the same agent: the findings (frame paths and timestamps, the verdict line), what to
-change, what not to touch. Never restate the whole brief.
+change, what not to touch. Never restate the whole brief. After a few design rounds, or past `loop.wrap_context_k`, ask for
+the patch and hand the remaining proofs and re-checks to a fresh shooter started from it (SKILL.md §9).
 
 ## Shooter
 
@@ -106,4 +109,5 @@ leave them clearly marked for the implementer. Return at most {words} words.
 | `{guardrails_paragraph}`, `{hard_gates}`, `{rules_file}` | the rules file (`loop.rules`) |
 | `{tests.unit}`, `{tests.gate}` | `factory config get tests` |
 | `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the rules file's matrix table; the item; `proof.ios.dd` |
+| `{wrap_context_k}`, `{patch_path}` | `loop.wrap_context_k` (default 400); `<state_dir>/night-<n>/<id>.patch` |
 | `{reference_source}` | the item, plus the rules file's rule on what carries over between platforms (an exact port only for a look the human approved) |

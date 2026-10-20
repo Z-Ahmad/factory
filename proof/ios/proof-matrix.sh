@@ -22,7 +22,8 @@
 #                       fail-marker count, flags.png
 #   matrix-contact.png  every cell's contact sheet scaled to one height, side by side under a label band (label.swift)
 # and ends with `MATRIX: PASS|FAIL (n/m cells; launches: <cell> first|warm, ...)`. Exit 0 every cell PASS, 4 any cell FAIL,
-# 1 a tooling error. --plan prints the cells and stops (no simulator is touched).
+# 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 a tooling error. matrix.md starts with the "app:" line (which
+# build, from which commit). --plan prints the cells and stops (no simulator is touched).
 # Needs ffmpeg, node and (for the label band) swift. Simulators only: never a physical device.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory (factory proof-matrix ...)}/lib/sh/common.sh"
@@ -97,6 +98,10 @@ if [[ "$BUILD" == 1 ]]; then
 fi
 APP="$(fk_proof_app "$DD")"
 [[ -d "$APP" ]] || { echo "no built app in $DD (pass --build)" >&2; exit 1; }
+# Which build this is; without --build, a warning (or, with [proof.ios] stale_app = "refuse", exit 3) when the app is older
+# than the source.
+APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
+echo "$APP_LINE"
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -271,6 +276,7 @@ done <<<"$CELLS"
 {
   echo "# Proof matrix: $SCENARIO ($MATRIX)"
   echo
+  echo "$APP_LINE"$'\n'
   [[ ${#PASS_ARGS[@]} -eq 0 ]] || echo "sim-proof args: \`${PASS_ARGS[*]}\`"$'\n'
   echo "| cell | device | launch | system | app | verdict | worst flash | worst hold ms | worst bounce | LAYOUT-LOOP | flags |"
   echo "|---|---|---|---|---|---|---|---|---|---|---|"

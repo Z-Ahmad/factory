@@ -15,7 +15,7 @@
 #   verdict.json       the machine verdict (verdict/proof-verdict.mjs): flash/ghost, hold/stall, bounce and fail-marker findings
 #                      with timestamps, worst values, PASS/FAIL; plus one `VERDICT: PASS|FAIL (...)` line in the output
 #   flags.png          only when something is flagged: each flagged event as a before / flagged / after frame triple
-# Exit 0 PASS, 4 FAIL (a FAIL verdict; 0 with --no-gate), 1 error.
+# Exit 0 PASS, 4 FAIL (a FAIL verdict; 0 with --no-gate), 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 error.
 # --no-gate: record and write the verdict, but exit 0 on a FAIL.
 # --verdict-skip S: skip S seconds blind instead of detecting the launch screen (0 = judge everything).
 # --verdict-arg ARG: pass ARG through to proof-verdict.mjs, one word per flag (explicit flags beat the scenario's budget).
@@ -133,6 +133,10 @@ if [[ "$BUILD" == 1 ]]; then
 fi
 APP="$(fk_proof_app "$DD")"
 [[ -d "$APP" ]] || { echo "no built app at $APP (pass --build)" >&2; exit 1; }
+# Which build this is; without --build, a warning (or, with [proof.ios] stale_app = "refuse", exit 3) when the app is older
+# than the source.
+APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
+echo "$APP_LINE"
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"

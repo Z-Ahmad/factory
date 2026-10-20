@@ -471,6 +471,10 @@ export const SCHEMA = table({
       contact_height: int(),
       log_markers: strs(),
       fail_markers: strs(),
+      // sources: git pathspecs whose changes make an installed app stale (default the whole tree);
+      // stale_app: "warn" (default) or "refuse" when proof / proof-matrix run without --build on an app older than them
+      sources: strs(),
+      stale_app: str(),
       verdict: table({
         skip_start_s: num(),
         ignore_top: num(),
@@ -529,6 +533,10 @@ export const SCHEMA = table({
     build_pattern: str(),
     prices: strMap(),
   }),
+  // `factory preflight`. xcode: check Xcode can build for the simulator (default: on when [proof.ios] is set);
+  // xcode_probe: an extra command that must print an "iOS Simulator" row, rerun only when Xcode or CoreSimulator changes;
+  // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12), stopped by end-night.
+  preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),
@@ -561,6 +569,8 @@ export const SCHEMA = table({
     stop_after_blocked: int(),
     wake_s: int(),
     usage_limit_wake_s: int(),
+    // context size (thousands of tokens) past which an agent is told to wrap up and hand back a patch (default 400)
+    wrap_context_k: int(),
     implementer_words: int(),
     shooter_words: int(),
     linear: table({ prefix: str(), on_ship: str() }),

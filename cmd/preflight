@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
-# desc: before a firing: check disk, make sure the dev stack is up, restore the seed; one summary line, one exit code
+# desc: before a firing: check disk and Xcode, keep the Mac awake, make sure the dev stack is up, restore the seed; one summary line, one exit code
 # usage: factory preflight
 # First (not a step that can fail): unless [disk] dd_auto = false, `cleanup --apply --only derived-data` prunes stale
 # derived-data (no file changed for [disk] dd_stale_hours, default 6; in-use builds are left alone) and adds
 # "dd pruned N (X freed)" to the line when it removed something.
-# Runs, in order and stopping at the first failure: disk-guard, dev-up (without its own seed restore), then [seed] restore.
-# Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; dev up (no-op); seed ok", or
-# "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
+# Runs, in order and stopping at the first failure: disk-guard, xcode, keep-awake, dev-up (without its own seed restore),
+# then [seed] restore.
+#   xcode       macOS only, when [proof.ios] is configured or [preflight] xcode = true ([preflight] xcode = false turns it
+#               off): `xcodebuild -checkFirstLaunchStatus` must pass, `xcrun simctl list devices available` must list an
+#               iOS simulator, and [preflight] xcode_probe (a command run from the main checkout, e.g.
+#               `xcodebuild -showdestinations -scheme App`), when set, must print an "iOS Simulator" row; it reruns only
+#               when `xcodebuild -version` or CoreSimulator's version changed since it last passed. A broken Xcode
+#               (an App Store update that needs `sudo xcodebuild -runFirstLaunch`) fails with exit 4: stop the night.
+#               Notes "App Store auto-update on" in the line when it is, since that is how Xcode breaks overnight.
+#   keep-awake  macOS only, unless [preflight] keep_awake = false: makes sure one `caffeinate -dimsu` runs for the night
+#               ([preflight] keep_awake_hours, default 12; PID in <state_dir>/caffeinate.pid; end-night --apply stops
+#               it). Never fails the preflight. A closed MacBook lid sleeps the Mac anyway.
+# Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; xcode ok; awake (pid 123); dev up (no-op); seed ok",
+# or "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
 # Exit 0 when every step passed, otherwise the exit code of the first failing step (named in the line):
-# disk-guard 2 (below the floor) or 1; dev-up 1 or 2; seed 3. Changes no git state.
+# disk-guard 2 (below the floor) or 1; xcode 4; dev-up 1 or 2; seed 3. Changes no git state.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/sh/awake.sh"
+. "$FK_KIT_DIR/lib/darwin.sh"
 
 if [[ $# -gt 0 ]]; then echo "unknown arg: $1" >&2; exit 1; fi
 
@@ -33,6 +46,56 @@ if OUT="$("$FK_KIT_DIR/cmd/disk-guard" 2>&1)"; then RC=0; else RC=$?; fi
 FREE="$(printf '%s\n' "$OUT" | sed -n 's/.*: \([0-9][0-9]*\) GB free.*/\1/p' | tail -n 1)"
 DISK="disk ${FREE:-?} GB free"
 
+# xcode_broken <why> <output>: exit 4 with the fix and the instruction to stop.
+xcode_broken() {
+  fail xcode 4 "xcode: $1
+Xcode cannot build for the simulator, so no build, test or proof will work this night.
+Fix (needs the human): run \`sudo xcodebuild -runFirstLaunch\` (an admin password), or open Xcode once and let it
+install its components; then run \`factory preflight\` again.
+Stop the night and notify the human; agents cannot work around this.
+${2:+--- output ---
+$2}"
+}
+XCODE=""
+XCODE_ON="${FK_PREFLIGHT_XCODE:-}"
+if [[ -z "$XCODE_ON" ]]; then if compgen -v FK_PROOF_IOS_ >/dev/null; then XCODE_ON=true; else XCODE_ON=false; fi; fi
+if [[ "$XCODE_ON" == true ]] && fk_is_darwin; then
+  if OUT="$(xcodebuild -checkFirstLaunchStatus 2>&1)"; then RC=0; else RC=$?; fi
+  (( RC == 0 )) || xcode_broken "xcodebuild -checkFirstLaunchStatus failed (exit $RC)" "$OUT"
+  if ! OUT="$(xcrun simctl list devices available 2>&1)"; then xcode_broken "xcrun simctl list devices failed" "$OUT"; fi
+  N="$(printf '%s\n' "$OUT" | awk '/^-- /{ios = ($2 == "iOS")} ios && /\([0-9A-F-]{36}\)/ {n++} END {print n + 0}')"
+  (( N > 0 )) || xcode_broken "no available iOS simulator" "$OUT"
+  # The probe is slow (an -showdestinations can take 15 s), so it reruns only when Xcode or CoreSimulator changed:
+  # <state_dir>/xcode-probe.ok holds the versions it last passed on. (FK_CORESIM_PLIST is for tests.)
+  PROBE_KEY="" PROBE_OK="${FK_PROJECT_STATE_DIR:?}/xcode-probe.ok"
+  if [[ -n "${FK_PREFLIGHT_XCODE_PROBE:-}" ]]; then
+    PROBE_KEY="$(xcodebuild -version 2>/dev/null | tr '\n' ' '; plutil -extract CFBundleVersion raw \
+      "${FK_CORESIM_PLIST:-/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Info.plist}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${FK_PREFLIGHT_XCODE_PROBE:-}" && "$(cat "$PROBE_OK" 2>/dev/null || true)" != "$PROBE_KEY" ]]; then
+    if ! OUT="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && bash -c "$FK_PREFLIGHT_XCODE_PROBE" 2>&1)"; then
+      xcode_broken "[preflight] xcode_probe failed" "$(printf '%s\n' "$OUT" | tail -n 20)"
+    fi
+    if ! printf '%s\n' "$OUT" | grep -q 'iOS Simulator'; then
+      xcode_broken "[preflight] xcode_probe lists no iOS Simulator destination" "$(printf '%s\n' "$OUT" | tail -n 20)"
+    fi
+    mkdir -p "$FK_PROJECT_STATE_DIR"; printf '%s' "$PROBE_KEY" > "$PROBE_OK"
+  fi
+  XCODE="xcode ok"
+  if [[ "$(defaults read /Library/Preferences/com.apple.commerce AutoUpdate 2>/dev/null || true)" == 1 ]]; then
+    XCODE="xcode ok (App Store auto-update on: it can break Xcode overnight)"
+  fi
+  XCODE="$XCODE; "
+fi
+
+AWAKE=""
+if [[ "${FK_PREFLIGHT_KEEP_AWAKE:-true}" != false ]] && fk_is_darwin; then
+  PID="$(fk_awake_pid)"
+  if [[ -n "$PID" ]]; then AWAKE="awake (pid $PID); "
+  elif PID="$(fk_awake_start)"; then AWAKE="awake (started, pid $PID); "
+  else AWAKE="awake: caffeinate did not start; "; fi
+fi
+
 if OUT="$("$FK_KIT_DIR/cmd/dev-up" --no-seed 2>&1)"; then RC=0; else RC=$?; fi
 (( RC == 0 )) || fail dev-up "$RC" "$OUT"
 if [[ "$OUT" == *"nothing to start"* ]]; then DEV="dev up (no-op)"; else DEV="dev started"; fi
@@ -44,4 +107,4 @@ if [[ -z "${FK_SEED_RESTORE:-}" ]]; then SEED="seed skipped (no [seed] restore)"
   SEED="seed ok${LAST:+ ($LAST)}"
 fi
 
-echo "factory-preflight: ok - ${DD}$DISK; $DEV; $SEED"
+echo "factory-preflight: ok - ${DD}$DISK; ${XCODE}${AWAKE}$DEV; $SEED"

@@ -30,6 +30,7 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    | `stuck` | `ask` | what to do when the rescue pass fails too (§7) |
    | `stop_after_blocked` | 3 | consecutive blocked items that end the night |
    | `wake_s` / `usage_limit_wake_s` | 60 / 1800 | `ScheduleWakeup` delays (§9) |
+   | `wrap_context_k` | 400 | an agent past this many thousand tokens of context wraps up and hands back a patch (§9) |
    | `implementer_words` / `shooter_words` | 150 / 80 | report limits in the briefs |
    | `linear` | none | tracker issue prefix and the state to move shipped issues to |
    | `allow_merge` | false | never merge a PR unless this is true or the human says so |
@@ -57,12 +58,18 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 - `stop_after_blocked` items blocked in a row → End of night, and say what looks systemic.
 - An item tagged `[needs-user]` with no answer in the Log or "With the user" → skip it; it doesn't count as blocked.
 - `factory preflight` exits 2 (disk below the floor even after cleanup) → log it, End of night.
+- `factory preflight` exits 4 (Xcode can't build for the simulator, e.g. an App Store update that needs
+  `sudo xcodebuild -runFirstLaunch`) → log it, PushNotification the human with the fix it printed, End of night. Agents
+  can't work around it; don't let them try.
 - Usage limit → §9. The human says pause → park work as a patch (§7) and stop the wakeups.
 
 ## 2. Preflight: every firing
 
-1. `factory preflight` prints one line: stale-derived-data prune → disk-guard → dev-up → seed restore. Non-zero names the failing step:
-   disk 2 → stop; dev-up 1/2 → read its stderr, retry `factory dev-up` once, then stop and log; seed 3 → log and stop.
+1. `factory preflight` prints one line: stale-derived-data prune → disk-guard → xcode → keep-awake → dev-up → seed restore.
+   Non-zero names the failing step: disk 2 → stop; xcode 4 → stop and notify the human (§1); dev-up 1/2 → read its
+   stderr, retry `factory dev-up` once, then stop and log; seed 3 → log and stop. "App Store auto-update on" in the line →
+   tell the human once (it is how Xcode breaks overnight). keep-awake holds a `caffeinate` for the night (`preflight.keep_awake`);
+   a closed MacBook lid still sleeps the Mac.
    Never start or kill the dev stack any other way (the hook denies it).
 2. **Worktree.** First firing: `factory worktree night-<n>` (prints the push command), then enter it with
    `EnterWorktree` **before any subagent starts**. Subagents are locked to the worktree you are in when they start or
@@ -120,7 +127,7 @@ Order, every round (detail: **references/review.md**):
 5. `factory dev-status`: every port still up (workers must not touch the stack).
 Judge against the rules file's gates and guardrails. **Trust pixels, not reports**: an agent's "clean" means nothing
 until you have seen the frames. Fixes go back by `SendMessage` to the same implementer (it keeps its context), within
-`rounds` (`taste_rounds` for TASTE); re-prove after every round.
+`rounds` (`taste_rounds` for TASTE), until it nears `loop.wrap_context_k` (§9); re-prove after every round.
 
 ## 7. Stuck items
 
@@ -150,9 +157,19 @@ the earlier night measured.
 
 - End every firing with `ScheduleWakeup(wake_s, prompt = the same /loop prompt)`.
 - **No heartbeat turns.** A firing with nothing to do ends with the wakeup or the stop, not a "still waiting" message.
-- A worker or you hit a usage limit → one Log line, `ScheduleWakeup(usage_limit_wake_s)`, resume the same item
-  (`SendMessage` the same agent if it survived).
+- A worker or you hit a usage or session limit (a 429, "session limit") → one Log line **with the reset time** the error
+  gives, `ScheduleWakeup` for just after it (else `usage_limit_wake_s`), then resume the same item: an agent that shares
+  your worktree by `SendMessage`; an isolated one is rebuilt from its saved patch by a fresh agent, never resumed.
 - Spend on proofs, not on more agents: review, not parallelism, is the bottleneck.
+
+**Context is the budget.** Every tool call resends an agent's whole context, so a 600k-token agent costs several times a
+fresh one per call, and one long agent can spend the account's limit for every lane:
+- A `models.implement` / `models.rescue` agent does the design rounds, then hands back a patch (`<state_dir>/night-<n>/
+  <id>.patch`). The rest (remaining proofs, re-checks, merges) goes to a fresh `models.shoot` agent started from that
+  patch, or you run the commands yourself.
+- Never two high-effort `implement` / `rescue` agents at once.
+- An agent past `loop.wrap_context_k` thousand tokens (default 400; the harness shows its size) wraps up: it finishes
+  the step, saves its patch and reports.
 
 ## 10. End of night
 
@@ -170,6 +187,7 @@ the earlier night measured.
    - **Stale derived data** (no write for `disk.dd_stale_hours`) in `disk.dd_root` and `dd_roots_extra`; builds in use stay.
      `factory cleanup` also drops the `disk.dd_root` builds and `sim.ephemeral` sims named for an agent worktree it removes.
    - **Scratch** in `/tmp` and `$TMPDIR` (Instruments traces, TestFlight upload dirs) older than an hour.
+   - **The keep-awake `caffeinate`** preflight started (the Mac may sleep again).
    Never `rm` videos, traces or app containers yourself before this step; if the disk is low mid-night,
    `factory cleanup` (dry run, then `--apply`) is the same sweep.
 4. Read the `night file:` line of the report. `factory night-lint --night <n>` lists the findings: errors (exit 3) are a
@@ -207,6 +225,7 @@ other worktrees), symlink each `phone.link_from_main` from the main checkout, de
 | Rescue | `rescue` | the second pass on a stuck item, and gnarly bugs (layout loops, transitions) |
 
 Never use a `banned` model, even for a small chore. Say in the Log why a rescue or ideation pass ran.
+`implement` / `rescue` are the expensive ones: design rounds only, then a patch for a cheaper shooter (§9).
 
 ## 13. Refusals and the hook
 

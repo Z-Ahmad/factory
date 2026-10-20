@@ -20,12 +20,15 @@
 #   6 pr         the branch tip + PR state via gh
 #   7 log        --apply appends one summary line ([project] log_line) to the night file
 #   8 night file `factory night-lint` on the night file (after the line above is appended); listed in the report
+#   9 awake      --apply stops the night's caffeinate that preflight started (<state_dir>/caffeinate.pid; never any
+#                other process)
 # Exit 0 normally; exit 3 if a secret is empty or missing, a worktree has uncommitted work, or the night file has lint
 # errors (after finishing every step); exit 1 on a bad argument or a missing repo.
 # FK_NOW_HHMM overrides the clock in the log line (for tests).
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 . "$FK_KIT_DIR/lib/darwin.sh"
+. "$FK_KIT_DIR/lib/sh/awake.sh"
 shopt -s extglob   # so [sim] patterns can say box-test-+([0-9])
 
 NIGHT="" APPLY=0 STOP_EMU=0
@@ -307,6 +310,13 @@ else
   LINT_STATE="no night file"
 fi
 echo "night file: ${LINT_STATE#night-lint: }"
+
+# ---- 9. keep-awake ----
+header "9 keep-awake"
+AWAKE_PID="$(fk_awake_pid)"
+if [[ -z "$AWAKE_PID" ]]; then echo "awake: no caffeinate from preflight running"
+elif [[ "$APPLY" == 1 ]]; then fk_awake_stop >/dev/null; echo "awake: stopped caffeinate (pid $AWAKE_PID); the Mac may sleep again"
+else echo "awake: would stop caffeinate (pid $AWAKE_PID)"; fi
 
 echo
 echo "factory-end-night: done (exit $EXIT$([[ $EXIT == 3 ]] && echo ": token empty, dirty worktree or night-file errors"))"
