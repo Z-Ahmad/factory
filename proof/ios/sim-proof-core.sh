@@ -29,6 +29,8 @@
 # prepended, as for flag_env); [proof.ios] orientation_cmd, when set, turns the simulator before install
 # ({udid} {orientation} {dd} filled in, run from the project root) and turns it back to portrait after the clip, on
 # failure too, since a turn persists on the simulator. At least one of the two must be set. Portrait needs neither.
+# With --build and orientation_cmd, [proof.ios] orientation_build (when set) builds instead of build, so whatever the turn
+# needs (a UI-test runner) is in the derived data too.
 # --plan: print the launch environment the run would use (the password shown as <password>) and stop; touches no simulator.
 # Simulators only: never a physical device. Needs ffmpeg, and node.
 set -euo pipefail
@@ -145,7 +147,7 @@ xcrun simctl list devices | grep -q "$UDID" || { echo "no simulator with UDID $U
 
 DD="$(fk_proof_dd "$DD_ARG")"
 if [[ "$BUILD" == 1 ]]; then
-  BUILD_TPL="$(fk_proof_json proof.ios.build)"
+  BUILD_TPL="$(fk_proof_build_tpl "$([[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]] && echo 1 || echo 0)")"
   [[ -n "$BUILD_TPL" ]] || { echo "--build needs [proof.ios] build in factory.toml" >&2; exit 1; }
   ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
 fi
@@ -184,8 +186,8 @@ xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
 if [[ -n "$SYSTEM_APPEARANCE" ]]; then xcrun simctl ui "$UDID" appearance "$SYSTEM_APPEARANCE"; fi
 if [[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]]; then
   echo "turning $UDID to $ORIENTATION..."
-  TURNED=1
   turn "$ORIENTATION" || { echo "[proof.ios] orientation_cmd failed for $ORIENTATION; tail of $OUT/orientation.log:" >&2; tail -15 "$OUT/orientation.log" >&2; exit 1; }
+  TURNED=1
 fi
 if [[ "$INSTALL" == 1 ]]; then xcrun simctl install "$UDID" "$APP"; fi
 

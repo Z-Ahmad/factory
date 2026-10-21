@@ -478,6 +478,8 @@ export const SCHEMA = table({
       // --orientation <o>: orientation_cmd turns the simulator ({udid} {orientation} {dd}) before the clip and back to
       // portrait after; orientation_env hands <o> to the app (env_prefix prepended). Either may be unset.
       orientation_cmd: str(),
+      // the --build command when orientation_cmd will turn the sim (e.g. build-for-testing, so the runner exists)
+      orientation_build: str(),
       orientation_env: str(),
       verdict: table({
         skip_start_s: num(),

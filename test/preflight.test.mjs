@@ -145,3 +145,15 @@ test('keep-awake: skipped off macOS', () =>
     assert.ok(!r.stdout.includes('awake'));
     assert.ok(!existsSync(t.pidFile));
   }));
+
+test('git: a shared repo with core.bare = true fails preflight with exit 5 and the fix', () =>
+  withProject({}, async (t) => {
+    t.git(t.main, 'config', 'core.bare', 'true');
+    const r = t.run();
+    assert.equal(r.status, 5);
+    assert.equal(r.stdout, 'factory-preflight: FAILED at git (exit 5)\n');
+    assert.match(r.stderr, /is not a working tree \(core\.bare = true/);
+    assert.match(r.stderr, /config --unset core\.bare/);
+    t.git(t.main, 'config', '--unset', 'core.bare');
+    assert.equal(t.run().status, 0);
+  }));

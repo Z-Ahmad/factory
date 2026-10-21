@@ -43,7 +43,10 @@ USAGE="usage: factory proof-compare --scenario <s> --out <dir> (--base <ref> | -
 [[ -n "$BASE_REF" || -n "$BASE_DD" ]] && ! [[ -n "$BASE_REF" && -n "$BASE_DD" ]] || { echo "pass one of --base <ref> or --base-dd <dd>" >&2; exit 1; }
 [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "--runs wants a whole number" >&2; exit 1; }
 [[ -n "$UDID" ]] || { echo "no simulator: pass --udid or set [sim] shooter_udid" >&2; exit 1; }
-BUILD_TPL="$(fk_proof_json proof.ios.build)"
+TURNS=0 prev=""
+for a in ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}; do [[ "$prev" == --orientation && "$a" != portrait ]] && TURNS=1; prev="$a"; done
+[[ -n "$(fk_proof_json proof.ios.orientation_cmd)" ]] || TURNS=0
+BUILD_TPL="$(fk_proof_build_tpl "$TURNS")"
 build_into() { # build_into <tree> <dd>
   [[ -n "$BUILD_TPL" ]] || { echo "building needs [proof.ios] build in factory.toml" >&2; return 1; }
   ( cd "$1" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$2")")" )

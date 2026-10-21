@@ -2,6 +2,12 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.14.1 (2026-10-20)
+
+- `[proof.ios] orientation_build`: the command `--build` uses (in `proof`, `proof-matrix` and `proof-compare`) when `orientation_cmd` will turn the simulator, e.g. a `build-for-testing` so the UI-test runner the turn needs is in the derived data. Before, `--build --orientation landscape` built only the app, and a runner-based turn failed.
+- A turn that fails is no longer "turned back" (that only printed a second, misleading warning).
+- preflight has a new `git` step: the main checkout and the worktree you run from must be working trees with `core.bare` unset. A test's scratch `git init` that inherits a hook's `GIT_DIR` can set `core.bare = true` on the shared repo and break git in every worktree. Preflight now exits **5** with the fix.
+
 ## v0.14.0 (2026-10-20)
 
 ### Builder slots, enforced

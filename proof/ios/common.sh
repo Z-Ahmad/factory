@@ -31,5 +31,15 @@ fk_proof_app() {
   echo "$app"
 }
 
+# fk_proof_build_tpl <turns 0|1>: the build command for --build. With 1 (a non-portrait orientation will be turned by
+# [proof.ios] orientation_cmd), [proof.ios] orientation_build when set (e.g. a build-for-testing that also builds the
+# runner the turn needs), else [proof.ios] build.
+fk_proof_build_tpl() {
+  local t=""
+  if [[ "$1" == 1 ]]; then t="$(fk_proof_json proof.ios.orientation_build)"; fi
+  [[ -n "$t" ]] || t="$(fk_proof_json proof.ios.build)"
+  printf '%s' "$t"
+}
+
 # fk_proof_fail_markers: [proof.ios] fail_markers, one per line (LAYOUT-LOOP when unset).
 fk_proof_fail_markers() { printf '%s\n' "${FK_PROOF_IOS_FAIL_MARKERS:-LAYOUT-LOOP}"; }

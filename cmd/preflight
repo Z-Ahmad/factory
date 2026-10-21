@@ -4,8 +4,11 @@
 # First (not a step that can fail): unless [disk] dd_auto = false, `cleanup --apply --only derived-data` prunes stale
 # derived-data (no file changed for [disk] dd_stale_hours, default 6; in-use builds are left alone) and adds
 # "dd pruned N (X freed)" to the line when it removed something.
-# Runs, in order and stopping at the first failure: disk-guard, xcode, keep-awake, dev-up (without its own seed restore),
-# then [seed] restore.
+# Runs, in order and stopping at the first failure: disk-guard, git, xcode, keep-awake, dev-up (without its own seed
+# restore), then [seed] restore.
+#   git         the main checkout, and the worktree you run from, must be git working trees with core.bare unset: a
+#               scratch `git init` that inherited a hook's GIT_DIR can set core.bare = true on the shared repo, and then
+#               every git command in every worktree fails. Exit 5, with the fix.
 #   xcode       macOS only, when [proof.ios] is configured or [preflight] xcode = true ([preflight] xcode = false turns it
 #               off): `xcodebuild -checkFirstLaunchStatus` must pass, `xcrun simctl list devices available` must list an
 #               iOS simulator, and [preflight] xcode_probe (a command run from the main checkout, e.g.
@@ -19,7 +22,7 @@
 # Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; xcode ok; awake (pid 123); dev up (no-op); seed ok",
 # or "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
 # Exit 0 when every step passed, otherwise the exit code of the first failing step (named in the line):
-# disk-guard 2 (below the floor) or 1; xcode 4; dev-up 1 or 2; seed 3. Changes no git state.
+# disk-guard 2 (below the floor) or 1; git 5; xcode 4; dev-up 1 or 2; seed 3. Changes no git state.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 . "$FK_KIT_DIR/lib/sh/awake.sh"
@@ -45,6 +48,20 @@ if OUT="$("$FK_KIT_DIR/cmd/disk-guard" 2>&1)"; then RC=0; else RC=$?; fi
 (( RC == 0 )) || fail disk-guard "$RC" "$OUT"
 FREE="$(printf '%s\n' "$OUT" | sed -n 's/.*: \([0-9][0-9]*\) GB free.*/\1/p' | tail -n 1)"
 DISK="disk ${FREE:-?} GB free"
+
+# git: each checkout must still be a working tree
+CHECKS=("${FK_PROJECT_MAIN_CHECKOUT:?}")
+if HERE="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ "$HERE" != "$(cd "$FK_PROJECT_MAIN_CHECKOUT" && pwd -P)" ]]; then CHECKS+=("$HERE"); fi
+for C in "${CHECKS[@]}"; do
+  BARE="$(git -C "$C" config --bool core.bare 2>/dev/null || true)"
+  INSIDE="$(git -C "$C" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+  if [[ "$BARE" == true || "$INSIDE" != true ]]; then
+    fail git 5 "git: $C is not a working tree (core.bare = ${BARE:-unset}, inside work tree: ${INSIDE:-no})
+Something set core.bare = true on the shared repo (often a test's scratch \`git init\` that inherited GIT_DIR from a
+hook), and every worktree's git now fails. Fix: git -C '$FK_PROJECT_MAIN_CHECKOUT' config --unset core.bare  (or: config core.bare false),
+then run \`factory preflight\` again. Find what set it before the next item, or it comes back."
+  fi
+done
 
 # xcode_broken <why> <output>: exit 4 with the fix and the instruction to stop.
 xcode_broken() {

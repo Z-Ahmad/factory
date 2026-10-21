@@ -172,6 +172,17 @@ case "$*" in "simctl list devices") echo "    Phone (ABC) (Booted)" ;; *recordVi
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /no video written/);
     assert.equal(readFileSync(join(t.dir, 'turns.log'), 'utf8'), `ABC landscape ${dd}\nABC portrait ${dd}\n`);
+    // --build with a turn uses orientation_build; a failed turn is not "turned back"
+    writeFileSync(join(t.dir, 'factory.toml'), readFileSync(join(t.dir, 'factory.toml'), 'utf8')
+      .replace('orientation_cmd = "echo {udid} {orientation} {dd} >> turns.log"', 'orientation_cmd = "exit 1"\norientation_build = "echo for-testing >> builds.log"')
+      .replace('build         = "scripts/build.sh {dd}"', 'build         = "echo app-only >> builds.log"'));
+    const b = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out2'), '--seconds', '0', '--build', '--orientation', 'landscape'], {
+      PATH: `${bin}:${process.env.PATH}`,
+    });
+    assert.equal(b.status, 1);
+    assert.match(b.stderr, /orientation_cmd failed for landscape/);
+    assert.doesNotMatch(b.stderr, /back to portrait/);
+    assert.equal(readFileSync(join(t.dir, 'builds.log'), 'utf8'), 'for-testing\n');
     const calls = readFileSync(join(t.dir, 'xcrun.log'), 'utf8');
     assert.ok(calls.indexOf('simctl install') > 0, calls); // turned first, then installed
   } finally {

@@ -95,7 +95,9 @@ EPHEMERAL_PREFIX="${EPHEMERAL_PREFIX%\*}"
 
 DD="$(fk_proof_dd "$DD_ARG")"
 if [[ "$BUILD" == 1 ]]; then
-  BUILD_TPL="$(fk_proof_json proof.ios.build)"
+  TURNS=0
+  if [[ -n "$(fk_proof_json proof.ios.orientation_cmd)" ]] && printf '%s\n' "$CELLS" | awk -F'\t' '$6 != "-" && $6 != "portrait" { f = 1 } END { exit !f }'; then TURNS=1; fi
+  BUILD_TPL="$(fk_proof_build_tpl "$TURNS")"
   [[ -n "$BUILD_TPL" ]] || { echo "--build needs [proof.ios] build in factory.toml" >&2; exit 1; }
   ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
 fi
