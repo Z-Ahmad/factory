@@ -157,3 +157,21 @@ test('git: a shared repo with core.bare = true fails preflight with exit 5 and t
     t.git(t.main, 'config', '--unset', 'core.bare');
     assert.equal(t.run().status, 0);
   }));
+
+test('[sim] runtime: preflight names booted simulators on another runtime, never protected ones', () =>
+  withProject({ preflight: XCODE_ON, toml: '' }, async (t) => {
+    writeFileSync(t.p('factory.toml'), readFileSync(t.p('factory.toml'), 'utf8').replace('[sim]\n', '[sim]\nruntime = "iOS-26-5"\n'));
+    const devices = {
+      'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ name: 'box-factory-1', udid: 'U1', state: 'Booted' }],
+      'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+        { name: 'box-opus-9', udid: 'U2', state: 'Booted' },
+        { name: 'box-test-kit', udid: 'U3', state: 'Booted' }, // protected
+        { name: 'box-opus-off', udid: 'U4', state: 'Shutdown' },
+      ],
+    };
+    writeFileSync(t.p('devices.json'), JSON.stringify({ devices }));
+    stub(t, 'xcrun', `if [[ "$*" == *-j* ]]; then cat '${t.p('devices.json')}'; else echo "-- iOS 26.5 --"; echo "    P (11111111-0000-0000-0000-000000000009) (Booted) "; fi`);
+    const r = t.run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /; xcode ok; booted off \[sim\] runtime: box-opus-9 \(iOS-27-0\); dev up/);
+  }));

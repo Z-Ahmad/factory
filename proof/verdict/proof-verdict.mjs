@@ -17,7 +17,8 @@
 //                       into one burst. WARN >= --flash-warn, FAIL >= --flash-fail.
 //   (b) HOLD / STALL    simctl records variable frame rate, so a gap in presentation timestamps is a frame the app
 //                       did not draw. A gap >= --hold-warn ms (WARN; --hold-fail ms FAILs) counts only when the screen
-//                       is MOVING on both sides of it: a static screen legitimately has long gaps. Holds inside the
+//                       is MOVING on both sides of it (the frames before the gap, and the frame that ends it: a settling
+//                       spring's last near-identical frame is not a stall): a static screen legitimately has long gaps. Holds inside the
 //                       launch window (the first --launch-window s after the launch screen: a cold boot's tile load)
 //                       can only WARN.
 //   (c) LAYOUT-LOOP     any line in --steps <steps.log> that contains a fail marker is a FAIL. The marker is the text the app
@@ -375,19 +376,27 @@ export function detectLaunch(uniform, pts, o = DEFAULTS) {
 }
 
 // Gaps in presentation time with motion on both sides. `pts` in seconds (sorted), `motion[i]` as above.
-export function findHolds(pts, motion, { startFrame = 0, holdWarn, holdMotion, side = 3 }) {
+// "Moving" is the mean motion of the frames NEAR the gap: up to `side` frames, only those within `nearMs` of its start
+// (before) or of the frame that ends it (after, that frame included). simctl records only on change, so frame counts
+// alone reach seconds away: a settling spring's last sub-pixel step lands as one late, near-identical frame, and the next
+// real motion seconds later is a new movement, not the far side of a stall. Near-identical frames also interleave real
+// motion, so no single frame decides.
+export function findHolds(pts, motion, { startFrame = 0, holdWarn, holdMotion, side = 3, nearMs = 50 }) {
   const holds = []
-  const avg = (a, b) => {
+  const near = (from, step, limitS) => {
     let s = 0, n = 0
-    for (let j = Math.max(1, a); j <= Math.min(motion.length - 1, b); j++) { s += motion[j]; n++ }
+    for (let j = from, k = 0; k < side && j >= 1 && j < motion.length; j += step, k++) {
+      if (k > 0 && Math.abs(pts[j] - pts[from]) * 1000 > limitS) break
+      s += motion[j]; n++
+    }
     return n ? s / n : 0
   }
+  const lim = Math.max(nearMs, holdWarn)
   for (let i = Math.max(1, startFrame + 1); i < pts.length; i++) {
     const gap = (pts[i] - pts[i - 1]) * 1000
     if (gap < holdWarn) continue
-    // Moving before: the frames up to the gap; moving after: the frames from the one that ends it (it shows the jump).
-    const before = avg(i - side, i - 1)
-    const after = avg(i + 1, i + side)
+    const before = near(i - 1, -1, lim)
+    const after = near(i, 1, lim)
     if (before >= holdMotion && after >= holdMotion) holds.push({ i, t: pts[i - 1], gapMs: gap, before, after, across: motion[i] })
   }
   return holds

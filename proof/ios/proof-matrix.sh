@@ -8,7 +8,8 @@
 #                          device_types = ["<SimDeviceType suffix>", ...]   (the first one this Mac has wins; absent = the shooter's type)
 #                          orientation = "landscape" | ...   (optional: the cell runs `factory proof --orientation <o>`, which
 #                          turns the sim and back once per cell; --orientation <o> here is the default for cells without one)
-# sim = "shooter" runs on --udid (default [sim] shooter_udid) as it is. sim = "fresh" gets an ephemeral simulator, named from the
+# sim = "shooter" runs on --udid (default [sim] shooter_udid) as it is. sim = "fresh" gets an ephemeral simulator on
+# [sim] runtime (default: the shooter's runtime), named from the
 # first [sim] ephemeral pattern (its trailing * replaced by <cell>-<rand>), whose system appearance is set BEFORE the app is
 # installed, so the launch snapshot is honest; it is deleted when its cell is done and on exit/failure/Ctrl-C (unless --keep-sims).
 # No other simulator is touched; the shooter's own light/dark is put back on exit. One build serves every cell: --build builds
@@ -143,6 +144,8 @@ SHOOTER_INFO="$(xcrun simctl list devices -j | node -e '
   for (const [rt, ds] of Object.entries(j.devices)) for (const d of ds) if (d.udid === process.argv[1]) console.log(rt + "\t" + d.deviceTypeIdentifier)
 ' "$UDID")"
 RUNTIME="${SHOOTER_INFO%%$'\t'*}" SHOOTER_TYPE="${SHOOTER_INFO##*$'\t'}"
+# [sim] runtime pins every fresh simulator's runtime (a newer default runtime can be broken); else the shooter's
+if [[ -n "$(fk_sim_runtime)" ]]; then RUNTIME="$(fk_sim_runtime)"; fi
 [[ -n "$RUNTIME" && -n "$SHOOTER_TYPE" ]] || { echo "could not read the runtime / device type of $UDID" >&2; exit 1; }
 
 # "id<TAB>name" of the first installed device type among the given SimDeviceType suffixes (comma separated).

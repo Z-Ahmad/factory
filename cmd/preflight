@@ -15,7 +15,8 @@
 #               `xcodebuild -showdestinations -scheme App`), when set, must print an "iOS Simulator" row; it reruns only
 #               when `xcodebuild -version` or CoreSimulator's version changed since it last passed. A broken Xcode
 #               (an App Store update that needs `sudo xcodebuild -runFirstLaunch`) fails with exit 4: stop the night.
-#               Notes "App Store auto-update on" in the line when it is, since that is how Xcode breaks overnight.
+#               Notes "App Store auto-update on" in the line when it is, since that is how Xcode breaks overnight, and,
+#               with [sim] runtime set, names booted simulators (not [sim] protected) on another runtime.
 #   keep-awake  macOS only, unless [preflight] keep_awake = false: makes sure one `caffeinate -dimsu` runs for the night
 #               ([preflight] keep_awake_hours, default 12; PID in <state_dir>/caffeinate.pid; end-night --apply stops
 #               it). Never fails the preflight. A closed MacBook lid sleeps the Mac anyway.
@@ -101,6 +102,21 @@ if [[ "$XCODE_ON" == true ]] && fk_is_darwin; then
   XCODE="xcode ok"
   if [[ "$(defaults read /Library/Preferences/com.apple.commerce AutoUpdate 2>/dev/null || true)" == 1 ]]; then
     XCODE="xcode ok (App Store auto-update on: it can break Xcode overnight)"
+  fi
+  # [sim] runtime: a booted simulator on another runtime (not [sim] protected) is named, since that is how a broken
+  # default runtime slips back in
+  if [[ -n "${FK_SIM_RUNTIME:-}" ]]; then
+    WANT="$FK_SIM_RUNTIME"; [[ "$WANT" == com.apple.* ]] || WANT="com.apple.CoreSimulator.SimRuntime.$WANT"
+    OFF="$(xcrun simctl list devices booted -j 2>/dev/null | node -e '
+      let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        const [want, prot] = process.argv.slice(1), globs = prot.split("\n").filter(Boolean)
+        const re = (g) => new RegExp("^" + g.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$")
+        const off = []
+        try { for (const [rt, ds] of Object.entries(JSON.parse(s).devices || {})) for (const d of ds)
+          if (d.state === "Booted" && rt !== want && !globs.some((g) => re(g).test(d.name) || re(g).test(d.udid))) off.push(d.name + " (" + rt.split(".").pop() + ")") } catch {}
+        console.log(off.join(", "))
+      })' "$WANT" "${FK_SIM_PROTECTED:-}" || true)"
+    if [[ -n "$OFF" ]]; then XCODE="$XCODE; booted off [sim] runtime: $OFF"; fi
   fi
   XCODE="$XCODE; "
 fi

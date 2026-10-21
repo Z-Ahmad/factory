@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { ConfigError, load, parseToml, toEnvSh } from '../cmd/config.mjs';
-import { factory, fixture } from './helpers.mjs';
+import { KIT, factory, fixture, run, scratch } from './helpers.mjs';
 
 const parse = (text) => parseToml(text).data;
 const syntaxError = (text) => {
@@ -325,4 +326,30 @@ test('disk and sim: clips, $TMPDIR sweeps and the simulator erase keys are in th
   // wrong types are caught
   const bad = load(add(add(validText, 'disk', 'clips = true'), 'sim', 'erase_above_gb = "six"'));
   assert.equal(bad.errors.length, 2);
+});
+
+test('config validate: [sim] runtime must be an installed, available runtime (checked on macOS only)', () => {
+  const s = scratch();
+  try {
+    const bin = join(s.dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'xcrun'), `#!/usr/bin/env bash\necho '{"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-26-5","isAvailable":true},{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-25-0","isAvailable":false}]}'\n`);
+    chmodSync(join(bin, 'xcrun'), 0o755);
+    const toml = (rt) => {
+      const f = join(s.dir, 'factory.toml');
+      writeFileSync(f, readFileSync(fixture('valid.toml'), 'utf8').replace('[sim]\n', `[sim]\nruntime = "${rt}"\n`));
+      return f;
+    };
+    const env = (os) => ({ PATH: `${bin}:${process.env.PATH}`, FK_UNAME: os });
+    const ok = run('node', [join(KIT, 'cmd', 'config.mjs'), 'validate', '--file', toml('iOS-26-5')], { env: { ...process.env, ...env('Darwin') } });
+    assert.equal(ok.status, 0, ok.stderr);
+    const bad = run('node', [join(KIT, 'cmd', 'config.mjs'), 'validate', '--file', toml('com.apple.CoreSimulator.SimRuntime.iOS-25-0')], { env: { ...process.env, ...env('Darwin') } });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /sim\.runtime: com\.apple\.CoreSimulator\.SimRuntime\.iOS-25-0 is not an installed, available simulator runtime \(have: com\.apple\.CoreSimulator\.SimRuntime\.iOS-26-5\)/);
+    const linux = run('node', [join(KIT, 'cmd', 'config.mjs'), 'validate', '--file', toml('iOS-99-0')], { env: { ...process.env, ...env('Linux') } });
+    assert.equal(linux.status, 0);
+    assert.match(linux.stdout, /note: sim\.runtime not checked \(not macOS\)/);
+  } finally {
+    s.cleanup();
+  }
 });

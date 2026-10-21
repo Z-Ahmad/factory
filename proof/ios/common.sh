@@ -41,5 +41,12 @@ fk_proof_build_tpl() {
   printf '%s' "$t"
 }
 
+# fk_sim_runtime: [sim] runtime as a full identifier ("iOS-26-5" -> com.apple.CoreSimulator.SimRuntime.iOS-26-5), or nothing.
+fk_sim_runtime() {
+  local r="${FK_SIM_RUNTIME:-}"
+  [[ -z "$r" || "$r" == com.apple.* ]] || r="com.apple.CoreSimulator.SimRuntime.$r"
+  printf '%s' "$r"
+}
+
 # fk_proof_fail_markers: [proof.ios] fail_markers, one per line (LAYOUT-LOOP when unset).
 fk_proof_fail_markers() { printf '%s\n' "${FK_PROOF_IOS_FAIL_MARKERS:-LAYOUT-LOOP}"; }

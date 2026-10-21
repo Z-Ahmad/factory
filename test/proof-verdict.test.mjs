@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defaultsFromEnv, DEFAULTS } from '../proof/verdict/proof-verdict.mjs'
+import { defaultsFromEnv, DEFAULTS, findHolds } from '../proof/verdict/proof-verdict.mjs'
 
 const TOOL = fileURLToPath(new URL('../proof/verdict/proof-verdict.mjs', import.meta.url))
 const dir = mkdtempSync(join(tmpdir(), 'proof-verdict-test.'))
@@ -226,4 +226,22 @@ test('--bounce-fail turns a bounce into a WARN (the same switch a scenario budge
   const r = verdict(path, ['--bounce-fail', '1000'])
   assert.equal(r.code, 0)
   assert.equal(r.v.bounce.status, 'WARN')
+})
+
+// findHolds on frame timings and motion taken from real simctl clips (night-14 corpus, values as measured).
+test('findHolds: a spring settle tail then a still screen is no hold; a mid-motion hitch with near-identical frames is', () => {
+  const opts = { holdWarn: 50, holdMotion: 0.4 }
+  const at = (rows) => ({ pts: rows.map((r) => r[0] / 1000), motion: rows.map((r) => r[1]) })
+  // parse-upsell-sunlit-3 frames 614-621: settle (0.14, 0.11, 1.12), a late near-identical frame 215 ms on, 3.2 s still,
+  // then the next movement
+  const settle = at([[11554, 0.2], [11571, 0.14], [11588, 0.11], [11606, 1.12], [11821, 0.01], [15058, 23.01], [15065, 0.02], [15075, 18.23], [15090, 18.46]])
+  assert.deepEqual(findHolds(settle.pts, settle.motion, opts), [])
+  // lens-tap-reverse-midnight-1 frames 311-318: moving, two near-identical frames, a 61.7 ms gap, moving again
+  const hitch = at([[5521, 2], [5543, 1.0], [5553, 3.51], [5560, 0.01], [5565, 0.02], [5626, 4.53], [5635, 0.0], [5641, 13.5], [5653, 0.05]])
+  const h = findHolds(hitch.pts, hitch.motion, opts)
+  assert.equal(h.length, 1)
+  assert.equal(Math.round(h[0].gapMs), 61)
+  // pin-card-sunlit-1 frames 489-496: the frame that ends the 63 ms gap barely changes, the next ones move
+  const resume = at([[7468, 1], [7473, 0.03], [7485, 0.04], [7503, 4.51], [7521, 3.17], [7585, 0.02], [7595, 1.06], [7601, 6.21], [7615, 8.36]])
+  assert.equal(findHolds(resume.pts, resume.motion, opts).length, 1)
 })

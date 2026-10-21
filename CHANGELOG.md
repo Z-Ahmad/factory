@@ -2,6 +2,17 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.15.0 (2026-10-20)
+
+### Hold detector: no more holds on a still screen after a spring settles
+
+- simctl records a frame only when the screen changes, so a settling spring's last sub-pixel step can land as one late, near-identical frame. The gap after it, and the seconds of still screen before the next movement, were reported as holds (a 215 ms and a 3237 ms FAIL on a static screen). "Moving on both sides" now means the mean motion of the frames **near** the gap: up to 3 frames within 50 ms (or `hold_warn_ms`, if larger) of its start, and of the frame that ends it. A frame count alone used to reach seconds away.
+- Calibrated on 18 real clips: the two false positives are gone (a FAIL and a 75 ms WARN), every mid-motion hitch WARN is kept with the same worst value, and the synthetic dropped-frame holds still FAIL. Expect fewer hold events on clips with still screens between movements.
+
+### `[sim] runtime`
+
+- New optional `[sim] runtime` (`"iOS-26-5"` or the full `com.apple.CoreSimulator.SimRuntime.…` identifier). Every simulator the kit creates (proof-matrix fresh cells) uses it, falling back to the shooter's runtime as before. `factory config validate` fails when it is not an installed, available runtime (macOS only). Project scripts get it as `FK_SIM_RUNTIME`. `preflight` names booted simulators that are not `[sim] protected` and run another runtime.
+
 ## v0.14.1 (2026-10-20)
 
 - `[proof.ios] orientation_build`: the command `--build` uses (in `proof`, `proof-matrix` and `proof-compare`) when `orientation_cmd` will turn the simulator, e.g. a `build-for-testing` so the UI-test runner the turn needs is in the derived data. Before, `--build --orientation landscape` built only the app, and a runner-based turn failed.

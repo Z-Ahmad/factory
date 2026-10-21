@@ -5,6 +5,7 @@
 // [[arrays of tables]], strings, ints, floats, bools, arrays (multi-line too),
 // inline tables and comments. Not supported (and rejected with a clear error):
 // dotted keys, multi-line strings, dates.
+import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
@@ -446,6 +447,9 @@ export const SCHEMA = table({
     // (names, UDIDs or globs) whose data dir is larger than erase_above_gb (default 6).
     erase_above_gb: num(),
     erase_at_end_night: strs(),
+    // the simulator runtime every simulator the kit creates uses (proof-matrix fresh cells; default: the shooter's), e.g.
+    // "com.apple.CoreSimulator.SimRuntime.iOS-26-5" or "iOS-26-5"; `config validate` checks it is installed
+    runtime: str(),
     reset_keyboard_prefs: bool(),
   }),
   proof: table({
@@ -920,6 +924,15 @@ function main(argv) {
   }
 
   if (cmd === 'validate') {
+    const rt = result.resolved.sim?.runtime;
+    if (rt) {
+      const check = runtimeInstalled(rt);
+      if (check.ok === false) {
+        console.error(`${file}: sim.runtime: ${check.id} is not an installed, available simulator runtime (have: ${check.have.join(', ') || 'none'})`);
+        return 1;
+      }
+      if (check.ok === null) console.log(`note: sim.runtime not checked (${check.why})`);
+    }
     console.log(`ok: ${file}`);
   } else if (cmd === 'get') {
     const r = getKey(rawAt !== -1 ? result.data : result.resolved, args[0]);
@@ -932,6 +945,22 @@ function main(argv) {
     console.log(toEnvSh(result.resolved, file));
   }
   return 0;
+}
+
+/** "iOS-26-5" -> "com.apple.CoreSimulator.SimRuntime.iOS-26-5"; a full identifier is kept. */
+export const runtimeId = (rt) => (rt.startsWith('com.apple.') ? rt : `com.apple.CoreSimulator.SimRuntime.${rt}`);
+
+/** { ok: true } when xcrun lists the runtime as available; ok: false with the list; ok: null when it cannot be checked. */
+function runtimeInstalled(rt) {
+  const id = runtimeId(rt);
+  const os = process.env.FK_UNAME || (process.platform === 'darwin' ? 'Darwin' : process.platform);
+  if (os !== 'Darwin') return { ok: null, why: 'not macOS' };
+  const r = spawnSync('xcrun', ['simctl', 'list', 'runtimes', '-j'], { encoding: 'utf8' });
+  if (r.status !== 0) return { ok: null, why: 'xcrun simctl failed' };
+  let list;
+  try { list = JSON.parse(r.stdout).runtimes || []; } catch { return { ok: null, why: 'unreadable simctl output' }; }
+  const have = list.filter((x) => x.isAvailable !== false).map((x) => x.identifier);
+  return have.includes(id) ? { ok: true, id } : { ok: false, id, have };
 }
 
 const invoked =
