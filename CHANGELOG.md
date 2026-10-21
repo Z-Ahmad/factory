@@ -2,6 +2,10 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.15.1 (2026-10-21)
+
+- Fix: the stale-app check and the `--build` stamp could silently miss uncommitted work. With derived data inside the checkout (`--dd app`), `git status --untracked-files=all` printed megabytes, more than the 1 MB buffer it was read with. The error was then read as "no changes", so the stamp said `dirty: false` and the "uncommitted file newer than the app" check never fired. The buffer is now large, the derived-data folder is excluded from the status, and a git failure is reported as `dirty: null` ("dirty unknown") with a WARNING instead of passing.
+
 ## v0.15.0 (2026-10-20)
 
 ### Hold detector: no more holds on a still screen after a spring settles

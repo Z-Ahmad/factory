@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT, run, scratch } from './helpers.mjs';
 
@@ -72,5 +72,43 @@ test('app-fresh: [proof.ios] sources limits which changes count', () => {
     assert.match(t.fresh().stderr, /uncommitted web\/page\.ts/);
     const r = t.fresh([], { FK_PROOF_IOS_SOURCES: 'ios' });
     assert.equal(r.stderr, '');
+  } finally { t.cleanup(); }
+});
+
+test('app-fresh: derived data inside the checkout is not dirt, a staged new file is, and a huge status still reads', () => {
+  const t = project();
+  try {
+    // the dd inside the tree, untracked and big; the app inside it
+    const dd = join(t.root, 'app'), app = join(dd, 'Build', 'App.app');
+    mkdirSync(app, { recursive: true });
+    for (const f of ['App', 'Info.plist']) writeFileSync(join(app, f), 'bin');
+    const fresh = (args = []) => run(process.execPath, [join(KIT, 'proof', 'ios', 'app-fresh.mjs'), '--app', app, '--dd', dd, '--root', t.root, ...args], { encoding: 'utf8' });
+    mkdirSync(join(dd, 'Index.noindex'));
+    for (let i = 0; i < 400; i++) writeFileSync(join(dd, 'Index.noindex', `record-${i}.idx`), 'x');
+    let r = fresh(['--built']);
+    assert.equal(JSON.parse(readFileSync(join(dd, 'factory-build.json'), 'utf8')).dirty, false, r.stderr);
+    // more than 1 MB of `git status` output outside the dd: still read, so the staged file below is seen
+    const junk = join(t.root, 'scratch-with-a-rather-long-directory-name-for-status-output');
+    mkdirSync(junk);
+    for (let i = 0; i < 16000; i++) writeFileSync(join(junk, `untracked-file-number-${String(i).padStart(6, '0')}.tmp`), '');
+    writeFileSync(join(t.root, 'ios', 'New.swift'), 'new');
+    t.git('add', 'ios/New.swift');
+    r = fresh(['--built']);
+    assert.equal(r.stderr, '');
+    assert.equal(JSON.parse(readFileSync(join(dd, 'factory-build.json'), 'utf8')).dirty, true);
+    assert.match(r.stdout, /from \w+\+dirty\n$/);
+  } finally { t.cleanup(); }
+});
+
+test('app-fresh: when git cannot read the tree, the stamp says dirty unknown and a warning says so', () => {
+  const t = project();
+  try {
+    const notRepo = join(t.dir, 'plain');
+    mkdirSync(notRepo);
+    const r = run(process.execPath, [join(KIT, 'proof', 'ios', 'app-fresh.mjs'), '--app', t.app, '--dd', t.dd, '--root', notRepo, '--built'], { encoding: 'utf8' });
+    assert.equal(r.status, 0);
+    assert.match(r.stderr, /WARNING: could not read `git status`/);
+    assert.equal(JSON.parse(readFileSync(join(t.dd, 'factory-build.json'), 'utf8')).dirty, null);
+    assert.match(r.stdout, /\(dirty unknown\)\n$/);
   } finally { t.cleanup(); }
 });
