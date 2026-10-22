@@ -21,6 +21,12 @@
 //                       spring's last near-identical frame is not a stall): a static screen legitimately has long gaps. Holds inside the
 //                       launch window (the first --launch-window s after the launch screen: a cold boot's tile load)
 //                       can only WARN.
+//   (e) HITCH / SETTLE  app-reported ground truth in --steps (proof/verdict/ground-truth.mjs has the line contract): HITCH
+//                       lines are holds the app measured itself (same bands as hold; WARN-only in the launch window);
+//                       SETTLE judges the UI (not the map, not LIVE rects) for change after each UI MOTION end, at one
+//                       pixel per point, in windows placed on the video by SYNC markers (only within 2 s of one).
+//                       Both are reported in verdict.json and the VERDICT line, and decide the verdict only with
+//                       [proof.ios.verdict] hitch_gate / settle_gate = true (or --hitch-gate / --settle-gate).
 //   (c) LAYOUT-LOOP     any line in --steps <steps.log> that contains a fail marker is a FAIL. The marker is the text the app
 //                       logs when it detects its own layout loop: LAYOUT-LOOP unless --fail-marker (repeatable) or
 //                       [proof.ios] fail_markers says otherwise.
@@ -57,6 +63,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { anchorDistance, anchorsFrom, goodAnchors, judgeHitches, makeAligner, markerRuns, parseGroundTruth, settleChange, settleWindows, uiMask } from './ground-truth.mjs'
 
 export const DEFAULTS = {
   skipStart: 'auto', // 'auto' = detect iOS's leading frames; or a number of seconds to skip blind
@@ -80,6 +87,7 @@ export const DEFAULTS = {
   bounceRefWeight: 2,
   maxFlags: 8,
   maxK: 3, // longest flash, in frames
+  matchMax: 12, // a block match counts only with a mean difference of at most this many grey levels (good ones are 0.4-5)
   refWeight: 8, // how hard a tile that does NOT come back is marked down (score = min(in, out) - weight * |A - A'|)
   uniformFrac: 0.85, // a frame is "uniform" when this share of tiles sit within uniformBand grey levels of the median tile
   uniformBand: 6,
@@ -88,6 +96,12 @@ export const DEFAULTS = {
   uniformRun: 3, // frames in a row
   searchS: 15, // look for the launch screen in the first N seconds
   fallbackExtraS: 1.5,
+  hitchGate: false, // HITCH lines (app-reported late frames) are reported; they decide the verdict only when this is true
+  settleGate: false, // the settle check is reported; it decides the verdict only when this is true
+  settleMs: 1000, // how long after UI motion ends the UI must stay still (cut short by the next UI motion or step)
+  settleFloorPx: 40, // changed pixels (at one pixel per point) beyond which a post-settle change counts
+  settleLuma: 16, // grey levels a pixel must change by to count
+  syncReachS: 2, // a settle window is judged only this close to a SYNC anchor (alignment drifts away from them)
 }
 
 // [proof.ios.verdict] key -> DEFAULTS key. bin/factory exports the table as FK_PROOF_IOS_VERDICT_<KEY>; a value there replaces
@@ -112,6 +126,11 @@ export const ENV_KEYS = {
   bounce_window_s: ['bounceWindow', 'number'],
   ref_weight: ['refWeight', 'number'],
   max_flags: ['maxFlags', 'number'],
+  hitch_gate: ['hitchGate', 'boolean'],
+  settle_gate: ['settleGate', 'boolean'],
+  settle_ms: ['settleMs', 'number'],
+  settle_floor_px: ['settleFloorPx', 'number'],
+  settle_luma: ['settleLuma', 'number'],
 }
 
 /** DEFAULTS with the project's [proof.ios.verdict] values (FK_PROOF_IOS_VERDICT_*) laid over them. */
@@ -121,7 +140,10 @@ export function defaultsFromEnv(env = process.env) {
     const raw = env[`FK_PROOF_IOS_VERDICT_${key.toUpperCase()}`]
     if (raw === undefined || raw === '') continue
     if (type === 'string') out[name] = raw
-    else {
+    else if (type === 'boolean') {
+      if (raw !== 'true' && raw !== 'false') throw new Error(`[proof.ios.verdict] ${key} must be true or false, got "${raw}"`)
+      out[name] = raw === 'true'
+    } else {
       const n = Number(raw)
       if (!Number.isFinite(n)) throw new Error(`[proof.ios.verdict] ${key} must be a number, got "${raw}"`)
       out[name] = n
@@ -185,8 +207,8 @@ export function meanLuma(f, w, h, y0) {
 
 // The streaming core: frames arrive one at a time; analysis of centre frame i runs once frame i+maxK exists.
 export class FlashScanner {
-  constructor({ w, h, cols, rows, y0, maxK, firstFrame = 1, refWeight = DEFAULTS.refWeight, uniformFrac = DEFAULTS.uniformFrac, uniformBand = DEFAULTS.uniformBand }) {
-    Object.assign(this, { w, h, cols, rows, y0, maxK, firstFrame, refWeight, uniformFrac, uniformBand })
+  constructor({ w, h, cols, rows, y0, maxK, firstFrame = 1, refWeight = DEFAULTS.refWeight, uniformFrac = DEFAULTS.uniformFrac, uniformBand = DEFAULTS.uniformBand, matchMax = DEFAULTS.matchMax }) {
+    Object.assign(this, { w, h, cols, rows, y0, maxK, firstFrame, refWeight, uniformFrac, uniformBand, matchMax })
     this.frames = new Map() // index -> Uint8Array, only the recent window
     this.count = 0
     this.motion = [] // motion[i] = mean tile diff of (i-1, i), whole frame below the status bar
@@ -218,7 +240,7 @@ export class FlashScanner {
     }
     const centre = i - this.maxK
     if (centre >= Math.max(1, this.firstFrame)) this.analyse(centre)
-    const drop = i - this.maxK - 2
+    const drop = i - this.maxK - 8 // the transport check looks back for the last distinct frame
     if (drop >= 0) this.frames.delete(drop)
   }
 
@@ -304,10 +326,40 @@ export class FlashScanner {
       y1: Math.round(this.y0 + (Math.max(...strong.map((t) => t.r)) + 1) * th),
     }
     const B = this.frames.get(ev.i)
-    const u = this.blockMatch(B, this.frames.get(ev.i - 1), rect, S)
+    const A = this.frames.get(ev.i - 1)
+    const u = this.blockMatch(B, A, rect, S)
     const v = this.blockMatch(B, this.frames.get(ev.i + ev.k), rect, S)
-    if (!u || !v) return false
-    return u.dx * v.dx + u.dy * v.dy < 0
+    // Both found: one object passing through when the two displacements point opposite ways overall (a negative dot
+    // product). Opposite along one axis only is not enough: an injected blink matched 36 px up in both A and A' with
+    // small opposite x offsets (+12 / -11).
+    if (u && v) return u.dx * v.dx + u.dy * v.dy < 0
+    // Found only in A: the object left the view (or slid under a clip) by A'. Still travel if A's copy came the same way,
+    // at a similar speed, from the frame before it: sustained motion, which a one-frame jump does not have.
+    if (u && !v) {
+      const prev = this.previousDistinct(ev.i - 1, rect, u)
+      if (!prev) return false
+      const shifted = { x0: rect.x0 + u.dx, x1: rect.x1 + u.dx, y0: rect.y0 + u.dy, y1: rect.y1 + u.dy }
+      if (shifted.x0 < 0 || shifted.x1 > this.w || shifted.y0 < this.y0 || shifted.y1 > this.h) return false
+      const w = this.blockMatch(A, prev, shifted, S)
+      if (!w) return false
+      const along = w.dx * u.dx + w.dy * u.dy, lu = Math.hypot(u.dx, u.dy), lw = Math.hypot(w.dx, w.dy)
+      return along > 0 && lw >= 0.4 * lu && lw <= 2.5 * lu
+    }
+    return false
+  }
+
+  // The newest frame before `a` that differs from it where the object was (simctl repeats frames), within 6 frames.
+  previousDistinct(a, rect, u) {
+    const A = this.frames.get(a)
+    const r = { x0: rect.x0 + u.dx, x1: rect.x1 + u.dx, y0: rect.y0 + u.dy, y1: rect.y1 + u.dy }
+    for (let j = a - 1; j >= Math.max(0, a - 6); j--) {
+      const X = this.frames.get(j)
+      if (!X) return null
+      let s = 0, n = 0
+      for (let y = Math.max(this.y0, r.y0); y < Math.min(this.h, r.y1); y += 2) for (let x = Math.max(0, r.x0); x < Math.min(this.w, r.x1); x += 2) { s += Math.abs(A[y * this.w + x] - X[y * this.w + x]); n++ }
+      if (n && s / n >= 2) return X
+    }
+    return null
   }
 
   // Best (dx, dy) such that X[x+dx, y+dy] ~ B[x, y] over the rect; null unless it is a good, non-zero match.
@@ -347,7 +399,8 @@ export class FlashScanner {
         if (s < best.sad) best = { dx, dy, sad: s }
       }
     }
-    return best.sad <= 0.6 * zero && (best.dx || best.dy) ? best : null
+    // a good match in absolute terms too: 40% better than no shift is not enough when both are poor (SAD 54 was seen)
+    return best.sad <= Math.min(0.6 * zero, this.matchMax) && (best.dx || best.dy) ? best : null
   }
 }
 
@@ -503,6 +556,12 @@ function parseArgs(argv) {
       o.ignore.push([Number(m[1]), Number(m[2])])
     } else if (k === '--ref-weight') o.refWeight = num(val(), k)
     else if (k === '--debug') o.debug = num(val(), k)
+    else if (k === '--hitch-gate') o.hitchGate = true
+    else if (k === '--no-hitch-gate') o.hitchGate = false
+    else if (k === '--settle-gate') o.settleGate = true
+    else if (k === '--no-settle-gate') o.settleGate = false
+    else if (k === '--settle-ms') o.settleMs = num(val(), k)
+    else if (k === '--settle-floor') o.settleFloorPx = num(val(), k)
     else if (k.startsWith('--')) die(`unknown arg: ${k}`)
     else if (!o.clip) o.clip = k
     else die(`unexpected arg: ${k}`)
@@ -567,6 +626,60 @@ function decode(clip, w, h, onFrame) {
   })
 }
 
+// The SYNC marker (#FF00FF at x/y 4-10 pt): per decoded frame, the share of the marker square's pixels that are magenta.
+// A crop at full resolution, so it costs a decode but no scaling. `scale` = pixels per point.
+function markerShare(clip, scale) {
+  const x0 = Math.round(4.5 * scale), size = Math.max(2, Math.round(5 * scale))
+  return new Promise((res, rej) => {
+    const ff = spawn('ffmpeg', ['-v', 'fatal', '-i', clip, '-fps_mode', 'passthrough', '-enc_time_base', '1:1000000', '-vf', `crop=${size}:${size}:${x0}:${x0},format=rgb24`, '-f', 'rawvideo', '-'], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const fsize = size * size * 3
+    const out = []
+    let carry = Buffer.alloc(0)
+    ff.stdout.on('data', (chunk) => {
+      const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk
+      let off = 0
+      while (buf.length - off >= fsize) {
+        let m = 0
+        for (let p = off; p < off + fsize; p += 3) if (buf[p] > 200 && buf[p + 1] < 80 && buf[p + 2] > 200) m++
+        out.push(m / (size * size))
+        off += fsize
+      }
+      carry = buf.subarray(off)
+    })
+    ff.on('error', rej)
+    ff.on('close', (code) => (code === 0 ? res(out) : rej(new Error(`ffmpeg exited ${code}`))))
+  })
+}
+
+// Decode only the frames in `want` (a sorted array of frame indexes), grey at w x h: Map(index -> Uint8Array).
+function decodeSelected(clip, w, h, want) {
+  if (!want.length) return Promise.resolve(new Map())
+  // contiguous runs as between() terms: one ffmpeg pass, frames arrive in order
+  const runs = []
+  for (const i of want) {
+    const r = runs[runs.length - 1]
+    if (r && i === r[1] + 1) r[1] = i
+    else runs.push([i, i])
+  }
+  const sel = runs.map(([a, b]) => `between(n\\,${a}\\,${b})`).join('+')
+  return new Promise((res, rej) => {
+    const ff = spawn('ffmpeg', ['-v', 'fatal', '-i', clip, '-fps_mode', 'passthrough', '-enc_time_base', '1:1000000', '-vf', `select='${sel}',scale=${w}:${h}:flags=area,format=gray`, '-fps_mode', 'passthrough', '-f', 'rawvideo', '-'], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const out = new Map()
+    let k = 0, carry = Buffer.alloc(0)
+    ff.stdout.on('data', (chunk) => {
+      const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk
+      let off = 0
+      while (buf.length - off >= w * h) {
+        if (k < want.length) out.set(want[k++], Uint8Array.from(buf.subarray(off, off + w * h)))
+        off += w * h
+      }
+      carry = buf.subarray(off)
+    })
+    ff.on('error', rej)
+    ff.on('close', (code) => (code === 0 ? res(out) : rej(new Error(`ffmpeg exited ${code}`))))
+  })
+}
+
 // One flash is seen from several frames (and k's); fold candidates <= maxK + 1 frames apart into one burst, keeping the
 // worst. A footer that jumps on every other frame of a scrub is one burst, not 400.
 function bursts(events, gap = DEFAULTS.maxK + 1) {
@@ -628,6 +741,48 @@ async function run() {
     .filter((b) => b.a > launch.startFrame && !inRanges(pts[b.a], o.ignore) && !inRanges(pts[b.j], o.ignore))
     .sort((x, y) => y.score - x.score)
 
+  // App-reported ground truth (HITCH / MOTION / SYNC … lines in steps.log), when the build writes it.
+  const gt = o.steps && existsSync(o.steps) ? parseGroundTruth(readFileSync(o.steps, 'utf8')) : null
+  let align = null, anchors = [], droppedAnchors = []
+  const scale = gt?.maprects.find((r) => r.scale)?.scale ?? (vw >= 1100 ? 3 : 2)
+  if (gt?.found && gt.syncs.length) {
+    const good = goodAnchors(anchorsFrom(gt.syncs, markerRuns(await markerShare(o.clip, scale), pts)))
+    anchors = good.kept
+    droppedAnchors = good.dropped
+    align = makeAligner(anchors)
+  }
+  const hitch = gt?.found ? judgeHitches(gt, { holdWarn: o.holdWarn, holdFail: o.holdFail, launchWindow: o.launchWindow, align }) : null
+
+  // Settle check: after UI motion ends the UI (not the map) stays still until the next motion or step. Judged at one pixel
+  // per point, and only where a SYNC anchor is near enough to place the window on the right frames.
+  let settle = null
+  if (gt?.found) {
+    const wins = settleWindows(gt, { settleMs: o.settleMs })
+    const Wd = Math.round(vw / scale / 2) * 2, Hd = Math.round(vh / scale / 2) * 2
+    const judged = [], notJudged = []
+    for (const win of wins) {
+      if (!align || anchorDistance(anchors, win.start) > o.syncReachS) { notJudged.push(win); continue }
+      const a = align(win.start), b = align(win.end)
+      const f0 = pts.findIndex((t) => t >= a)
+      let f1 = -1
+      for (let i = pts.length - 1; i >= 0; i--) if (pts[i] <= b) { f1 = i; break }
+      if (f0 < 0 || f1 <= f0) { notJudged.push(win); continue }
+      judged.push({ ...win, f0, f1 })
+    }
+    const want = [...new Set(judged.flatMap((j) => Array.from({ length: j.f1 - j.f0 + 1 }, (_, k) => j.f0 + k)))].sort((x, y) => x - y)
+    const frames = await decodeSelected(o.clip, Wd, Hd, want)
+    const events = []
+    for (const j of judged) {
+      const mask = uiMask(gt, j.start, { w: Wd, h: Hd, ppt: Wd / (vw / scale), topPx: Math.round(Hd * o.ignoreTop) })
+      const fr = []
+      for (let i = j.f0; i <= j.f1; i++) if (frames.has(i)) fr.push({ i, pts: pts[i], data: frames.get(i) })
+      const c = settleChange(fr, mask, { w: Wd, luma: o.settleLuma })
+      if (c && c.changed >= o.settleFloorPx) events.push({ media: j.settledAt, refFrame: j.f0, frame: c.i, t: c.pts, changedPx: c.changed, region: { x: c.box.x / Wd, y: c.box.y / Hd, w: c.box.w / Wd, h: c.box.h / Hd }, status: 'FAIL' })
+    }
+    events.sort((x, y) => y.changedPx - x.changedPx)
+    settle = { status: events.length ? 'FAIL' : 'PASS', judged: judged.length, notJudged: notJudged.length, events }
+  }
+
   if (o.debug) {
     process.stderr.write(`launch: ${launch.mode} startFrame=${launch.startFrame} (${startT.toFixed ? startT.toFixed(2) : startT}s) ${launch.why}\n`)
     process.stderr.write('top flash candidates (score, frame, k, t, tiles):\n')
@@ -650,7 +805,9 @@ async function run() {
   const holdStatus = holds.reduce((s, h) => worse(s, h.status), 'PASS')
   const loopStatus = loops.length ? 'FAIL' : 'PASS'
   const bounceStatus = statusOf(worstBounce, o.bounceWarn, o.bounceFail)
-  const overall = [flashStatus, holdStatus, loopStatus, bounceStatus].includes('FAIL') ? 'FAIL' : 'PASS'
+  const hitchStatus = hitch?.status ?? 'PASS'
+  const settleStatus = settle?.status ?? 'PASS'
+  const overall = [flashStatus, holdStatus, loopStatus, bounceStatus, o.hitchGate ? hitchStatus : 'PASS', o.settleGate ? settleStatus : 'PASS'].includes('FAIL') ? 'FAIL' : 'PASS'
 
   const bbox = (e) => {
     if (!e.tiles.length) return { x: 0, y: y0 / H, w: 1, h: 1 - y0 / H }
@@ -674,6 +831,7 @@ async function run() {
   const rowsForPng = [
     ...flashes.map((e) => ({ sev: RANK[statusOf(e.score, o.flashWarn, o.flashFail)], mag: e.score / Math.min(o.flashFail, 1000), frames: [e.i - 1, e.i, e.i + e.k], region: bbox(e), color: 'red' })),
     ...holds.map((h) => ({ sev: RANK[h.status], mag: h.gapMs / Math.min(o.holdFail, 200), frames: [h.i - 2, h.i - 1, h.i], region: { x: 0, y: y0 / H, w: 1, h: 1 - y0 / H }, color: 'orange' })),
+    ...(o.settleGate && settle ? settle.events.map((e) => ({ sev: RANK.FAIL, mag: e.changedPx / 1000, frames: [e.refFrame, e.frame, e.frame + 1], region: e.region, color: 'yellow' })) : []),
     ...shownBounces.map((b) => ({ sev: RANK[statusOf(b.score, o.bounceWarn, o.bounceFail)], mag: b.score / Math.min(o.bounceFail, 1000), frames: [b.a, b.peak, b.j], region: bounceBox(b), color: 'magenta' })),
   ].sort((a, b) => b.sev - a.sev || b.mag - a.mag).slice(0, o.maxFlags)
 
@@ -690,6 +848,10 @@ async function run() {
     hold: { status: holdStatus, worstMs: round(worstHold, 1), count: holds.length, events: holds.slice(0, 50).map(holdEvent) },
     bounce: { status: bounceStatus, worstScore: round(worstBounce, 2), count: shownBounces.length, events: shownBounces.slice(0, 50).map(bounceEvent) },
     layoutLoop: { status: loopStatus, count: loops.length, lines: loops.slice(0, 20) },
+    // app-reported: present when steps.log carries the ground-truth lines; `gate` says whether it decided the verdict
+    groundTruth: gt?.found ? { syncs: gt.syncs.length, anchors: anchors.map((a) => ({ media: a.media, frame: a.frame, t: round(a.pts, 3) })), droppedAnchors: droppedAnchors.map((a) => ({ media: a.media, frame: a.frame, t: round(a.pts, 3), why: 'late: disagrees with the next anchor' })), aligned: !!align, motions: gt.motions.length, steps: gt.steps.length, injects: gt.injects } : null,
+    settle: settle ? { status: settleStatus, gate: o.settleGate, judged: settle.judged, notJudged: settle.notJudged, floorPx: o.settleFloorPx, settleMs: o.settleMs, events: settle.events.slice(0, 50).map((e) => ({ ...e, t: round(e.t, 3), region: e.region })) } : null,
+    hitch: hitch ? { status: hitchStatus, gate: o.hitchGate, worstMs: round(hitch.worstMs, 1), count: hitch.count, total: hitch.total, events: hitch.events.slice(0, 50).map((e) => ({ media: e.media, t: e.t === null ? null : round(e.t, 3), durMs: round(e.durMs, 1), expectedMs: e.expectedMs, frame: e.frame, step: e.step, launch: e.launch, status: e.status })) } : null,
   }
 
   mkdirSync(o.out, { recursive: true })
@@ -706,6 +868,8 @@ async function run() {
       `hold ${holdStatus} worst ${worstHold.toFixed(0)}ms${holds.length ? ` (${holds.length})` : ''}`,
       `bounce ${bounceStatus} worst ${worstBounce.toFixed(1)}${shownBounces.length ? ` (${shownBounces.length})` : ''}`,
       `layout-loop ${loops.length}`,
+      ...(settle ? [`settle ${settleStatus}${settle.events.length ? ` worst ${settle.events[0].changedPx}px (${settle.events.length})` : ''} ${settle.judged} judged${settle.notJudged ? `, ${settle.notJudged} not judged (no SYNC near)` : ''}${o.settleGate ? '' : ' report-only'}`] : []),
+      ...(hitch ? [`hitch ${hitchStatus} worst ${hitch.worstMs.toFixed(0)}ms (${hitch.count}/${hitch.total})${o.hitchGate ? '' : ' report-only'}`] : []),
       launchBit,
     ]
     if (budget) bits.push(`budget ${budget.match}: ${Object.entries(budget.applied).map(([k, v]) => `${k}=${v}`).join(' ')}`)

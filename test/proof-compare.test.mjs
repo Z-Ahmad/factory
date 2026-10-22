@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do case "$1" in --out) out="$2"; shift 2 ;; --dd) dd="$2";
 if [[ "$dd" == *compare* || "$dd" == *base* ]]; then hold=100 load="\${BASE_LOAD:-50}"; else hold=130 load="\${PATCH_LOAD:-52}"; fi
 [[ -n "\${CORE_FAIL:-}" && "$dd" != *compare* && "$dd" != *base* ]] && { echo boom >&2; exit 1; }
 echo "VERDICT: PASS"
-echo "{\\"verdict\\":\\"PASS\\",\\"hold\\":{\\"worstMs\\":$hold},\\"flash\\":{\\"worstScore\\":0.1},\\"bounce\\":{\\"worstScore\\":0},\\"load\\":{\\"start\\":$load,\\"end\\":$load}}" > "$out/verdict.json"
+echo "{\\"verdict\\":\\"PASS\\",\\"hold\\":{\\"worstMs\\":$hold},\\"flash\\":{\\"worstScore\\":0.1,\\"status\\":\\"PASS\\"},\\"bounce\\":{\\"worstScore\\":0},\\"load\\":{\\"start\\":$load,\\"end\\":$load}}" > "$out/verdict.json"
 `);
   chmodSync(core, 0o755);
   const run = (args, env = {}) =>
@@ -50,7 +50,7 @@ test('proof-compare --base: builds the base once in its own worktree, alternates
     const calls = t.coreCalls();
     assert.deepEqual(calls.map((c) => (c.includes(`dd-compare-${sha}`) ? 'base' : 'patch')), ['base', 'patch', 'patch', 'base']);
     assert.ok(calls[0].includes(`--source-root ${baseWt}`) && calls[0].includes('--no-gate'));
-    assert.match(r.stdout, /^COMPARE: base hold 100 ms at load 50 vs patch 130 ms at load 52 \(\+30 ms\); PASS base 2\/2, patch 2\/2$/m);
+    assert.match(r.stdout, /^COMPARE: base hold 100 ms at load 50 vs patch 130 ms at load 52 \(\+30 ms\); flash base 0\.1 \(FAIL 0\/2\) vs patch 0\.1 \(FAIL 0\/2\); PASS base 2\/2, patch 2\/2$/m);
     const md = readFileSync(t.p('cmp', 'compare.md'), 'utf8');
     assert.match(md, /^\| 2 \| patch \| \*\*PASS\*\* \| 130 \| 0\.1 \| 0 \| 52→52 \|$/m);
     assert.ok(existsSync(t.p('cmp', 'base-1', 'verdict.json')) && existsSync(t.p('cmp', 'patch-2', 'verdict.json')));

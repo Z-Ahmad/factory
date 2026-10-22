@@ -353,3 +353,9 @@ test('config validate: [sim] runtime must be an installed, available runtime (ch
     s.cleanup();
   }
 });
+
+test('[proof.ios.verdict] takes the ground-truth gates and settle keys', () => {
+  const r = load(readFileSync(fixture('valid.toml'), 'utf8').replace('[proof.ios.verdict]\n', '[proof.ios.verdict]\nhitch_gate = true\nsettle_gate = false\nsettle_ms = 800\nsettle_floor_px = 60\nsettle_luma = 20\n'))
+  assert.deepEqual(r.errors, [])
+  assert.match(toEnvSh(r.resolved, 'f'), /FK_PROOF_IOS_VERDICT_HITCH_GATE='?true'?/)
+})

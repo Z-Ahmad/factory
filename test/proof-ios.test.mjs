@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { factory, fixture, scratch } from './helpers.mjs';
+import { KIT, factory, fixture, scratch } from './helpers.mjs';
 
 // A scratch project: factory.toml (from the synthetic valid.toml, so no real project values) plus the file the
 // password is read from. FK_UNAME=Darwin lets the plan modes run anywhere: they touch no simulator.
@@ -252,5 +253,25 @@ test('proof-verdict and clip-frames run through the dispatcher', () => {
     assert.match(frames.stderr, /no such clip/);
   } finally {
     t.cleanup();
+  }
+});
+
+test('fk_proof_dd: the default is per worktree, and every dd gets a .metadata_never_index', () => {
+  const s = scratch();
+  try {
+    const main = join(s.dir, 'main'), wt = join(s.dir, 'main', '.worktrees', 'night-9'), ddRoot = join(s.dir, 'cache');
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), 'gitdir: /x/.git/worktrees/night-9\n'); // a worktree's .git is a file
+    mkdirSync(join(main, '.git'));
+    const dd = (root, arg = '') => execFileSync('bash', ['-c', `. "$FK_KIT_DIR/lib/sh/common.sh"; . "$FK_KIT_DIR/proof/ios/common.sh"; fk_proof_dd ${arg}`], {
+      env: { ...process.env, FK_KIT_DIR: KIT, FK_DISK_DD_ROOT: ddRoot, FK_PROOF_IOS_DD: 'app', FK_ROOT: root, FK_PROJECT_MAIN_CHECKOUT: main },
+      encoding: 'utf8',
+    }).trim();
+    assert.equal(dd(main), join(ddRoot, 'dd-app'));
+    assert.equal(dd(wt), join(ddRoot, 'dd-app-night-9'));
+    assert.equal(dd(wt, 'build/dd'), join(wt, 'build', 'dd'));
+    for (const d of [join(ddRoot, 'dd-app'), join(ddRoot, 'dd-app-night-9'), join(wt, 'build', 'dd')]) assert.ok(existsSync(join(d, '.metadata_never_index')), d);
+  } finally {
+    s.cleanup();
   }
 });

@@ -16,6 +16,12 @@ VERDICT: FAIL (flash FAIL worst 87.3 (2); hold PASS worst 0ms; bounce PASS worst
 | **hold / stall** | a gap in the recording's frame times with motion on both sides: a held frame | ms of the gap; holds inside the launch window can only WARN |
 | **bounce** | a big whole-frame change that reverses within ~1 s (light → dark → light) | luma step; a full theme swing is far above the FAIL line |
 | **fail markers** | lines the app logs (`[proof.ios] fail_markers`, e.g. `LAYOUT-LOOP`) in `steps.log` | any line FAILs |
+| **hitch** (app-reported) | `HITCH` lines: display frames the app itself saw come late, including blocks video cannot see (a first tap that stalls before any motion) | ms; same bands as hold; report-only unless `hitch_gate = true` |
+| **settle** (app-reported) | after a UI `MOTION end`, the sheet and chrome changing before the next motion or step: a double-drawn border, a late line, a pop-in | changed pixels at full resolution; report-only unless `settle_gate = true`; judged only near a `SYNC` anchor |
+
+`load … UNRELIABLE` under the verdict (and `"load": {"unreliable": true}` in verdict.json) means the clip ran above
+`[slot] max_load`: a hold or a flash there may be the Mac's, so run `factory proof-compare` before blaming the patch.
+`settle … not judged (no SYNC near)` means the app logged too few `SYNC` markers to place that window on the right frames.
 
 The launch bit says where judging began: `launch screen at <t>s` (detected) is normal; `launch screen NOT found` means the
 detector guessed, so check the first seconds by eye.

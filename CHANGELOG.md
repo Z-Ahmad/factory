@@ -2,6 +2,33 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.16.0 (2026-10-21)
+
+### App-reported ground truth in the verdict
+
+- `proof-verdict` reads `HITCH`, `MOTION`, `SYNC`, `CLOCK`, `MAPRECT`, `SHEETTOP`, `LIVE` and `INJECT` lines from `steps.log` (contract in the README and `proof/verdict/ground-truth.mjs`).
+- **hitch**: holds the app measured itself, judged like holds (WARN-only in the launch window). Report-only unless `[proof.ios.verdict] hitch_gate = true`.
+- **settle**: after UI motion ends, the sheet and chrome must stay still until the next motion or step. Judged at one pixel per point outside the map and `LIVE` rects, so a doubled 1 px border registers. Report-only unless `settle_gate = true`; keys `settle_ms` (1000), `settle_floor_px` (40), `settle_luma` (16).
+- **Alignment**: SYNC markers are found in the status band and paired with `SYNC` lines by their gaps. A marker a launch stall delayed is dropped, and times are interpolated between anchors because recordings drift from the app's clock. A settle window more than 2 s from any anchor is reported "not judged", never guessed: with only launch SYNCs (today's Seaglass clips) nothing is judged yet.
+
+### Flash detector
+
+- A block match must also be good in absolute terms (mean difference ≤ 12 grey levels), so a garbage match on one side can no longer veto the "an object moved through this tile" discount.
+- One-sided travel: content found displaced in the frame before but gone from the frame after (it slid under a clipping edge) counts as travel when it also came the same way from the frame before that. A one-frame jump has no such history.
+- Calibrated on 24 Seaglass clips: two by-eye travel cases drop from FAIL (119, 53) to WARN, an injected blink still FAILs (69), and the rest are unchanged within ±1.
+
+### Proof hygiene
+
+- The default proof derived data is per worktree (`dd-<proof.ios.dd>-<worktree>` from a git worktree), so a proof without `--dd` no longer installs another checkout's build.
+- The `--build` stamp records the tree it was built from, and an app built from another checkout is reported stale ("built from another checkout"); `stale_app = "refuse"` exits 3.
+- `verdict.json` marks `"load": {"unreliable": true}` above `[slot] max_load`, and the proof output says so; matrix.md marks the cell's load with ⚠.
+- proof-matrix fresh cells wait (up to 90 s) after the simulator boots for the load to settle back under `[slot] max_load` (or near its pre-boot level) before recording.
+- Every derived-data folder the kit creates gets a `.metadata_never_index`, so Spotlight leaves build products alone.
+
+### proof-compare
+
+- The `COMPARE` line adds each side's median worst flash and flash FAIL count, so a one-off flash FAIL is weighed against how often base fails the same way.
+
 ## v0.15.1 (2026-10-21)
 
 - Fix: the stale-app check and the `--build` stamp could silently miss uncommitted work. With derived data inside the checkout (`--dd app`), `git status --untracked-files=all` printed megabytes, more than the 1 MB buffer it was read with. The error was then read as "no changes", so the stamp said `dirty: false` and the "uncommitted file newer than the app" check never fired. The buffer is now large, the derived-data folder is excluded from the status, and a git failure is reported as `dirty: null` ("dirty unknown") with a WARNING instead of passing.

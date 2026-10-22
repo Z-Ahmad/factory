@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.15, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.16, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
 
 ## Why it exists
 
@@ -248,6 +248,25 @@ The proof commands check the build they install, too: without `--build`, `factor
 | `[slot] max_load` | unset | The highest 1-minute load average `slot wait` starts at. |
 | `[slot] poll_s` / `timeout_s` | `15` / `3600` | How often `slot wait` looks, and when it gives up (exit 2). |
 | `[wip] exclude` | `xcuserdata .build DerivedData node_modules .DS_Store` | Names or paths `wip-save` never copies (the worktree's `.gitignore` applies too, and so do `[worktree] cache_symlinks` and `copy_files`). Setting it replaces the list; add secrets files that are not gitignored. |
+
+### App-reported ground truth: `HITCH` and settle
+
+Video alone can't see everything: a first tap that blocks before any motion leaves no gap in the recording, and a border drawn twice for a few frames after a morph settles is a 1 px change. A DEBUG build can report what it knows through its existing `SCENARIO <name> …` log prefix (so `steps.log` already collects it), and `proof-verdict` reads it. Every line is optional; a clip without them is judged from pixels alone. Times are `CACurrentMediaTime` seconds (`%.4f`).
+
+| Line | Meaning |
+|---|---|
+| `CLOCK media=<s> wall=<epoch s>` | once at scenario start: pairs the media clock with wall time (steps get their media time through it) |
+| `SYNC media=<s>` | a #FF00FF square at x/y 4–10 pt (inside the status band the verdict ignores), on for 3 frames; media = its first frame. Puts log time on the video. Emit one at every step and every UI `MOTION end`: recordings drift from the app's clock (~9% was seen), so a window is judged only within 2 s of an anchor |
+| `HITCH media= dur=<ms> expected=<ms> frame=<n> step=<label>` | a display frame that came late (`step=` takes the rest of the line) |
+| `MOTION start\|end kind=camera\|roll\|morph\|sheet id=<n> media=` | an animation on purpose; `camera` moves only the map |
+| `MAPRECT media= x= y= w= h= scale=<px/pt>` · `SHEETTOP media= y=` | the map's frame and the sheet's top (points, window coordinates), on change |
+| `LIVE start\|end id= media= x= y= w= h=` | a view that changes on purpose (a caret, a spinner): not judged by the settle check |
+| `INJECT kind=hold\|blink\|ghost id= media= dur= step=` | a fault injected for calibration (labelled manifests) |
+
+- **hitch**: each `HITCH` with `dur` ≥ `hold_warn_ms` is a hold event (`hold_fail_ms` FAILs, the launch window only WARNs).
+- **settle**: after each stretch of UI motion (roll / sheet / morph) ends, the sheet and chrome must not change (more than `settle_floor_px` pixels by more than `settle_luma` grey levels, at one pixel per point) until the next UI motion or step, or `settle_ms`. The map above the sheet, the status band and `LIVE` rects are not judged.
+
+Both appear in `verdict.json` and the `VERDICT` line from the first clip that carries the lines, **report-only**: they decide the verdict only with `[proof.ios.verdict] hitch_gate = true` / `settle_gate = true` (or `--hitch-gate` / `--settle-gate`). Review a few nights of reports before turning them on: a clean run can log several 50 ms+ hitches.
 
 ### `[worktree]`: sharing from the main checkout
 

@@ -10,14 +10,21 @@ fk_proof_json() {
 }
 
 # fk_proof_dd [arg]: the derived-data directory, created. An absolute arg is used as is, a relative one is relative to
-# the project root; no arg means <disk.dd_root>/dd-<proof.ios.dd>.
+# the project root; no arg means <disk.dd_root>/dd-<proof.ios.dd>, and from a git worktree (a project root whose .git is
+# a file) <disk.dd_root>/dd-<proof.ios.dd>-<worktree folder name>, so a proof never installs another checkout's
+# build. Every one gets a .metadata_never_index, so Spotlight does not index gigabytes of build products.
 fk_proof_dd() {
-  local arg="${1:-}" abs
+  local arg="${1:-}" abs main here
   if [[ -z "$arg" ]]; then
     abs="${FK_DISK_DD_ROOT:?set [disk] dd_root, or pass --dd}/dd-${FK_PROOF_IOS_DD:-app}"
+    main="$(cd "${FK_PROJECT_MAIN_CHECKOUT:-$FK_ROOT}" 2>/dev/null && pwd -P || true)"
+    here="$(cd "$FK_ROOT" && pwd -P)"
+    # a git worktree has a .git FILE; the main checkout a .git directory
+    if [[ -f "$here/.git" && "$here" != "$main" ]]; then abs="$abs-${here##*/}"; fi
   elif [[ "$arg" == /* ]]; then abs="$arg"
   else abs="$FK_ROOT/$arg"; fi
   mkdir -p "$abs"
+  [[ -e "$abs/.metadata_never_index" ]] || : > "$abs/.metadata_never_index"
   echo "$abs"
 }
 

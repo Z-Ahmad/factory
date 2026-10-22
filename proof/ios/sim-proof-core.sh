@@ -15,7 +15,8 @@
 #   steps.log          the simulator log lines containing a [proof.ios] log_markers or fail_markers text
 #   verdict.json       the machine verdict (verdict/proof-verdict.mjs): flash/ghost, hold/stall, bounce and fail-marker findings
 #                      with timestamps, worst values, PASS/FAIL, and the 1-minute load when the clip started and ended
-#                      ("load": {"start", "end"}: a hold measured under load is the load's); plus one `VERDICT:` line
+#                      ("load": {"start", "end", "unreliable"}: true above [slot] max_load, where a hold or a flash
+#                      measured may be the load's); plus one `VERDICT:` line
 #   flags.png          only when something is flagged: each flagged event as a before / flagged / after frame triple
 # Exit 0 PASS, 4 FAIL (a FAIL verdict; 0 with --no-gate), 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 error.
 # --no-gate: record and write the verdict, but exit 0 on a FAIL.
@@ -287,13 +288,19 @@ VERDICT_RC=0
 node "$FK_KIT_DIR/proof/verdict/proof-verdict.mjs" "$VIDEO" --out "$OUT" --steps "$OUT/steps.log" --scenario "$SCENARIO" ${VERDICT_SKIP:+--skip-start "$VERDICT_SKIP"} ${VERDICT_ARGS[@]+"${VERDICT_ARGS[@]}"} ${VERDICT_IGNORE[@]+"${VERDICT_IGNORE[@]}"} || VERDICT_RC=$?
 if [[ -s "$OUT/verdict.json" ]]; then
   node -e '
-    const fs = require("fs"), [f, s, e] = process.argv.slice(1), n = (x) => (x === "" ? null : Number(x))
+    const fs = require("fs"), [f, s, e, m] = process.argv.slice(1), n = (x) => (x === "" ? null : Number(x))
     const v = JSON.parse(fs.readFileSync(f, "utf8")); v.load = { start: n(s), end: n(e) }
+    // above [slot] max_load a hold or a flash may be the load, not the app
+    if (m !== "") v.load.unreliable = Math.max(n(s) ?? 0, n(e) ?? 0) > Number(m)
     fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n")
-  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}"
+  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}" "${FK_SLOT_MAX_LOAD:-}"
 fi
 echo "verdict:     $OUT/verdict.json"
-echo "load:        ${LOAD_START:-?} at the start, ${LOAD_END:-?} at the end (1-minute average)"
+LOAD_NOTE=""
+if [[ -n "${FK_SLOT_MAX_LOAD:-}" ]] && awk -v a="${LOAD_START:-0}" -v b="${LOAD_END:-0}" -v m="$FK_SLOT_MAX_LOAD" 'BEGIN { exit !(a > m || b > m) }'; then
+  LOAD_NOTE=" UNRELIABLE: above [slot] max_load $FK_SLOT_MAX_LOAD, so a hold or a flash may be the load's (factory proof-compare)"
+fi
+echo "load:        ${LOAD_START:-?} at the start, ${LOAD_END:-?} at the end (1-minute average)$LOAD_NOTE"
 if [[ "$VERDICT_RC" == 4 ]]; then
   if [[ "$GATE" == 1 ]]; then echo "FAIL: the verdict is a FAIL (open flags.png first; --no-gate records without failing)" >&2; exit 4; fi
   echo "note: verdict FAIL ignored (--no-gate)"

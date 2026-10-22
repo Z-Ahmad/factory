@@ -22,7 +22,8 @@
 # Writes into <out>:
 #   <cell>/             the usual proof artifacts (mp4, contact.png, verdict.json, flags.png when flagged, run.log)
 #   matrix.md           one row per cell: device, launch, system / app appearance, verdict, worst flash, worst hold ms, worst bounce,
-#                       fail-marker count, flags.png, the 1-minute load when the clip started and ended
+#                       fail-marker count, flags.png, the 1-minute load when the clip started and ended (⚠ above [slot]
+#                       max_load). A fresh cell waits up to 90 s after boot for the load to settle before it records.
 #   matrix-contact.png  every cell's contact sheet scaled to one height, side by side under a label band (label.swift)
 # and ends with `MATRIX: PASS|FAIL (n/m cells; launches: <cell> first|warm, ...)`. Exit 0 every cell PASS, 4 any cell FAIL,
 # 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 a tooling error. matrix.md starts with the "app:" line (which
@@ -216,6 +217,21 @@ settle_sim() {
   echo "note: simulator still changing 60s after the wait began ($changes changes; last at ${where:-unknown}); recording anyway" >&2
 }
 
+# Booting a fresh simulator alone can push the 1-minute load from ~60 to 200: a clip recorded then measures the boot.
+# Wait (up to 90 s) until it is back under [slot] max_load, or within 15% of where it was before the boot.
+settle_load() {
+  local target="${FK_SLOT_MAX_LOAD:-}" t=$SECONDS l
+  if [[ -z "$target" && -n "${LOAD_BEFORE:-}" ]]; then target="$(awk -v b="$LOAD_BEFORE" 'BEGIN { printf "%.2f", b * 1.15 + 1 }')"; fi
+  [[ -n "$target" ]] || return 0
+  while :; do
+    l="$(fk_load1)"
+    [[ -z "$l" ]] && return 0
+    if awk -v l="$l" -v m="$target" 'BEGIN { exit !(l <= m) }'; then echo "load settled at $l (target $target) after $((SECONDS - t))s"; return 0; fi
+    if (( SECONDS - t >= 90 )); then echo "note: load still $l after 90s (target $target); recording anyway" >&2; return 0; fi
+    sleep 3
+  done
+}
+
 ROWS=()       # matrix.md rows
 KINDS=()      # "<cell> first|warm" for the MATRIX line
 CONTACTS=()   # name|status|device line|contact.png for matrix-contact.png
@@ -237,6 +253,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
       if [[ -z "$PICK" ]]; then echo "no device type among: $TYPES (xcrun simctl list devicetypes)" >&2; CELL_RC=1; else DEVICE_TYPE="${PICK%%$'\t'*}"; fi
     fi
     if [[ "$CELL_RC" == 0 ]]; then
+      LOAD_BEFORE="$(fk_load1)"
       if CELL_UDID="$(xcrun simctl create "${EPHEMERAL_PREFIX}$CELL-$RANDOM" "$DEVICE_TYPE" "$RUNTIME" 2>"$CELL_DIR/create.log")"; then
         EPHEMERAL="$CELL_UDID"
         xcrun simctl boot "$CELL_UDID"
@@ -247,6 +264,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
         xcrun simctl install "$CELL_UDID" "$APP"
         if [[ "$WARM" == 1 ]]; then warm_launch "$CELL_UDID"; LAUNCH_KIND=warm; fi
         settle_sim "$CELL_UDID"
+        settle_load
         NO_INSTALL=(--no-install)
         [[ "$WARM" == 1 ]] || LAUNCH_KIND=first
       else
@@ -267,7 +285,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
     RES="$(node -e '
       const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
       const l = v.load || {}, f = (x) => (x == null ? "?" : x)
-      console.log([v.verdict, v.flash.worstScore, v.hold.worstMs, v.bounce.worstScore, v.layoutLoop.count, v.flagsPng || "-", f(l.start) + "→" + f(l.end)].join("\t"))
+      console.log([v.verdict, v.flash.worstScore, v.hold.worstMs, v.bounce.worstScore, v.layoutLoop.count, v.flagsPng || "-", f(l.start) + "→" + f(l.end) + (l.unreliable ? " ⚠" : "")].join("\t"))
     ' "$CELL_DIR/verdict.json")"
     IFS=$'\t' read -r VERDICT FLASH HOLD BOUNCE LOOPS FLAGS LOAD <<<"$RES"
     PX="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$CELL_DIR/$SCENARIO.mp4" 2>/dev/null || true)"

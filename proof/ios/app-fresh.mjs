@@ -4,10 +4,10 @@
 // --built (right after a `--build`): records HEAD, whether the tree had changes, and the time in <dd>/factory-build.json.
 // Always prints one line for the report: "app: <path> built <time> from <sha>[+dirty]" (sha "unknown" when no stamp).
 // Without --built, the app is STALE when the source changed after it was built: a commit or an uncommitted file under
-// [proof.ios] sources (git pathspecs; default the whole tree) is newer than the app's files, or the stamp's commit differs
-// from HEAD in those paths. A stale app prints a WARNING on stderr; with [proof.ios] stale_app = "refuse" it exits 3.
+// [proof.ios] sources (git pathspecs; default the whole tree) is newer than the app's files, the stamp's commit differs
+// from HEAD in those paths, or the stamp says another checkout built it (a shared derived-data folder). A stale app prints a WARNING on stderr; with [proof.ios] stale_app = "refuse" it exits 3.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -21,6 +21,8 @@ const specs = (process.env.FK_PROOF_IOS_SOURCES || '').split('\n').filter(Boolea
 // reported as unknown, never read as "no changes".
 const git = (...a) => { try { return execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 28 }); } catch { return null; } };
 const stampFile = join(dd, 'factory-build.json');
+let realRoot = root;
+try { realRoot = realpathSync(root); } catch { /* keep as given */ }
 const when = (ms) => new Date(ms).toLocaleString('sv-SE', { hour12: false }).slice(0, 16);
 // uncommitted files (changed, added, untracked) under the source paths, never counting the derived data itself when it
 // sits inside the checkout; null when git could not say
@@ -36,7 +38,7 @@ if (built) {
   const sha = git('rev-parse', '--short=10', 'HEAD')?.trim() || 'unknown';
   const files = dirtyFiles();
   if (files === null) unknown();
-  writeFileSync(stampFile, `${JSON.stringify({ sha, dirty: files === null ? null : files.length > 0, at: new Date().toISOString() })}\n`);
+  writeFileSync(stampFile, `${JSON.stringify({ sha, dirty: files === null ? null : files.length > 0, root: realRoot, at: new Date().toISOString() })}\n`);
 }
 
 // the app's own files (the binary and Info.plist are rewritten by every build that changes them)
@@ -64,12 +66,14 @@ for (const f of files ?? []) {
   if (m > appMs + 1000 && (!newest || m > newest.m)) newest = { f, m };
 }
 if (newest) why.push(`uncommitted ${newest.f} at ${when(newest.m)}`);
+// built from another checkout (a shared derived-data folder): whatever its commit, it is not this tree's build
+if (stamp?.root && stamp.root !== realRoot) why.push(`built from another checkout, ${stamp.root}`);
 if (stamp && git('cat-file', '-e', `${stamp.sha}^{commit}`) !== null && git('diff', '--quiet', stamp.sha, 'HEAD', '--', ...specs) === null) {
   const head = git('rev-parse', '--short=10', 'HEAD')?.trim();
   if (head && head !== stamp.sha) why.push(`built from ${stamp.sha}, HEAD is ${head}`);
 }
 if (why.length) {
   const refuse = process.env.FK_PROOF_IOS_STALE_APP === 'refuse';
-  console.error(`${refuse ? 'REFUSED' : 'WARNING'}: the installed app is older than the source (${why.join('; ')}). Pass --build, or this proof records an old build.`);
+  console.error(`${refuse ? 'REFUSED' : 'WARNING'}: the installed app is not a build of this tree as it is now (${why.join('; ')}). Pass --build, or this proof records an old build.`);
   if (refuse) process.exit(3);
 }

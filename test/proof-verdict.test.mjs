@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defaultsFromEnv, DEFAULTS, findHolds } from '../proof/verdict/proof-verdict.mjs'
+import { defaultsFromEnv, DEFAULTS, findHolds, FlashScanner } from '../proof/verdict/proof-verdict.mjs'
 
 const TOOL = fileURLToPath(new URL('../proof/verdict/proof-verdict.mjs', import.meta.url))
 const dir = mkdtempSync(join(tmpdir(), 'proof-verdict-test.'))
@@ -244,4 +244,33 @@ test('findHolds: a spring settle tail then a still screen is no hold; a mid-moti
   // pin-card-sunlit-1 frames 489-496: the frame that ends the 63 ms gap barely changes, the next ones move
   const resume = at([[7468, 1], [7473, 0.03], [7485, 0.04], [7503, 4.51], [7521, 3.17], [7585, 0.02], [7595, 1.06], [7601, 6.21], [7615, 8.36]])
   assert.equal(findHolds(resume.pts, resume.motion, opts).length, 1)
+})
+
+// transported(): one object moving through a tile is not a flash; a blink or a revert is. Frames built by hand: a textured
+// bar (so a block match is unambiguous) on a light card, the map band above y = 40 hiding anything that slides under it.
+test('transport: a bar sliding out under a clip edge is travel; a revert and a blink are not', () => {
+  const W = 120, H = 200
+  const card = () => { const f = new Uint8Array(W * H).fill(230); for (let y = 0; y < 40; y++) for (let x = 0; x < W; x++) f[y * W + x] = 90; return f }
+  const bar = (f, y0) => { for (let y = Math.max(40, y0); y < y0 + 10; y++) for (let x = 20; x < 100; x++) f[y * W + x] = 40 + ((x * 7 + y * 3) % 50); return f }
+  const scanner = (frames) => {
+    const s = new FlashScanner({ w: W, h: H, cols: 8, rows: 16, y0: 0, maxK: 3 })
+    frames.forEach((f, i) => s.frames.set(i, f))
+    return s
+  }
+  const ev = { i: 3, k: 1, score: 50, tiles: [{ c: 2, r: 4, score: 50 }, { c: 3, r: 4, score: 50 }, { c: 4, r: 4, score: 50 }, { c: 5, r: 4, score: 50 }] } // rows 50-62
+  // moving up 12 px a frame: 74, 62, 50 (B), then above 40 = under the map band (gone in A')
+  const travel = scanner([card(), bar(card(), 74), bar(card(), 62), bar(card(), 50), bar(card(), 38)])
+  assert.equal(travel.transported(ev), true)
+  // the same bar jumping up for one frame and back: a revert
+  const revert = scanner([bar(card(), 62), bar(card(), 62), bar(card(), 62), bar(card(), 50), bar(card(), 62)])
+  assert.equal(revert.transported(ev), false)
+  // a bar that is nowhere before or after: a blink
+  const blink = scanner([card(), card(), card(), bar(card(), 50), card()])
+  assert.equal(blink.transported(ev), false)
+  // fully hidden in A' (only A has it): travel only because A's copy came up the same way from the frame before
+  const gone = scanner([card(), bar(card(), 74), bar(card(), 62), bar(card(), 50), bar(card(), 26)])
+  assert.equal(gone.transported(ev), true)
+  // found in A only, but A's copy did not come from anywhere (static before, duplicates included): not sustained motion
+  const jump = scanner([bar(card(), 62), bar(card(), 62), bar(card(), 62), bar(card(), 50), bar(card(), 26)])
+  assert.equal(jump.transported(ev), false)
 })

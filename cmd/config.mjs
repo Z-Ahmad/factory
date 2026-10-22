@@ -505,6 +505,12 @@ export const SCHEMA = table({
         bounce_window_s: num(),
         ref_weight: num(),
         max_flags: int(),
+        // app-reported ground truth (HITCH / settle): reported always, deciding the verdict only when the gate is true
+        hitch_gate: bool(),
+        settle_gate: bool(),
+        settle_ms: num(),
+        settle_floor_px: num(),
+        settle_luma: num(),
       }),
     }),
     // A matrix is a list of cell names plus options; the cells themselves are [proof.cell.<name>].

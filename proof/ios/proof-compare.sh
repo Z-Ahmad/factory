@@ -10,7 +10,9 @@
 #          <[disk] dd_root>/dd-compare-<sha8> with [proof.ios] build, from that worktree.
 # --slot: `factory slot wait` before every run (the builder-slot gate), so no run starts while others build.
 # Writes into <out>: base-<i>/ and patch-<i>/ (the usual proof artifacts) and compare.md, and ends with
-# `COMPARE: base hold <median> ms at load <median> vs patch <median> ms at load <median> (<delta>); PASS base k/N, patch k/N`,
+# `COMPARE: base hold <median> ms at load <median> vs patch <median> ms at load <median> (<delta>); flash base <median worst>
+# (FAIL k/N) vs patch <median worst> (FAIL k/N); PASS base k/N, patch k/N` (a one-off flash FAIL is weighed against how often
+# base fails the same way),
 # plus a warning when the two sides' median loads differ by more than a quarter. Exit 0 when every run recorded (the
 # numbers are for you to judge), 1 when a run or a build failed. Simulators only.
 set -euo pipefail
@@ -88,11 +90,11 @@ run_side() { # run_side <base|patch> <round>
     ${PASS_ARGS[@]+"${PASS_ARGS[@]}"} </dev/null >"$dir/run.log" 2>&1 || rc=$?
   if [[ "$rc" != 0 || ! -s "$dir/verdict.json" ]]; then
     echo "factory proof failed for $side-$i (exit $rc); tail of $dir/run.log:" >&2; tail -15 "$dir/run.log" >&2
-    FAILED=1; ROWS+=("$side	$i	ERROR	-	-	-	-	-"); return 0
+    FAILED=1; ROWS+=("$side	$i	ERROR	-	-	-	-	-	-"); return 0
   fi
   ROWS+=("$(node -e '
     const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")), l = v.load || {}, f = (x) => (x == null ? "-" : x)
-    console.log([process.argv[2], process.argv[3], v.verdict, v.hold.worstMs, v.flash.worstScore, v.bounce.worstScore, f(l.start), f(l.end)].join("\t"))
+    console.log([process.argv[2], process.argv[3], v.verdict, v.hold.worstMs, v.flash.worstScore, v.bounce.worstScore, f(l.start), f(l.end), v.flash.status].join("\t"))
   ' "$dir/verdict.json" "$side" "$i")")
   grep -E '^VERDICT:' "$dir/run.log" || true
 }
@@ -108,14 +110,14 @@ SUMMARY="$(printf '%s\n' "${ROWS[@]}" | node -e '
   const side = (name) => {
     const r = rows.filter((x) => x[0] === name && x[2] !== "ERROR")
     const load = r.map((x) => (Number(x[6]) + Number(x[7])) / 2)
-    return { hold: med(r.map((x) => Number(x[3]))), load: med(load), pass: r.filter((x) => x[2] === "PASS").length }
+    return { hold: med(r.map((x) => Number(x[3]))), flash: med(r.map((x) => Number(x[4]))), flashFail: r.filter((x) => x[8] === "FAIL").length, load: med(load), pass: r.filter((x) => x[2] === "PASS").length }
   }
   const b = side("base"), p = side("patch"), fmt = (x) => (x == null ? "?" : Math.round(x * 10) / 10)
   const md = ["# Proof compare: " + scenario, "", "base: " + base, "",
     "| run | side | verdict | worst hold ms | worst flash | worst bounce | load start→end |", "|---|---|---|---|---|---|---|"]
   for (const x of rows) md.push(`| ${x[1]} | ${x[0]} | **${x[2]}** | ${x[3]} | ${x[4]} | ${x[5]} | ${x[6]}→${x[7]} |`)
   const delta = b.hold != null && p.hold != null ? (p.hold - b.hold >= 0 ? "+" : "") + fmt(p.hold - b.hold) + " ms" : "?"
-  let line = `COMPARE: base hold ${fmt(b.hold)} ms at load ${fmt(b.load)} vs patch ${fmt(p.hold)} ms at load ${fmt(p.load)} (${delta}); PASS base ${b.pass}/${runs}, patch ${p.pass}/${runs}`
+  let line = `COMPARE: base hold ${fmt(b.hold)} ms at load ${fmt(b.load)} vs patch ${fmt(p.hold)} ms at load ${fmt(p.load)} (${delta}); flash base ${fmt(b.flash)} (FAIL ${b.flashFail}/${runs}) vs patch ${fmt(p.flash)} (FAIL ${p.flashFail}/${runs}); PASS base ${b.pass}/${runs}, patch ${p.pass}/${runs}`
   md.push("", line)
   if (b.load && p.load && Math.abs(b.load - p.load) / Math.max(b.load, p.load) > 0.25) {
     const w = "warning: the two sides ran at loads more than a quarter apart; run again (or with --slot) before judging"

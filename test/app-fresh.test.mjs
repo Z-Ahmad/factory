@@ -54,7 +54,7 @@ test('app-fresh: --built stamps the sha; a later commit or an uncommitted edit m
     writeFileSync(join(t.root, 'ios', 'View.swift'), 'b'); // uncommitted, written now
     r = t.fresh();
     assert.equal(r.status, 0);
-    assert.match(r.stderr, /^WARNING: the installed app is older than the source \(uncommitted ios\/View\.swift at .*\)\. Pass --build/);
+    assert.match(r.stderr, /^WARNING: the installed app is not a build of this tree as it is now \(uncommitted ios\/View\.swift at .*\)\. Pass --build/);
     t.git('-c', 'commit.gpgsign=false', 'commit', '-q', '-am', 'two');
     r = t.fresh();
     assert.match(r.stderr, /commit \w+ at .*; built from \w+, HEAD is \w+/);
@@ -110,5 +110,17 @@ test('app-fresh: when git cannot read the tree, the stamp says dirty unknown and
     assert.match(r.stderr, /WARNING: could not read `git status`/);
     assert.equal(JSON.parse(readFileSync(join(t.dd, 'factory-build.json'), 'utf8')).dirty, null);
     assert.match(r.stdout, /\(dirty unknown\)\n$/);
+  } finally { t.cleanup(); }
+});
+
+test('app-fresh: an app another checkout built (a shared derived-data folder) is stale, whatever the times say', () => {
+  const t = project();
+  try {
+    const other = join(t.dir, 'other-checkout');
+    execFileSync('git', ['clone', '-q', t.root, other]);
+    run(process.execPath, [join(KIT, 'proof', 'ios', 'app-fresh.mjs'), '--app', t.app, '--dd', t.dd, '--root', other, '--built'], { encoding: 'utf8' });
+    const r = t.fresh();
+    assert.match(r.stderr, /built from another checkout, .*other-checkout/);
+    assert.equal(t.fresh([], { FK_PROOF_IOS_STALE_APP: 'refuse' }).status, 3);
   } finally { t.cleanup(); }
 });
