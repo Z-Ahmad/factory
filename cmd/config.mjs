@@ -589,6 +589,8 @@ export const SCHEMA = table({
     taste_rounds: int(),
     stuck: str(),
     allow_merge: bool(),
+    // with allow_merge: PR base branches (globs) that stay the user's to merge, e.g. ["main"]
+    never_merge_into: strs(),
     stop_after_blocked: int(),
     wake_s: int(),
     usage_limit_wake_s: int(),

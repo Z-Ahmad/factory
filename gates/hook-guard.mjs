@@ -10,11 +10,13 @@
 //   1. Edit/Write/MultiEdit/NotebookEdit (and Bash redirects / tee) to a [never_touch] paths glob.
 //   2. Bash running a [never_touch] never_run_in_worktree script from inside a linked worktree.
 //   3. Bash: pushing to a [git] never_push branch, any forced push, --no-verify (and its bypasses).
-//   4. Bash: `gh pr merge`, unless [loop] allow_merge = true.
+//   4. Bash: `gh pr merge`, unless [loop] allow_merge = true; even then, a PR whose base matches
+//      [loop] never_merge_into (its base looked up with `gh pr view`; unknown counts as protected).
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
+import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -452,12 +454,36 @@ function checkPush(rest, dir, ctx) {
   }
 }
 
+const GH_MERGE_VALUE = ['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit'];
+
+/** The PR's base branch, via `gh pr view` (null when it can't be told). `ref` null = the current branch's PR. */
+export function ghPrBase(ref, repo, cwd) {
+  const args = ['pr', 'view', ...(ref ? [ref] : []), ...(repo ? ['-R', repo] : []), '--json', 'baseRefName', '-q', '.baseRefName'];
+  const r = spawnSync('gh', args, { cwd, encoding: 'utf8', timeout: 10_000 });
+  const base = r.status === 0 ? r.stdout.trim() : '';
+  return base || null;
+}
+
 function checkGh(c, ctx) {
   const [pos] = split(c.args, ['-R', '--repo']);
-  if (pos[0] === 'pr' && pos[1] === 'merge' && !ctx.allowMerge)
-    deny('`gh pr merge` is blocked: the user merges (loop.allow_merge is not true)');
-  if (pos[0] === 'api' && !ctx.allowMerge && c.args.some((x) => /\/pulls\/\d+\/merge\/?$/.test(x) || x.includes('mergePullRequest')))
-    deny('merging a pull request through `gh api` is blocked: the user merges (loop.allow_merge is not true)');
+  const protectedKey = `loop.never_merge_into = ${JSON.stringify(ctx.neverMergeInto.map((g) => g.src))}`;
+  if (pos[0] === 'pr' && pos[1] === 'merge') {
+    if (!ctx.allowMerge) deny('`gh pr merge` is blocked: the user merges (loop.allow_merge is not true)');
+    if (ctx.neverMergeInto.length) {
+      const [mpos] = split(c.args, GH_MERGE_VALUE);
+      const k = c.args.findIndex((x) => x === '-R' || x === '--repo');
+      const repo = k !== -1 ? c.args[k + 1] : (c.args.find((x) => x.startsWith('--repo='))?.slice(7) ?? null);
+      const ref = mpos[2] ?? null;
+      if (ref?.includes('$')) deny(`\`gh pr merge ${ref}\`: the PR is not named literally, so its base can't be checked (${protectedKey})`);
+      const base = ctx.resolveBase(ref, repo, ctx.cwd);
+      if (!base) deny(`\`gh pr merge\` is blocked: couldn't look up the PR's base branch to check it (${protectedKey})`);
+      if (anyGlob(ctx.neverMergeInto, base)) deny(`merging into '${base}' is blocked: the user merges those (${protectedKey})`);
+    }
+  }
+  if (pos[0] === 'api' && c.args.some((x) => /\/pulls\/\d+\/merge\/?$/.test(x) || x.includes('mergePullRequest'))) {
+    if (!ctx.allowMerge) deny('merging a pull request through `gh api` is blocked: the user merges (loop.allow_merge is not true)');
+    if (ctx.neverMergeInto.length) deny(`merging a pull request through \`gh api\` is blocked: use \`gh pr merge\`, whose base can be checked (${protectedKey})`);
+  }
 }
 
 function checkDevStart(c, ctx) {
@@ -568,6 +594,8 @@ export function guardConfig(data, tomlPath) {
     dev: data.dev ?? {},
     devLocked: data.dev?.agents_may_start === false,
     allowMerge: data.loop?.allow_merge === true,
+    neverMergeInto: globs(data.loop?.never_merge_into),
+    resolveBase: ghPrBase,
   };
 }
 

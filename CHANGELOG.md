@@ -2,6 +2,12 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.17.0 (2026-10-27)
+
+### Merging with a protected base
+
+- `[loop] never_merge_into` (globs, e.g. `["main"]`): with `allow_merge = true`, `gh pr merge` is allowed except for a PR whose base branch matches. The hook looks the base up with `gh pr view <pr> --json baseRefName` (10 s timeout); a base it can't look up, or a PR named through a variable, is denied, and `gh api` merges are denied while the list is set. Without the key, `allow_merge` behaves as before.
+
 ## v0.16.0 (2026-10-21)
 
 ### App-reported ground truth in the verdict
