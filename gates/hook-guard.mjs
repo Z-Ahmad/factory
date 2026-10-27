@@ -13,6 +13,8 @@
 //   4. Bash: `gh pr merge`, unless [loop] allow_merge = true; even then, a PR whose base matches
 //      [loop] never_merge_into (its base looked up with `gh pr view`; unknown counts as protected).
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
+//   6. Bash: `factory dev-restart` from a subagent (the hook input carries agent_id), unless
+//      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
@@ -566,7 +568,12 @@ function analyze(src, ctx, state, depth) {
       if (t && !t.includes('$') && t !== '-') ctx.cwd = resolve(ctx.cwd, expandTilde(t));
       continue;
     }
-    if (c.name === 'factory') continue; // `factory dev-up`, the shim, `factory read-api up`: the sanctioned routes
+    if (c.name === 'factory') {
+      // `factory dev-up`, the shim, `factory read-api up`: the sanctioned routes; a restart only from the main session.
+      if (c.args[0] === 'dev-restart' && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
+        deny(`\`factory dev-restart\` is the orchestrator's: a subagent may not restart the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service instead`);
+      continue;
+    }
     if (depth < 4) {
       if (SHELLS.has(c.name)) {
         const k = c.args.findIndex((x) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x));
@@ -636,6 +643,8 @@ export function evaluate(payload, cfg) {
   const ctx = {
     ...cfg,
     cwd,
+    // Claude Code adds agent_id to a hook's input when the call comes from a subagent.
+    isSubagent: typeof payload?.agent_id === 'string' && payload.agent_id !== '',
     matchPath,
     checkTouch(p, verb) {
       if (!cfg.touchGlobs.length || TEMPLATE_SUFFIX.test(p)) return;
