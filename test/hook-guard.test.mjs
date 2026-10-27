@@ -42,7 +42,7 @@ agents_may_start = false
 read_api = { cwd = "/tmp/example", cmd = "npm run dev -w api", port = 4103 }
 `;
 
-let t, main, wt, cfg, cfgMerge, cfgOpen;
+let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgOpen;
 
 before(() => {
   t = scratch();
@@ -66,6 +66,9 @@ before(() => {
   const mk = (extra = '') => guardConfig(parseToml(TOML + extra).data, join(main, 'factory.toml'));
   cfg = mk();
   cfgMerge = mk('\n[loop]\nallow_merge = true\n');
+  // Bases stand in for `gh pr view`: PR 12 targets dev, 7 targets main, the current branch's PR targets dev, 99 can't be found.
+  const bases = { 12: 'dev', 7: 'main', 'feat/x': 'release/2', null: 'dev' };
+  cfgGuarded = { ...mk('\n[loop]\nallow_merge = true\nnever_merge_into = ["main", "release/*"]\n'), resolveBase: (ref) => bases[ref] ?? null };
   cfgOpen = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = true')).data, join(main, 'factory.toml'));
 });
 after(() => t.cleanup());
@@ -149,6 +152,14 @@ const TABLE = [
   ['gh -R repo pr merge --auto', () => bash('gh -R o/r pr merge --auto 12'), 'deny'],
   ['gh api pulls merge', () => bash('gh api -X PUT repos/o/r/pulls/12/merge'), 'deny'],
   ['gh pr merge when allow_merge = true', () => bash('gh pr merge 12', main), 'allow', null, () => cfgMerge],
+  ['allow_merge + never_merge_into: base dev', () => bash('gh pr merge 12 --squash'), 'allow', null, () => cfgGuarded],
+  ['allow_merge + never_merge_into: current branch PR on dev', () => bash('gh pr merge --squash --delete-branch'), 'allow', null, () => cfgGuarded],
+  ['allow_merge + never_merge_into: base main', () => bash('gh pr merge 7 --squash'), 'deny', /merging into 'main'.*never_merge_into/, () => cfgGuarded],
+  ['allow_merge + never_merge_into: -R and a glob base', () => bash('gh -R o/r pr merge feat/x --auto'), 'deny', /release\/2/, () => cfgGuarded],
+  ['allow_merge + never_merge_into: subject value is not the PR', () => bash('gh pr merge 7 -t 12'), 'deny', /'main'/, () => cfgGuarded],
+  ['allow_merge + never_merge_into: unknown base', () => bash('gh pr merge 99'), 'deny', /couldn't look up/, () => cfgGuarded],
+  ['allow_merge + never_merge_into: PR in a variable', () => bash('gh pr merge "$PR"'), 'deny', /not named literally/, () => cfgGuarded],
+  ['allow_merge + never_merge_into: gh api merge', () => bash('gh api -X PUT repos/o/r/pulls/12/merge'), 'deny', /gh pr merge/, () => cfgGuarded],
   ['gh pr create / view / checks', () => bash('gh pr create --title x --body "will gh pr merge later" && gh pr view 3 && gh pr checks 3'), 'allow'],
 
   // ---- rule 5: the dev stack
