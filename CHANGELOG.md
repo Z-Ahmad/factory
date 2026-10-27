@@ -2,6 +2,14 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.19.0 (2026-10-27)
+
+### Hung services, and push protection scoped to the project
+
+- `[dev] probe = "http"`: `dev-status` and `dev-up` also send each port an HTTP request (`FK_PROBE_TIMEOUT_S`, default 5 s). A port that accepts connections but never answers is reported `hung`. `dev-status` exits 1, `dev-up` exits 6 naming `factory dev-restart`, and `preflight` passes the 6 on. The default `tcp` keeps the old behaviour for stacks whose ports aren't HTTP.
+- hook-guard: with `[git] github` set, `never_push` guards only pushes whose remote is that repository (by the remote's URL; an unknown remote stays guarded). Pushing the kit's own `main` from a project session is no longer blocked.
+- hook-guard: a `gh pr merge` whose base can't be looked up now says why when the PR was created in the same command (it doesn't exist yet when the hook runs).
+
 ## v0.18.0 (2026-10-27)
 
 ### Restarting a wedged dev stack

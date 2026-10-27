@@ -310,3 +310,58 @@ test('dev-restart: an unknown argument exits 1', () =>
     const r = t.run(['dev-restart', '--nope']);
     assert.equal(r.status, 1);
   }));
+
+// A port that accepts connections but never answers, like the Storage emulator after a rules reload.
+async function startHungServer(port) {
+  const net = await import('node:net');
+  const sockets = [];
+  const server = net.createServer((s) => sockets.push(s));
+  await new Promise((r) => server.listen(port, '127.0.0.1', r));
+  return { close: () => { for (const s of sockets) s.destroy(); server.close(); } };
+}
+
+// In a child process: the commands run through spawnSync, which blocks this one's event loop.
+async function startHttpServer(port) {
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, ['-e', `require('node:http').createServer((_, r) => r.end('ok')).listen(${port}, '127.0.0.1')`], { stdio: 'ignore' });
+  if (!(await waitFor(() => isUp(port)))) throw new Error(`http server did not start on :${port}`);
+  return { close: () => child.kill('SIGKILL') };
+}
+
+test('dev-status with probe = "http": a port that never answers is hung, exit 1', () =>
+  withProject({ dev: 'wait_ports = [{a}, {b}]\nprobe = "http"' }, async (t) => {
+    const web = await startHttpServer(t.ports.a);
+    const hung = await startHungServer(t.ports.b);
+    try {
+      const r = t.run(['dev-status']);
+      assert.equal(r.status, 1);
+      assert.equal(r.stdout, `:${t.ports.a} up\n:${t.ports.b} hung\n`);
+    } finally {
+      hung.close();
+      web.close();
+    }
+  }));
+
+test('dev-status with the default tcp probe calls a silent port up', () =>
+  withProject({ dev: 'wait_ports = [{a}]' }, async (t) => {
+    const hung = await startHungServer(t.ports.a);
+    try {
+      const r = t.run(['dev-status']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, `:${t.ports.a} up\n`);
+    } finally {
+      hung.close();
+    }
+  }));
+
+test('dev-up with a hung port exits 6 and names dev-restart', () =>
+  withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]\nprobe = "http"' }, async (t) => {
+    const hung = await startHungServer(t.ports.a);
+    try {
+      const r = t.run(['dev-up']);
+      assert.equal(r.status, 6);
+      assert.match(r.stderr, /hung.*factory dev-restart/);
+    } finally {
+      hung.close();
+    }
+  }));
