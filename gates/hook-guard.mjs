@@ -10,6 +10,8 @@
 //   1. Edit/Write/MultiEdit/NotebookEdit (and Bash redirects / tee) to a [never_touch] paths glob.
 //   2. Bash running a [never_touch] never_run_in_worktree script from inside a linked worktree.
 //   3. Bash: pushing to a [git] never_push branch, any forced push, --no-verify (and its bypasses).
+//      With [git] github set, never_push guards only pushes to that repository's remote (the
+//      remote's URL names it): the kit's own main, or another project's, is not this project's.
 //   4. Bash: `gh pr merge`, unless [loop] allow_merge = true; even then, a PR whose base matches
 //      [loop] never_merge_into (its base looked up with `gh pr view`; unknown counts as protected).
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
@@ -436,6 +438,7 @@ function checkPush(rest, dir, ctx) {
   if (!ctx.neverPush.length) return;
   const key = `git.never_push = ${JSON.stringify(ctx.neverPush.map((g) => g.src))}`;
   const info = () => gitInfo(dir);
+  if (ctx.github && !pushesToProject(info(), pos[0] ?? 'origin', ctx.github)) return;
   let branch;
   const current = () => (branch === undefined ? (branch = (() => { const g = info(); return g ? currentBranch(g) : null; })()) : branch);
 
@@ -454,6 +457,42 @@ function checkPush(rest, dir, ctx) {
     if (dst.includes('*')) deny(`pushing a wildcard refspec '${spec}' could update a protected branch (${key})`);
     if (anyGlob(ctx.neverPush, dst)) deny(`pushing to '${dst}' is blocked (${key})`);
   }
+}
+
+/** `[remote "<name>"] url` from the repository's config, or null. */
+export function remoteUrl(configText, name) {
+  let inRemote = false;
+  for (const raw of configText.split('\n')) {
+    const line = raw.trim();
+    const section = /^\[(.+)\]$/.exec(line);
+    if (section) {
+      inRemote = section[1].replace(/\s+/g, ' ') === `remote "${name}"`;
+      continue;
+    }
+    const kv = /^url\s*=\s*(.+)$/.exec(line);
+    if (inRemote && kv) return kv[1].trim();
+  }
+  return null;
+}
+
+/** Whether a remote URL names `owner/repo` on GitHub (https, ssh or scp form). */
+export function urlIsRepo(url, slug) {
+  const m = /github\.com[:/]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(url ?? '');
+  return Boolean(m) && m[1].toLowerCase() === slug.toLowerCase();
+}
+
+/** True unless the push's remote is known to be another repository (unknown stays guarded). */
+function pushesToProject(info, remote, slug) {
+  if (!info) return true;
+  let url = remote.includes('://') || remote.includes('@') ? remote : null;
+  if (!url) {
+    try {
+      url = remoteUrl(readFileSync(join(info.common, 'config'), 'utf8'), remote);
+    } catch {
+      return true;
+    }
+  }
+  return !url || urlIsRepo(url, slug) || !/github\.com/i.test(url);
 }
 
 const GH_MERGE_VALUE = ['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit'];
@@ -478,7 +517,7 @@ function checkGh(c, ctx) {
       const ref = mpos[2] ?? null;
       if (ref?.includes('$')) deny(`\`gh pr merge ${ref}\`: the PR is not named literally, so its base can't be checked (${protectedKey})`);
       const base = ctx.resolveBase(ref, repo, ctx.cwd);
-      if (!base) deny(`\`gh pr merge\` is blocked: couldn't look up the PR's base branch to check it (${protectedKey})`);
+      if (!base) deny(`\`gh pr merge\` is blocked: couldn't look up the PR's base branch to check it (${protectedKey}). A PR created in this same command doesn't exist yet when the hook runs: run the merge as its own command`);
       if (anyGlob(ctx.neverMergeInto, base)) deny(`merging into '${base}' is blocked: the user merges those (${protectedKey})`);
     }
   }
@@ -598,6 +637,7 @@ export function guardConfig(data, tomlPath) {
     touchGlobs: globs(nt.paths),
     runGlobs: globs(nt.never_run_in_worktree),
     neverPush: globs(data.git?.never_push),
+    github: typeof data.git?.github === 'string' && data.git.github ? data.git.github : null,
     dev: data.dev ?? {},
     devLocked: data.dev?.agents_may_start === false,
     allowMerge: data.loop?.allow_merge === true,

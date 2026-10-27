@@ -16,6 +16,19 @@ fk_port_up() {
   ' "${2:-localhost}" "$1"
 }
 
+# fk_port_state <port> [host]: "up", "down", or "hung" (accepts a connection but never answers an
+# HTTP request within FK_PROBE_TIMEOUT_S, default 5 s). With [dev] probe = "tcp" (the default) a
+# connection is enough and "hung" is never reported; "http" is for stacks whose ports all speak HTTP.
+fk_port_state() {
+  if ! fk_port_up "$1" "${2:-}"; then echo down; return; fi
+  if [[ "${FK_DEV_PROBE:-tcp}" != http ]]; then echo up; return; fi
+  if node -e '
+    const req = require("node:http").get({ host: process.argv[1], port: Number(process.argv[2]), path: "/", timeout: Number(process.argv[3]) * 1000 }, (res) => { res.resume(); process.exit(0); });
+    req.on("timeout", () => { req.destroy(); process.exit(1); });
+    req.on("error", (e) => process.exit(e.code === "ECONNRESET" || e.code === "ECONNREFUSED" ? 1 : 0));
+  ' "${2:-localhost}" "$1" "${FK_PROBE_TIMEOUT_S:-5}"; then echo up; else echo hung; fi
+}
+
 # fk_free_gb [path]: whole GB free on the volume holding path (default /).
 fk_free_gb() { df -k "${1:-/}" | awk 'NR==2 {printf "%d", $4/1048576}'; }
 

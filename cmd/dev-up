@@ -8,7 +8,8 @@
 # (skipped with --no-seed). Does nothing when all the wait_ports are already listening, apart
 # from the seed restore.
 # Exit 0 when the stack is up (and the seed restored), 1 on a bad argument, missing config or
-# missing directory, 2 when the ports did not come up in time, 3 when the seed restore failed.
+# missing directory, 2 when the ports did not come up in time, 3 when the seed restore failed,
+# 6 when a port is up but hung ([dev] probe = "http"): the orchestrator runs `factory dev-restart`.
 # FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -30,7 +31,14 @@ PORTS_TXT="$(IFS=/; echo "${PORTS[*]}")"
 
 stack_up() { local p; for p in "${PORTS[@]}"; do fk_port_up "$p" || return 1; done; }
 
+hung_ports() { local p; for p in "${PORTS[@]}"; do [[ "$(fk_port_state "$p")" == hung ]] && printf '%s ' "$p"; done; return 0; }
+
 if stack_up; then
+  HUNG="$(hung_ports)"
+  if [[ -n "$HUNG" ]]; then
+    echo "factory-dev-up: port(s) ${HUNG% } accept connections but never answer (hung); run \`factory dev-restart\`" >&2
+    exit 6
+  fi
   echo "factory-dev-up: ports already up ($PORTS_TXT); nothing to start"
 else
   [[ -n "${FK_DEV_UP:-}" ]] || fk_die "[dev] up is not set"

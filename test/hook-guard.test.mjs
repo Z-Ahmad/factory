@@ -42,7 +42,7 @@ agents_may_start = false
 read_api = { cwd = "/tmp/example", cmd = "npm run dev -w api", port = 4103 }
 `;
 
-let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgAnyone, cfgOpen;
+let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgAnyone, cfgGithub, cfgOpen;
 
 before(() => {
   t = scratch();
@@ -69,6 +69,8 @@ before(() => {
   // Bases stand in for `gh pr view`: PR 12 targets dev, 7 targets main, the current branch's PR targets dev, 99 can't be found.
   const bases = { 12: 'dev', 7: 'main', 'feat/x': 'release/2', null: 'dev' };
   cfgGuarded = { ...mk('\n[loop]\nallow_merge = true\nnever_merge_into = ["main", "release/*"]\n'), resolveBase: (ref) => bases[ref] ?? null };
+  writeFileSync(join(gitdir, 'config'), '[remote "origin"]\n\turl = https://github.com/o/app.git\n');
+  cfgGithub = guardConfig(parseToml(TOML.replace('never_push = ["main", "release/*"]', 'never_push = ["main", "release/*"]\ngithub = "o/app"')).data, join(main, 'factory.toml'));
   cfgAnyone = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = false\nrestart_by = "anyone"')).data, join(main, 'factory.toml'));
   cfgOpen = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = true')).data, join(main, 'factory.toml'));
 });
@@ -163,6 +165,11 @@ const TABLE = [
   ['allow_merge + never_merge_into: PR in a variable', () => bash('gh pr merge "$PR"'), 'deny', /not named literally/, () => cfgGuarded],
   ['allow_merge + never_merge_into: gh api merge', () => bash('gh api -X PUT repos/o/r/pulls/12/merge'), 'deny', /gh pr merge/, () => cfgGuarded],
   ['gh pr create / view / checks', () => bash('gh pr create --title x --body "will gh pr merge later" && gh pr view 3 && gh pr checks 3'), 'allow'],
+
+  // ---- rule 3 scope: with [git] github, never_push guards only that repository's remote
+  ['push main to the project remote (github set)', () => bash('git push origin main'), 'deny', /never_push/, () => cfgGithub],
+  ['push main to another repo by URL (github set)', () => bash('git push https://github.com/o/kit.git main'), 'allow', null, () => cfgGithub],
+  ['push main to the project by URL (github set)', () => bash('git push git@github.com:o/app.git main'), 'deny', /never_push/, () => cfgGithub],
 
   // ---- rule 6: dev-restart is the orchestrator's
   ['factory dev-restart from the main session', () => bash('scripts/factory/factory dev-restart'), 'allow'],
@@ -278,4 +285,15 @@ test('hook-guard CLI: fails open when the payload shape is unexpected', () => {
     assert.equal(r.status, 0, payload);
     assert.equal(r.stdout, '', payload);
   }
+});
+
+test('remoteUrl and urlIsRepo read a remote and match its GitHub slug', async () => {
+  const { remoteUrl, urlIsRepo } = await import('../gates/hook-guard.mjs');
+  const cfgText = '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:Z-Ahmad/factory.git\n[remote "up"]\n\turl = https://github.com/o/app\n';
+  assert.equal(remoteUrl(cfgText, 'origin'), 'git@github.com:Z-Ahmad/factory.git');
+  assert.equal(remoteUrl(cfgText, 'up'), 'https://github.com/o/app');
+  assert.equal(remoteUrl(cfgText, 'none'), null);
+  assert.equal(urlIsRepo('git@github.com:Z-Ahmad/factory.git', 'z-ahmad/factory'), true);
+  assert.equal(urlIsRepo('https://github.com/o/app/', 'o/app'), true);
+  assert.equal(urlIsRepo('https://github.com/o/app-two.git', 'o/app'), false);
 });

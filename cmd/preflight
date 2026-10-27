@@ -23,7 +23,7 @@
 # Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; xcode ok; awake (pid 123); dev up (no-op); seed ok",
 # or "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
 # Exit 0 when every step passed, otherwise the exit code of the first failing step (named in the line):
-# disk-guard 2 (below the floor) or 1; git 5; xcode 4; dev-up 1 or 2; seed 3. Changes no git state.
+# disk-guard 2 (below the floor) or 1; git 5; xcode 4; dev-up 1, 2 or 6 (a port hung: dev-restart); seed 3. Changes no git state.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 . "$FK_KIT_DIR/lib/sh/awake.sh"
