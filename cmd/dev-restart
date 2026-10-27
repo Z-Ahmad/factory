@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# desc: stop the dev stack and start it again (dev-up); the orchestrator's, for a wedged emulator
+# usage: factory dev-restart [--no-seed] [--dry-run]
+# Stops whatever listens on the [dev] all_ports (the wait_ports when all_ports is not set): TERM to
+# each listener's process group (dev-up starts the stack as one), then, after [dev] stop_s (default
+# 30) with ports still open, KILL to what still listens. Then runs dev-up, which starts it again
+# and restores the seed (skipped with --no-seed). --dry-run prints the process groups it would stop.
+# hook-guard lets only the main session run it: a subagent is denied unless [dev] restart_by = "anyone".
+# Exit 0 when the stack is back up, 1 on a bad argument or missing config, 4 when a port would not
+# close; otherwise dev-up's own exit (2 ports did not come up, 3 seed restore failed).
+# FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+SEED=1 DRY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-seed) SEED=0; shift ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+ALL="${FK_DEV_ALL_PORTS:-${FK_DEV_WAIT_PORTS:-}}"
+PORTS=()
+while IFS= read -r p; do if [[ -n "$p" ]]; then PORTS+=("$p"); fi; done <<< "$ALL"
+[[ ${#PORTS[@]} -gt 0 ]] || fk_die "[dev] all_ports and wait_ports are not set"
+
+listeners() { local p; for p in "${PORTS[@]}"; do fk_listen_pids "$p"; done | sort -u; }
+SELF_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
+GROUPS_TXT=""
+for pid in $(listeners); do
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  [[ -n "$pgid" && "$pgid" != "$SELF_PGID" && "$pgid" != 0 && "$pgid" != 1 ]] || pgid=""
+  GROUPS_TXT="$GROUPS_TXT ${pgid:-pid:$pid}"
+done
+GROUPS_TXT="$(tr ' ' '\n' <<< "$GROUPS_TXT" | sed '/^$/d' | sort -u | tr '\n' ' ')"
+
+if [[ "$DRY" == 1 ]]; then
+  echo "factory-dev-restart: would stop ${GROUPS_TXT:-nothing (no listeners)} on ports $(IFS=/; echo "${PORTS[*]}"), then dev-up"
+  exit 0
+fi
+
+for g in $GROUPS_TXT; do
+  if [[ "$g" == pid:* ]]; then kill -TERM "${g#pid:}" 2>/dev/null || true; else kill -TERM -- "-$g" 2>/dev/null || true; fi
+done
+[[ -n "$GROUPS_TXT" ]] && echo "factory-dev-restart: sent TERM to ${GROUPS_TXT% }"
+
+POLL="${FK_DEV_POLL_S:-5}" STOP="${FK_DEV_STOP_S:-30}"
+waited=0
+while [[ -n "$(listeners)" ]]; do
+  if (( waited >= STOP )); then
+    for pid in $(listeners); do kill -KILL "$pid" 2>/dev/null || true; done
+    sleep 1
+    [[ -z "$(listeners)" ]] || { echo "factory-dev-restart: ports still open after KILL: $(listeners | tr '\n' ' ')" >&2; exit 4; }
+    echo "factory-dev-restart: sent KILL to what still listened after ${STOP}s"
+    break
+  fi
+  sleep "$POLL"; waited=$((waited + POLL))
+done
+echo "factory-dev-restart: stopped; starting again"
+
+ARGS=()
+[[ "$SEED" == 1 ]] || ARGS+=(--no-seed)
+exec "$FK_KIT_DIR/cmd/dev-up" "${ARGS[@]+"${ARGS[@]}"}"

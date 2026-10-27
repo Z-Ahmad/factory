@@ -269,3 +269,44 @@ test('the valid.toml fixture still validates with the new commands around', () =
   const r = factory(['config', 'validate'], { env: { FACTORY_TOML: fixture('valid.toml') } });
   assert.equal(r.status, 0, r.stderr);
 });
+
+test('dev-restart --dry-run names the process group it would stop and touches nothing', () =>
+  withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]' }, async (t) => {
+    const kid = await t.startKid(t.ports.a);
+    const r = t.run(['dev-restart', '--dry-run']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`would stop .+ on ports ${t.ports.a}, then dev-up`));
+    assert.ok(alive(kid.pid));
+  }));
+
+test('dev-restart: stops the running stack, then dev-up starts it again and seeds', () =>
+  withProject(
+    {
+      dev: 'up = "echo restarted >> {marker}; exec node {server} {a}"\ncwd = "stack"\nwait_ports = [{a}]\ntimeout_s = 30\nstop_s = 5',
+      seed: 'restore = "echo seeded >> {marker}"',
+    },
+    async (t) => {
+      // the old stack, started the way dev-up starts it: its own process group
+      const first = t.run(['dev-up']);
+      assert.equal(first.status, 0, first.stderr);
+      const old = Number(first.stdout.match(/\(pid (\d+)\)/)[1]);
+      t.pids.push(old);
+      const r = t.run(['dev-restart']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /sent TERM to/);
+      assert.match(r.stdout, /stopped; starting again/);
+      const m = r.stdout.match(/factory-dev-up: started .* \(pid (\d+)\)/);
+      assert.ok(m, r.stdout);
+      t.pids.push(Number(m[1]));
+      assert.notEqual(Number(m[1]), old);
+      await waitFor(() => !alive(old), 5000);
+      assert.equal(await isUp(t.ports.a), true);
+      assert.equal(t.read(t.marker), 'restarted\nseeded\nrestarted\nseeded\n');
+    },
+  ));
+
+test('dev-restart: an unknown argument exits 1', () =>
+  withProject({ dev: 'wait_ports = [{a}]' }, (t) => {
+    const r = t.run(['dev-restart', '--nope']);
+    assert.equal(r.status, 1);
+  }));

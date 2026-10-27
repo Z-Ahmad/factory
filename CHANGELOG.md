@@ -2,6 +2,13 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.18.0 (2026-10-27)
+
+### Restarting a wedged dev stack
+
+- `factory dev-restart [--no-seed] [--dry-run]`: TERM to the process group of every listener on `[dev] all_ports` (the wait ports when unset), KILL to what still listens after `[dev] stop_s` (default 30), then `dev-up` (start, wait, seed). Exit 4 when a port won't close.
+- hook-guard rule 6: `factory dev-restart` is the orchestrator's. Claude Code puts `agent_id` in a hook's input when a subagent makes the call; such a call is denied unless `[dev] restart_by = "anyone"`.
+
 ## v0.17.0 (2026-10-27)
 
 ### Merging with a protected base

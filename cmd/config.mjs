@@ -396,6 +396,10 @@ export const SCHEMA = table({
     wait_ports: ints(),
     all_ports: ints(),
     timeout_s: int(),
+    // dev-restart: seconds to wait for the ports to close after TERM before KILL (default 30)
+    stop_s: int(),
+    // who may run `factory dev-restart`: "orchestrator" (default; the main session, never a subagent) or "anyone"
+    restart_by: str(),
     agents_may_start: bool(),
     read_api: table({ cwd: str(REQ), cmd: str(REQ), port: int(REQ) }),
   }),

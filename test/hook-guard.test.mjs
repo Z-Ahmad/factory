@@ -42,7 +42,7 @@ agents_may_start = false
 read_api = { cwd = "/tmp/example", cmd = "npm run dev -w api", port = 4103 }
 `;
 
-let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgOpen;
+let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgAnyone, cfgOpen;
 
 before(() => {
   t = scratch();
@@ -69,11 +69,13 @@ before(() => {
   // Bases stand in for `gh pr view`: PR 12 targets dev, 7 targets main, the current branch's PR targets dev, 99 can't be found.
   const bases = { 12: 'dev', 7: 'main', 'feat/x': 'release/2', null: 'dev' };
   cfgGuarded = { ...mk('\n[loop]\nallow_merge = true\nnever_merge_into = ["main", "release/*"]\n'), resolveBase: (ref) => bases[ref] ?? null };
+  cfgAnyone = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = false\nrestart_by = "anyone"')).data, join(main, 'factory.toml'));
   cfgOpen = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = true')).data, join(main, 'factory.toml'));
 });
 after(() => t.cleanup());
 
 const bash = (command, cwd) => ({ tool_name: 'Bash', tool_input: { command }, cwd: cwd ?? main });
+const subagentBash = (command) => ({ ...bash(command), agent_id: 'agent-123', agent_type: 'general-purpose' });
 const edit = (tool, file_path, cwd) => ({ tool_name: tool, tool_input: { file_path }, cwd: cwd ?? main });
 
 // [label, payload builder, expected, optional reason regex]. Builders run after `before`, so paths are real.
@@ -161,6 +163,12 @@ const TABLE = [
   ['allow_merge + never_merge_into: PR in a variable', () => bash('gh pr merge "$PR"'), 'deny', /not named literally/, () => cfgGuarded],
   ['allow_merge + never_merge_into: gh api merge', () => bash('gh api -X PUT repos/o/r/pulls/12/merge'), 'deny', /gh pr merge/, () => cfgGuarded],
   ['gh pr create / view / checks', () => bash('gh pr create --title x --body "will gh pr merge later" && gh pr view 3 && gh pr checks 3'), 'allow'],
+
+  // ---- rule 6: dev-restart is the orchestrator's
+  ['factory dev-restart from the main session', () => bash('scripts/factory/factory dev-restart'), 'allow'],
+  ['factory dev-restart from a subagent', () => subagentBash('scripts/factory/factory dev-restart --no-seed'), 'deny', /orchestrator's/],
+  ['factory dev-restart from a subagent, restart_by = anyone', () => subagentBash('factory dev-restart'), 'allow', null, () => cfgAnyone],
+  ['factory dev-up from a subagent', () => subagentBash('factory dev-up'), 'allow'],
 
   // ---- rule 5: the dev stack
   ['npm run dev', () => bash('npm run dev'), 'deny', /factory dev-up/],

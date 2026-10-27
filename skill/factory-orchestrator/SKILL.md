@@ -67,7 +67,7 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 
 1. `factory preflight` prints one line: stale-derived-data prune → disk-guard → git → xcode → keep-awake → dev-up → seed restore.
    Non-zero names the failing step: disk 2 → stop; git 5 → run the printed fix, find what set core.bare, rerun; xcode 4 →
-   stop and notify the human (§1); dev-up 1/2 → stderr, retry `factory dev-up` once, then stop and log; seed 3 → stop. "App Store auto-update on" in the line →
+   stop and notify the human (§1); dev-up 1/2 → stderr, retry `factory dev-up` once, then stop and log; a port that is up but never answers → `factory dev-restart` (yours alone; the hook denies subagents); seed 3 → stop. "App Store auto-update on" in the line →
    tell the human once (it is how Xcode breaks overnight). keep-awake holds a `caffeinate` for the night (`preflight.keep_awake`);
    a closed MacBook lid still sleeps the Mac.
    Never start or kill the dev stack any other way (the hook denies it).
