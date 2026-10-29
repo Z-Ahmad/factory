@@ -576,6 +576,8 @@ export const SCHEMA = table({
     max_swap_gb: num(),
     min_free_pct: int(),
     max_booted_sims: int(),
+    // after a cold boot or a build, how long a proof waits for the load to come back under max_load (default 120)
+    boot_settle_s: int(),
     poll_s: int(),
     timeout_s: int(),
   }),

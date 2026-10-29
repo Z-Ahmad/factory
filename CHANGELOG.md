@@ -2,6 +2,15 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.20.1 (2026-10-28)
+
+### A cold boot no longer spoils the proof
+
+- After a cold boot, and after `--build` ran a build, `factory proof` waits until the 1-minute load is back under `[slot] max_load`, at most the new `[slot] boot_settle_s` (default 120). A cold-booted simulator then gets one unrecorded launch, before `[proof.ios] before` and the counted recording. Before this, a cold iPad boot pushed the load to 50–73 against a gate of 16, every such proof came out load-unreliable, and agents worked around it with `--keep-booted` and a discarded first run.
+- If the load is still over the gate when the wait runs out, the run says `settle: timed out`, records anyway and is marked load-unreliable, as before. `verdict.json`'s `load.settle` records `waited_s` and `timed_out`.
+- `--orientation` turns the simulator after the settle, because a cold-booted 13" iPad comes up in portrait.
+- `proof-matrix` uses the same settle (`fk_proof_settle` in `proof/ios/common.sh`) for fresh cells (replacing the fixed 90 s), after a cold-booted shooter (now also installed and launched once, unrecorded) and after its build.
+
 ## v0.20.0 (2026-10-28)
 
 ### Resource rules as code: the slot gate everywhere, memory, idle simulators
