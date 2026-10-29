@@ -57,3 +57,29 @@ fk_sim_runtime() {
 
 # fk_proof_fail_markers: [proof.ios] fail_markers, one per line (LAYOUT-LOOP when unset).
 fk_proof_fail_markers() { printf '%s\n' "${FK_PROOF_IOS_FAIL_MARKERS:-LAYOUT-LOOP}"; }
+
+# fk_proof_settle <what>: after <what> (a cold boot, a build) the 1-minute load stays high for a while, and a clip
+# recorded then measures it. Wait until the load is under [slot] max_load (default 2 x the CPU count), at most
+# [slot] boot_settle_s (default 120) seconds. Sets SETTLE_S (seconds waited) and SETTLE_TIMED_OUT (0 or 1); a timeout
+# is said in one line and the proof goes on (its verdict is then marked load-unreliable, as before).
+fk_proof_settle() {
+  local target t=$SECONDS l cap="${FK_SLOT_BOOT_SETTLE_S:-120}" poll=3
+  SETTLE_S=0 SETTLE_TIMED_OUT=0
+  target="$(fk_max_load)"
+  [[ -n "$target" ]] || return 0
+  (( cap > poll )) || poll=1
+  while :; do
+    l="$(fk_load1)"
+    [[ -n "$l" ]] || return 0
+    SETTLE_S=$((SECONDS - t))
+    if awk -v l="$l" -v m="$target" 'BEGIN { exit !(l <= m) }'; then
+      echo "settle: load $l is under $target ${SETTLE_S}s after the $1"; return 0
+    fi
+    if (( SETTLE_S >= cap )); then
+      SETTLE_TIMED_OUT=1
+      echo "settle: timed out: load still $l ${SETTLE_S}s after the $1 (over [slot] max_load $target; [slot] boot_settle_s = $cap); recording anyway, so the clip may be marked load-unreliable"
+      return 0
+    fi
+    sleep "$poll"
+  done
+}

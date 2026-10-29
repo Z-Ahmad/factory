@@ -42,6 +42,10 @@
 # [proof.ios] before: a command run from the project root before the app is installed and launched (e.g. the seed
 # restore), so a proof never starts on data an earlier one changed; proof-matrix runs it once and sets
 # FK_PROOF_BEFORE_DONE=1 for its cells.
+# A cold boot or a --build (which ran a build) settles first: the run waits until the 1-minute load is back under [slot]
+# max_load, at most [slot] boot_settle_s (default 120; a timeout is said and the clip may come out load-unreliable), and a
+# cold-booted simulator gets one unrecorded launch, so the counted clip is never the boot's own load or a first launch.
+# --orientation turns the simulator after that settle. verdict.json's "load" gets "settle": {"waited_s", "timed_out"}.
 # A simulator this run booted is shut down when it ends (on failure too), unless --keep-booted: an idle booted simulator
 # still loads the Mac. One that was already booted stays booted.
 # --no-turn-back: after an --orientation clip, leave the simulator turned (for one about to be deleted).
@@ -218,20 +222,36 @@ rm -f "$VIDEO"
 
 slot_wait proof
 echo "installing on ${UDID}..."
-if [[ "$KEEP_BOOTED" == 0 ]] && ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then BOOTED_HERE=1; fi
+COLD=0
+if ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then COLD=1; fi
+[[ "$COLD" == 1 && "$KEEP_BOOTED" == 0 ]] && BOOTED_HERE=1
 xcrun simctl boot "$UDID" 2>/dev/null || true   # already-booted is fine
 xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
 if [[ -n "$SYSTEM_APPEARANCE" ]]; then xcrun simctl ui "$UDID" appearance "$SYSTEM_APPEARANCE"; fi
+# A cold boot (load 50-73 on an iPad) and a build both keep the 1-minute load high for a while: the counted clip waits
+# until it is back under the gate. Turning comes after, since a cold-booted simulator comes up in portrait.
+SETTLE_S="" SETTLE_TIMED_OUT=""
+if [[ "$COLD" == 1 || "$BUILT" == 1 ]]; then fk_proof_settle "$([[ "$COLD" == 1 ]] && echo "cold boot" || echo build)"; fi
 if [[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]]; then
   echo "turning $UDID to $ORIENTATION..."
   turn "$ORIENTATION" || { echo "[proof.ios] orientation_cmd failed for $ORIENTATION; tail of $OUT/orientation.log:" >&2; tail -15 "$OUT/orientation.log" >&2; exit 1; }
   TURNED=1
 fi
+if [[ "$INSTALL" == 1 ]]; then xcrun simctl install "$UDID" "$APP"; fi
+# The first launch on a cold simulator is slow (dyld closures, signature checks, caches): launch once, unrecorded and
+# without the scenario's environment, so the counted run is a warm one. Before [proof.ios] before, so the seed it
+# restores is what the counted run sees.
+if [[ "$COLD" == 1 ]]; then
+  t=$SECONDS
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || echo "note: the warm-up launch failed on $UDID" >&2
+  sleep 3
+  xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  echo "warm-up: one unrecorded launch after the cold boot ($((SECONDS - t))s)"
+fi
 if [[ -n "${FK_PROOF_IOS_BEFORE:-}" && "${FK_PROOF_BEFORE_DONE:-0}" != 1 ]]; then
   echo "before: ${FK_PROOF_IOS_BEFORE}"
   ( cd "$FK_ROOT" && bash -c "$FK_PROOF_IOS_BEFORE" ) >"$OUT/before.log" 2>&1 || { echo "[proof.ios] before failed; tail of $OUT/before.log:" >&2; tail -15 "$OUT/before.log" >&2; exit 1; }
 fi
-if [[ "$INSTALL" == 1 ]]; then xcrun simctl install "$UDID" "$APP"; fi
 
 while IFS=$'\t' read -r k v; do
   [[ -n "$k" ]] || continue
@@ -329,12 +349,14 @@ VERDICT_RC=0
 node "$FK_KIT_DIR/proof/verdict/proof-verdict.mjs" "$VIDEO" --out "$OUT" --steps "$OUT/steps.log" --scenario "$SCENARIO" ${VERDICT_SKIP:+--skip-start "$VERDICT_SKIP"} ${VERDICT_ARGS[@]+"${VERDICT_ARGS[@]}"} ${VERDICT_IGNORE[@]+"${VERDICT_IGNORE[@]}"} || VERDICT_RC=$?
 if [[ -s "$OUT/verdict.json" ]]; then
   node -e '
-    const fs = require("fs"), [f, s, e, m] = process.argv.slice(1), n = (x) => (x === "" ? null : Number(x))
+    const fs = require("fs"), [f, s, e, m, ws, wt] = process.argv.slice(1), n = (x) => (x === "" ? null : Number(x))
     const v = JSON.parse(fs.readFileSync(f, "utf8")); v.load = { start: n(s), end: n(e) }
+    // after a cold boot or a build: how long the run waited for the load, and whether that wait ran out
+    if (ws !== "") v.load.settle = { waited_s: n(ws), timed_out: wt === "1" }
     // above [slot] max_load a hold or a flash may be the load, not the app
     if (m !== "") v.load.unreliable = Math.max(n(s) ?? 0, n(e) ?? 0) > Number(m)
     fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n")
-  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}" "$MAX_LOAD"
+  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}" "$MAX_LOAD" "${SETTLE_S:-}" "${SETTLE_TIMED_OUT:-}"
 fi
 echo "verdict:     $OUT/verdict.json"
 LOAD_NOTE=""

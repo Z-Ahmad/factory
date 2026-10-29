@@ -323,3 +323,43 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
     t.cleanup();
   }
 });
+
+test('proof: a cold boot settles the load, then turns, installs and launches once unrecorded; a warm sim does neither; a settle that runs out says so', () => {
+  const t = project((s) => s.replace('env_prefix    = "EXAMPLE_"\n', 'env_prefix    = "EXAMPLE_"\norientation_cmd = "echo turned >> xcrun.log"\n') + '\n[slot]\nboot_settle_s = 1\n');
+  try {
+    const bin = join(t.dir, 'bin');
+    mkdirSync(bin);
+    const stub = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+    stub('xcrun', `echo "$*" >> '${join(t.dir, 'xcrun.log')}'
+case "$*" in "simctl list devices"*) echo "    Phone (ABC) (\${SIM_STATE:-Shutdown})" ;; *recordVideo*) sleep 3 ;; esac`);
+    stub('ffmpeg', 'exit 0');
+    stub('ffprobe', 'exit 0');
+    stub('ps', 'exit 0');
+    stub('sysctl', 'case "$2" in vm.loadavg) echo "{ ${LOAD:-1.00} 1.00 1.00 }" ;; hw.ncpu) echo 8 ;; *) exit 1 ;; esac');
+    const dd = join(t.dir, 'dd');
+    mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
+    writeFileSync(join(dd, 'Build', 'Example.app', 'Example'), 'bin');
+    const proof = (env) => {
+      writeFileSync(join(t.dir, 'xcrun.log'), '');
+      const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out'), '--seconds', '0', '--orientation', 'landscape', '--source-root', 'none', '--no-slot'], { PATH: `${bin}:${process.env.PATH}`, ...env });
+      return { ...r, calls: readFileSync(join(t.dir, 'xcrun.log'), 'utf8').trim().split('\n') };
+    };
+    let r = proof({});
+    assert.match(r.stdout, /^settle: load 1\.00 is under 16 \d+s after the cold boot$/m);
+    assert.match(r.stdout, /^warm-up: one unrecorded launch after the cold boot/m);
+    assert.ok(r.stdout.indexOf('settle:') < r.stdout.indexOf('turning ABC'), r.stdout);
+    const at = (re) => r.calls.findIndex((c) => re.test(c));
+    // boot, turn, install, the unrecorded launch, then the recording and the counted launch
+    assert.ok(at(/^simctl boot ABC/) < at(/^turned/) && at(/^turned/) < at(/^simctl install/), r.calls.join('\n'));
+    assert.ok(at(/^simctl install/) < at(/^simctl launch .*ABC/) && at(/^simctl terminate ABC/) < at(/recordVideo/), r.calls.join('\n'));
+    // already booted, nothing built: no settle and no warm-up
+    r = proof({ SIM_STATE: 'Booted' });
+    assert.doesNotMatch(r.stdout, /^(settle|warm-up):/m);
+    assert.ok(!r.calls.some((c) => c.startsWith('simctl terminate')), r.calls.join('\n'));
+    // the load never comes down: the settle gives up after [slot] boot_settle_s and says so
+    r = proof({ LOAD: '60.5' });
+    assert.match(r.stdout, /^settle: timed out: load still 60\.5 [12]s after the cold boot \(over \[slot\] max_load 16; \[slot\] boot_settle_s = 1\); recording anyway, so the clip may be marked load-unreliable$/m);
+  } finally {
+    t.cleanup();
+  }
+});
