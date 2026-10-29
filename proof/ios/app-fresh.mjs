@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Which build is a proof about to install, and is it older than the source?
-//   node app-fresh.mjs --app <.app> --dd <derived data> --root <project root> [--built]
-// --built (right after a `--build`): records HEAD, whether the tree had changes, and the time in <dd>/factory-build.json.
+//   node app-fresh.mjs --app <.app> --dd <derived data> --root <project root> [--built | --up-to-date] [--build-cmd <cmd>]
+// --built (right after a `--build`): records HEAD, whether the tree had changes, the build command (--build-cmd) and the
+// time in <dd>/factory-build.json.
+// --up-to-date (before a `--build`): exit 0 with one "build skipped: ..." line when building again would change nothing:
+// the stamp is this checkout's, from HEAD (or a commit with no change under [proof.ios] sources since), with no
+// uncommitted change then or now under the sources, by the same --build-cmd. Otherwise exit 1, the reason on stderr.
 // Always prints one line for the report: "app: <path> built <time> from <sha>[+dirty]" (sha "unknown" when no stamp).
 // Without --built, the app is STALE when the source changed after it was built: a commit or an uncommitted file under
 // [proof.ios] sources (git pathspecs; default the whole tree) is newer than the app's files, the stamp's commit differs
@@ -13,8 +17,8 @@ import { join, relative, resolve } from 'node:path';
 const args = process.argv.slice(2);
 const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
 const app = opt('--app'), dd = opt('--dd'), root = opt('--root');
-const built = args.includes('--built');
-if (!app || !dd || !root) { console.error('usage: app-fresh.mjs --app <.app> --dd <dir> --root <dir> [--built]'); process.exit(1); }
+const built = args.includes('--built'), upToDate = args.includes('--up-to-date'), buildCmd = opt('--build-cmd');
+if (!app || !dd || !root) { console.error('usage: app-fresh.mjs --app <.app> --dd <dir> --root <dir> [--built | --up-to-date] [--build-cmd <cmd>]'); process.exit(1); }
 
 const specs = (process.env.FK_PROOF_IOS_SOURCES || '').split('\n').filter(Boolean);
 // A big untracked tree (derived data inside the checkout) prints megabytes: the buffer is large, and a failure is
@@ -38,7 +42,28 @@ if (built) {
   const sha = git('rev-parse', '--short=10', 'HEAD')?.trim() || 'unknown';
   const files = dirtyFiles();
   if (files === null) unknown();
-  writeFileSync(stampFile, `${JSON.stringify({ sha, dirty: files === null ? null : files.length > 0, root: realRoot, at: new Date().toISOString() })}\n`);
+  writeFileSync(stampFile, `${JSON.stringify({ sha, dirty: files === null ? null : files.length > 0, root: realRoot, build: buildCmd ?? null, at: new Date().toISOString() })}\n`);
+}
+
+if (upToDate) {
+  let st = null;
+  try { st = JSON.parse(readFileSync(stampFile, 'utf8')); } catch { /* none */ }
+  const head = git('rev-parse', '--short=10', 'HEAD')?.trim();
+  const files = dirtyFiles();
+  const where = specs.length ? specs.join(' ') : 'the tree';
+  const why = !existsSync(app) ? 'no built app'
+    : !st ? 'no build stamp'
+    : st.root !== realRoot ? `built from another checkout, ${st.root}`
+    : st.dirty !== false ? 'built with uncommitted changes'
+    : (st.build ?? null) !== (buildCmd ?? null) ? 'built by another build command'
+    : !head ? 'no HEAD'
+    : head !== st.sha && (git('cat-file', '-e', `${st.sha}^{commit}`) === null || git('diff', '--quiet', st.sha, 'HEAD', '--', ...specs) === null) ? `built from ${st.sha}, HEAD ${head} changes ${where}`
+    : files === null ? 'git status unreadable'
+    : files.length ? `uncommitted ${files[0]}${files.length > 1 ? ` (+${files.length - 1})` : ''}`
+    : null;
+  if (why) { console.error(`building: ${why}`); process.exit(1); }
+  console.log(`build skipped: ${app} is already a build of ${head}${head !== st.sha ? ` (built from ${st.sha}; nothing under ${where} changed since)` : ''} with nothing uncommitted under ${where}; --rebuild builds anyway`);
+  process.exit(0);
 }
 
 // the app's own files (the binary and Info.plist are rewritten by every build that changes them)

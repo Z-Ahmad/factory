@@ -7,7 +7,7 @@
 // dotted keys, multi-line strings, dates.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { availableParallelism, homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -457,6 +457,10 @@ export const SCHEMA = table({
     // "com.apple.CoreSimulator.SimRuntime.iOS-26-5" or "iOS-26-5"; `config validate` checks it is installed
     runtime: str(),
     reset_keyboard_prefs: bool(),
+    // `factory sims idle`: a booted simulator nothing has used for idle_minutes (default 30) is idle; set, tick,
+    // preflight and end-night --apply shut idle ones down. keep_booted: names, UDIDs or globs never shut down.
+    idle_minutes: int(),
+    keep_booted: strs(),
   }),
   proof: table({
     ios: table({
@@ -491,6 +495,8 @@ export const SCHEMA = table({
       // the --build command when orientation_cmd will turn the sim (e.g. build-for-testing, so the runner exists)
       orientation_build: str(),
       orientation_env: str(),
+      // run from the project root before a proof installs and launches the app (once per proof-matrix), e.g. the seed restore
+      before: str(),
       verdict: table({
         skip_start_s: num(),
         ignore_top: num(),
@@ -561,8 +567,18 @@ export const SCHEMA = table({
   // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12), stopped by end-night.
   preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
   // `factory slot`: builders = how many builds/proofs may run at once (you included, default 2); max_load = the highest
-  // 1-minute load to start at (default: no limit); poll_s (15) and timeout_s (3600) for `slot wait`.
-  slot: table({ builders: int(), max_load: num(), poll_s: int(), timeout_s: int() }),
+  // 1-minute load to start at (default 2 x the CPU count; `config validate` warns above 4 x); max_swap_gb = the most swap
+  // in use, min_free_pct = the least memory free (memory_pressure's percentage), max_booted_sims = the most booted
+  // simulators, yours included (each unset: no limit); poll_s (15) and timeout_s (3600) for `slot wait`.
+  slot: table({
+    builders: int(),
+    max_load: num(),
+    max_swap_gb: num(),
+    min_free_pct: int(),
+    max_booted_sims: int(),
+    poll_s: int(),
+    timeout_s: int(),
+  }),
   // `factory wip-save`: names or paths never copied from the worktree into the saved patch (default xcuserdata .build
   // DerivedData node_modules .DS_Store; setting it replaces the list)
   wip: table({ exclude: strs() }),
@@ -947,6 +963,10 @@ function main(argv) {
       }
       if (check.ok === null) console.log(`note: sim.runtime not checked (${check.why})`);
     }
+    const maxLoad = result.resolved.slot?.max_load;
+    const cpus = Number(process.env.FK_NCPU) || availableParallelism();
+    if (typeof maxLoad === 'number' && maxLoad > 4 * cpus)
+      console.log(`warning: slot.max_load = ${maxLoad} is over 4 x this Mac's ${cpus} CPUs: the gate never trips and no proof is marked unreliable (the default is ${2 * cpus})`);
     console.log(`ok: ${file}`);
   } else if (cmd === 'get') {
     const r = getKey(rawAt !== -1 ? result.data : result.resolved, args[0]);

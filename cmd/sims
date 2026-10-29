@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# desc: list booted simulators nothing is using, and with --shutdown shut them down (never erase or delete)
+# usage: factory sims idle [--shutdown]
+# A booted simulator nobody uses still costs a core or more (a widget alone ran at 45%) and gigabytes of memory, and no
+# other command ever shuts one down. A booted simulator is in use when (lib/sims.mjs, counted from the running processes):
+#   a running process names its UDID: `factory proof`, xcodebuild -destination, simctl recordVideo or log stream
+#   (XcodeBuildMCP's log capture), axe (its taps), any shell command an agent runs on it; or
+#   an app was launched in it, or it booted, less than [sim] idle_minutes ago (default 30): XcodeBuildMCP launches one.
+# Every other booted simulator is idle, unless a [sim] keep_booted glob (name or UDID) names it. Without --shutdown
+# nothing changes. Prints one line per booted simulator, then
+#   "sims: N booted, M in use[, J kept]; K idle shut down: <names>" (or "... K idle: <names> (--shutdown to stop them)").
+# tick, preflight and end-night --apply run `sims idle --shutdown` when [sim] idle_minutes is set. Exit 0 (1 on a bad
+# argument). macOS only (elsewhere: "sims: skipped: needs Xcode").
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/darwin.sh"
+shopt -s extglob   # so [sim] keep_booted can use extended globs
+
+SUB="${1:-}"; shift || true
+SHUTDOWN=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --shutdown) SHUTDOWN=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+[[ "$SUB" == idle ]] || { echo "usage: factory sims idle [--shutdown]" >&2; exit 1; }
+IDLE_MIN="${FK_SIM_IDLE_MINUTES:-30}"
+[[ "$IDLE_MIN" =~ ^[0-9]+$ ]] || { echo "[sim] idle_minutes wants whole minutes (got: $IDLE_MIN)" >&2; exit 1; }
+if ! fk_is_darwin || ! command -v xcrun >/dev/null 2>&1; then echo "sims: skipped: needs Xcode"; exit 0; fi
+
+glob_in() {
+  local g
+  while IFS= read -r g; do
+    # shellcheck disable=SC2053
+    if [[ -n "$g" && "$1" == $g ]]; then return 0; fi
+  done <<< "$2"
+  return 1
+}
+
+IN_USE="$(node "$FK_KIT_DIR/lib/sims.mjs" in-use --idle-min "$IDLE_MIN" || true)"
+N=0 USED=0 KEPT=0 IDLE=()
+while IFS= read -r line; do
+  [[ "$line" =~ ^[[:space:]]+(.+)[[:space:]]+\(([0-9A-F-]{36})\)[[:space:]]+\(Booted\) ]] || continue
+  name="${BASH_REMATCH[1]}" udid="${BASH_REMATCH[2]}"
+  N=$((N + 1))
+  why="$(printf '%s\n' "$IN_USE" | awk -F'\t' -v u="$udid" '$1 == u { print $2; exit }')"
+  if [[ -n "$why" ]]; then USED=$((USED + 1)); echo "  in use: $name ($udid): $why"; continue; fi
+  if glob_in "$udid" "${FK_SIM_KEEP_BOOTED:-}" || glob_in "$name" "${FK_SIM_KEEP_BOOTED:-}"; then
+    KEPT=$((KEPT + 1)); echo "  kept:   $name ($udid): [sim] keep_booted"; continue
+  fi
+  if [[ "$SHUTDOWN" == 1 ]]; then
+    if xcrun simctl shutdown "$udid" >/dev/null 2>&1; then echo "  idle:   $name ($udid): shut down"; IDLE+=("$name")
+    else echo "  idle:   $name ($udid): shutdown failed" >&2; fi
+  else
+    echo "  idle:   $name ($udid)"; IDLE+=("$name")
+  fi
+done < <(xcrun simctl list devices booted 2>/dev/null || true)
+
+LINE="sims: $N booted, $USED in use"
+if (( KEPT > 0 )); then LINE="$LINE, $KEPT kept"; fi
+if [[ ${#IDLE[@]} -gt 0 ]]; then
+  NAMES="$(printf '%s, ' "${IDLE[@]}")"; NAMES="${NAMES%, }"
+  if [[ "$SHUTDOWN" == 1 ]]; then LINE="$LINE; ${#IDLE[@]} idle shut down: $NAMES"
+  else LINE="$LINE; ${#IDLE[@]} idle: $NAMES (--shutdown to stop them)"; fi
+fi
+echo "$LINE"

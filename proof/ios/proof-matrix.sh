@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # usage: factory proof-matrix --scenario <s> --out <dir> [--matrix <name>] [--udid <shooter sim>]
-#                             [--build] [--dd <deriveddata>] [--keep-sims] [--plan] [any other `factory proof` args, passed through]
+#                             [--build] [--rebuild] [--dd <deriveddata>] [--keep-sims] [--plan] [--no-slot]
+#                             [--cells <a,b>] [--rerun-failed <previous out>] [any other `factory proof` args, passed through]
 # Runs one scenario across the cells every UI proof owes (both finishes, a system/app theme mismatch, a second screen size),
 # so a reviewer no longer has to remember to ask. The cells are the project's, in factory.toml:
 #   [proof.matrix.<name>]  cells = ["<cell>", ...]  plus optional warm_launch (default true), seconds, args
@@ -12,8 +13,16 @@
 # [sim] runtime (default: the shooter's runtime), named from the
 # first [sim] ephemeral pattern (its trailing * replaced by <cell>-<rand>), whose system appearance is set BEFORE the app is
 # installed, so the launch snapshot is honest; it is deleted when its cell is done and on exit/failure/Ctrl-C (unless --keep-sims).
-# No other simulator is touched; the shooter's own light/dark is put back on exit. One build serves every cell: --build builds
-# once into --dd ([proof.ios] build), then every cell installs that app.
+# No other simulator is touched; the shooter's own light/dark is put back on exit, and the shooter is booted only when a
+# shooter cell runs and shut down again on exit when this run booted it. One build serves every cell: --build builds once
+# into --dd ([proof.ios] build), then every cell installs that app; the build is skipped when the app is already a build
+# of this tree (see `factory proof`; --rebuild builds anyway).
+# The builder slot (`factory slot wait`) before the build and before each cell, so a cell never boots or records while
+# two others build or the Mac is short of load or memory ([slot]); --no-slot skips it. [proof.ios] before (e.g. the seed
+# restore) runs once, before the first cell.
+# --cells a,b runs only those cells of the matrix. --rerun-failed <previous out> keeps every cell whose
+# <previous out>/<cell>/verdict.json is a PASS (copied into --out when it is another dir; "kept" in matrix.md) and runs
+# the rest.
 # A fresh sim is settled (and, with warm_launch, warmed by an unrecorded launch) before it records, so the clip starts within ~2 s
 # of the app launch, as on the shooter. With warm_launch = false the cell is a REAL first launch: install, settle, record, launch
 # (empty caches, the first-ever launch snapshot; the slow first launch blocks inside simctl launch). matrix.md says which
@@ -38,6 +47,8 @@ HERE="$FK_KIT_DIR/proof/ios"
 BUNDLE_ID="${FK_PROOF_IOS_BUNDLE_ID:?set [proof.ios] bundle_id}"
 
 UDID="${FK_SIM_SHOOTER_UDID:-}" SCENARIO="" OUT="" MATRIX="default" BUILD=0 DD_ARG="" KEEP_SIMS=0 PLAN=0 ORIENTATION_DEFAULT=""
+REBUILD=0 SLOT=1 ONLY_CELLS="" PREV=""
+[[ "${FK_SLOT_HELD:-0}" == 1 ]] && SLOT=0
 PASS_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +61,10 @@ while [[ $# -gt 0 ]]; do
     --keep-sims) KEEP_SIMS=1; shift ;;
     --plan) PLAN=1; shift ;;
     --orientation) ORIENTATION_DEFAULT="${2:?}"; shift 2 ;;
+    --rebuild) REBUILD=1; shift ;;
+    --no-slot) SLOT=0; shift ;;
+    --cells) ONLY_CELLS="${2:?}"; shift 2 ;;
+    --rerun-failed) PREV="${2:?}"; shift 2 ;;
     --appearance|--system-appearance|--no-gate|--no-install)
       echo "$1 is set per cell by the matrix ([proof.cell.*] in factory.toml); run \`factory proof\` directly for a one-off" >&2; exit 1 ;;
     *) PASS_ARGS+=("$1"); shift ;;
@@ -77,12 +92,29 @@ PLAN_TEXT="$(node -e '
 ' "$(fk_proof_json proof.matrix)" "$(fk_proof_json proof.cell)" "$MATRIX" "$ORIENTATION_DEFAULT")" || exit 1
 IFS=$'\t' read -r _ WARM DEFAULT_SECONDS DEFAULT_ARGS <<<"$(printf '%s\n' "$PLAN_TEXT" | head -n 1)"
 CELLS="$(printf '%s\n' "$PLAN_TEXT" | tail -n +2)"
+if [[ -n "$ONLY_CELLS" ]]; then
+  for c in ${ONLY_CELLS//,/ }; do
+    printf '%s\n' "$CELLS" | awk -F'\t' -v c="$c" '$1 == c { f = 1 } END { exit !f }' || { echo "--cells: matrix $MATRIX has no cell \"$c\" (have: $(printf '%s\n' "$CELLS" | cut -f1 | paste -sd' ' -))" >&2; exit 1; }
+  done
+  CELLS="$(printf '%s\n' "$CELLS" | awk -F'\t' -v only=",$ONLY_CELLS," 'index(only, "," $1 ",")')"
+fi
+if [[ -n "$PREV" ]]; then
+  [[ -d "$PREV" ]] || { echo "--rerun-failed: no such dir: $PREV" >&2; exit 1; }
+  PREV="$(cd "$PREV" && pwd)"
+fi
+# kept <cell>: the previous run's verdict for the cell was a PASS (--rerun-failed).
+kept() {
+  [[ -n "$PREV" && -s "$PREV/$1/verdict.json" ]] || return 1
+  node -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).verdict === "PASS" ? 0 : 1)' "$PREV/$1/verdict.json" 2>/dev/null
+}
 if [[ "$DEFAULT_SECONDS" != "-" && " ${PASS_ARGS[*]-} " != *" --seconds "* ]]; then PASS_ARGS+=(--seconds "$DEFAULT_SECONDS"); fi
 if [[ "$DEFAULT_ARGS" != "-" ]]; then read -r -a MATRIX_ARGS <<<"$DEFAULT_ARGS"; PASS_ARGS+=("${MATRIX_ARGS[@]}"); fi
 
 if [[ "$PLAN" == 1 ]]; then
   echo "matrix $MATRIX: $SCENARIO on shooter $UDID (warm launch on fresh sims: $([[ "$WARM" == 1 ]] && echo yes || echo no))"
-  printf '%s\n' "$CELLS" | awk -F'\t' '{ printf "  %-12s sim %-8s system %-5s app %-12s device types %s%s\n", $1, $2, $3, $4, $5, ($6 == "-" ? "" : "  orientation " $6) }'
+  while IFS= read -r line; do
+    printf '%s\n' "$line" | awk -F'\t' -v k="$(kept "${line%%$'\t'*}" && echo "  (kept: PASS in $PREV)")" '{ printf "  %-12s sim %-8s system %-5s app %-12s device types %s%s%s\n", $1, $2, $3, $4, $5, ($6 == "-" ? "" : "  orientation " $6), k }'
+  done <<<"$CELLS"
   [[ ${#PASS_ARGS[@]} -eq 0 ]] || echo "  proof args: ${PASS_ARGS[*]}"
   exit 0
 fi
@@ -96,25 +128,41 @@ EPHEMERAL_PREFIX="$(printf '%s\n' "${FK_SIM_EPHEMERAL:-fk-proof-*}" | head -n 1)
 EPHEMERAL_PREFIX="${EPHEMERAL_PREFIX%\*}"
 
 DD="$(fk_proof_dd "$DD_ARG")"
+# slot_wait <what>: the builder-slot gate (factory slot), unless --no-slot or the caller holds the slot.
+slot_wait() {
+  [[ "$SLOT" == 1 ]] || return 0
+  "$FK_KIT_DIR/cmd/slot" wait --dd "$DD" --udid "$UDID" || { echo "no builder slot for $1 (factory slot; --no-slot skips the gate)" >&2; exit 1; }
+}
+APP="$(fk_proof_app "$DD")"
+BUILT=0 BUILD_TPL=""
 if [[ "$BUILD" == 1 ]]; then
   TURNS=0
   if [[ -n "$(fk_proof_json proof.ios.orientation_cmd)" ]] && printf '%s\n' "$CELLS" | awk -F'\t' '$6 != "-" && $6 != "portrait" { f = 1 } END { exit !f }'; then TURNS=1; fi
   BUILD_TPL="$(fk_proof_build_tpl "$TURNS")"
   [[ -n "$BUILD_TPL" ]] || { echo "--build needs [proof.ios] build in factory.toml" >&2; exit 1; }
-  ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
+  if [[ "$REBUILD" == 0 && -d "$APP" ]] && SKIP="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" --up-to-date --build-cmd "$BUILD_TPL")"; then
+    echo "$SKIP"
+  else
+    slot_wait "the build"
+    ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
+    BUILT=1
+  fi
 fi
-APP="$(fk_proof_app "$DD")"
 [[ -d "$APP" ]] || { echo "no built app in $DD (pass --build)" >&2; exit 1; }
 # Which build this is; without --build, a warning (or, with [proof.ios] stale_app = "refuse", exit 3) when the app is older
 # than the source.
-APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
+if [[ "$BUILT" == 1 ]]; then STAMP=(--built --build-cmd "$BUILD_TPL"); else STAMP=(); fi
+APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" ${STAMP[@]+"${STAMP[@]}"})" || exit $?
 echo "$APP_LINE"
+# The cells' own proofs neither wait for a slot (this run waits once per cell) nor run [proof.ios] before (it runs once, below).
+export FK_SLOT_HELD=1
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/proof-matrix.XXXXXX")"
 EPHEMERAL=""        # the one ephemeral sim currently alive (cells run one at a time)
 SHOOTER_WAS=""      # the shooter's own light/dark, put back on exit
+SHOOTER_BOOTED=0    # 1 when this run booted the shooter: shut down again on exit
 
 delete_ephemeral() {
   [[ -n "$EPHEMERAL" ]] || return 0
@@ -128,16 +176,34 @@ cleanup() {
   trap - EXIT INT TERM
   delete_ephemeral
   if [[ -n "$SHOOTER_WAS" ]]; then xcrun simctl ui "$UDID" appearance "$SHOOTER_WAS" >/dev/null 2>&1 || true; fi
+  if [[ "$SHOOTER_BOOTED" == 1 && "$KEEP_SIMS" == 0 ]]; then
+    xcrun simctl shutdown "$UDID" >/dev/null 2>&1 && echo "shut down the shooter $UDID (this run booted it)" || true
+  fi
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
-SHOOTER_WAS="$(xcrun simctl ui "$UDID" appearance 2>/dev/null || true)"
-[[ "$SHOOTER_WAS" == light || "$SHOOTER_WAS" == dark ]] || SHOOTER_WAS=""
+# The shooter boots only when a shooter cell will run (every cell fresh, or kept, leaves it as it is).
+NEED_SHOOTER=0
+while IFS=$'\t' read -r c k _; do
+  [[ "$k" == shooter ]] && ! kept "$c" && NEED_SHOOTER=1
+done <<<"$CELLS"
+if [[ "$NEED_SHOOTER" == 1 ]]; then
+  slot_wait "the shooter"
+  xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)' || SHOOTER_BOOTED=1
+  xcrun simctl boot "$UDID" 2>/dev/null || true
+  xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
+  SHOOTER_WAS="$(xcrun simctl ui "$UDID" appearance 2>/dev/null || true)"
+  [[ "$SHOOTER_WAS" == light || "$SHOOTER_WAS" == dark ]] || SHOOTER_WAS=""
+fi
+if [[ -n "${FK_PROOF_IOS_BEFORE:-}" ]] && printf '%s\n' "$CELLS" | while IFS=$'\t' read -r c _; do kept "$c" || exit 1; done; then :
+elif [[ -n "${FK_PROOF_IOS_BEFORE:-}" ]]; then
+  echo "before: $FK_PROOF_IOS_BEFORE"
+  ( cd "$FK_ROOT" && bash -c "$FK_PROOF_IOS_BEFORE" ) >"$OUT/before.log" 2>&1 || { echo "[proof.ios] before failed; tail of $OUT/before.log:" >&2; tail -15 "$OUT/before.log" >&2; exit 1; }
+fi
+export FK_PROOF_BEFORE_DONE=1
 
 # The shooter's runtime and device type (a fresh sim is the same runtime), as "runtime<TAB>typeId".
 SHOOTER_INFO="$(xcrun simctl list devices -j | node -e '
@@ -218,9 +284,11 @@ settle_sim() {
 }
 
 # Booting a fresh simulator alone can push the 1-minute load from ~60 to 200: a clip recorded then measures the boot.
-# Wait (up to 90 s) until it is back under [slot] max_load, or within 15% of where it was before the boot.
+# Wait (up to 90 s) until it is back under [slot] max_load (default 2 x the CPU count), or, when neither is known, within
+# 15% of where it was before the boot.
 settle_load() {
-  local target="${FK_SLOT_MAX_LOAD:-}" t=$SECONDS l
+  local target t=$SECONDS l
+  target="$(fk_max_load)"
   if [[ -z "$target" && -n "${LOAD_BEFORE:-}" ]]; then target="$(awk -v b="$LOAD_BEFORE" 'BEGIN { printf "%.2f", b * 1.15 + 1 }')"; fi
   [[ -n "$target" ]] || return 0
   while :; do
@@ -236,22 +304,29 @@ ROWS=()       # matrix.md rows
 KINDS=()      # "<cell> first|warm" for the MATRIX line
 CONTACTS=()   # name|status|device line|contact.png for matrix-contact.png
 PASSED=0 TOTAL=0 FAILED=0 ERRORED=0
-SIM_PROOF="$HERE/sim-proof-core.sh"
+SIM_PROOF="${FK_PROOF_CORE:-$HERE/sim-proof-core.sh}"   # FK_PROOF_CORE: tests only
 MARKER_RE="$(fk_proof_fail_markers | paste -sd'|' -)"
 
 while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
   TOTAL=$((TOTAL + 1))
   CELL_DIR="$OUT/$CELL"
-  rm -rf "$CELL_DIR"; mkdir -p "$CELL_DIR"
+  KEEP=0; kept "$CELL" && KEEP=1
+  if [[ "$KEEP" == 1 ]]; then
+    if [[ "$PREV/$CELL" != "$CELL_DIR" ]]; then rm -rf "$CELL_DIR"; cp -R "$PREV/$CELL" "$CELL_DIR"; fi
+  else rm -rf "$CELL_DIR"; mkdir -p "$CELL_DIR"; fi
   echo
-  echo "== cell $CELL: system $SYSTEM, app $APPEARANCE ($SIMKIND sim) =="
+  echo "== cell $CELL: system $SYSTEM, app $APPEARANCE ($SIMKIND sim)$([[ "$KEEP" == 0 ]] || echo ": kept, PASS in $PREV") =="
   CELL_UDID="$UDID" DEVICE_TYPE="$SHOOTER_TYPE" CELL_RC=0 NO_INSTALL=() LAUNCH_KIND=warm ORIENT_ARGS=()
+  [[ "$KEEP" == 0 ]] || LAUNCH_KIND=kept
   if [[ "$ORIENT" != "-" ]]; then ORIENT_ARGS=(--orientation "$ORIENT"); fi
-  if [[ "$SIMKIND" == fresh ]]; then
-    if [[ "$TYPES" != "-" ]]; then
-      PICK="$(pick_device_type "$TYPES")"
-      if [[ -z "$PICK" ]]; then echo "no device type among: $TYPES (xcrun simctl list devicetypes)" >&2; CELL_RC=1; else DEVICE_TYPE="${PICK%%$'\t'*}"; fi
-    fi
+  if [[ "$SIMKIND" == fresh && "$TYPES" != "-" ]]; then
+    PICK="$(pick_device_type "$TYPES")"
+    if [[ -z "$PICK" ]]; then echo "no device type among: $TYPES (xcrun simctl list devicetypes)" >&2; [[ "$KEEP" == 1 ]] || CELL_RC=1; else DEVICE_TYPE="${PICK%%$'\t'*}"; fi
+  fi
+  [[ "$KEEP" == 1 || "$CELL_RC" != 0 ]] || slot_wait "cell $CELL"
+  if [[ "$SIMKIND" == fresh && "$KEEP" == 0 ]]; then
+    # the sim is deleted right after its cell: turning it back to portrait is wasted time
+    if [[ ${#ORIENT_ARGS[@]} -gt 0 ]]; then ORIENT_ARGS+=(--no-turn-back); fi
     if [[ "$CELL_RC" == 0 ]]; then
       LOAD_BEFORE="$(fk_load1)"
       if CELL_UDID="$(xcrun simctl create "${EPHEMERAL_PREFIX}$CELL-$RANDOM" "$DEVICE_TYPE" "$RUNTIME" 2>"$CELL_DIR/create.log")"; then
@@ -274,7 +349,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
   fi
   DEVICE="$(type_name "$DEVICE_TYPE")"
 
-  if [[ "$CELL_RC" == 0 ]]; then
+  if [[ "$CELL_RC" == 0 && "$KEEP" == 0 ]]; then
     "$SIM_PROOF" --udid "$CELL_UDID" --scenario "$SCENARIO" --out "$CELL_DIR" --dd "$DD" \
       --appearance "$APPEARANCE" --system-appearance "$SYSTEM" --no-gate ${NO_INSTALL[@]+"${NO_INSTALL[@]}"} ${ORIENT_ARGS[@]+"${ORIENT_ARGS[@]}"} ${PASS_ARGS[@]+"${PASS_ARGS[@]}"} </dev/null >"$CELL_DIR/run.log" 2>&1 || CELL_RC=$?
     grep -E "^(VERDICT:|($MARKER_RE):)" "$CELL_DIR/run.log" || true

@@ -2,7 +2,7 @@
 # usage: factory proof <scenario> --out <dir> [--udid <sim>] [--seconds N] [--fps 20] [--build] [--dd <deriveddata>]
 #                      [--env KEY=VAL ...] [--no-install] [--keep-frames] [--system-appearance light|dark] [--warm-resume]
 #                      [--no-gate] [--verdict-skip S] [--verdict-arg ARG ...] [--orientation <o>] [--source-root <dir>|none]
-#                      [--plan]
+#                      [--plan] [--rebuild] [--no-slot] [--keep-booted] [--no-turn-back]
 #                      [--<flag> VAL ...]   one per key of [proof.ios] flag_env (e.g. --appearance), and --trip when launch_env
 #                                           has a {trip} (default: [seed] trip)
 # Scenario -> reviewable evidence with no taps and no Simulator.app: installs the built app on a SIMULATOR, boots it headless,
@@ -15,7 +15,7 @@
 #   steps.log          the simulator log lines containing a [proof.ios] log_markers or fail_markers text
 #   verdict.json       the machine verdict (verdict/proof-verdict.mjs): flash/ghost, hold/stall, bounce and fail-marker findings
 #                      with timestamps, worst values, PASS/FAIL, and the 1-minute load when the clip started and ended
-#                      ("load": {"start", "end", "unreliable"}: true above [slot] max_load, where a hold or a flash
+#                      ("load": {"start", "end", "unreliable"}: true above [slot] max_load (default 2 x CPUs), where a hold or a flash
 #                      measured may be the load's); plus one `VERDICT:` line
 #   flags.png          only when something is flagged: each flagged event as a before / flagged / after frame triple
 # Exit 0 PASS, 4 FAIL (a FAIL verdict; 0 with --no-gate), 3 a stale app refused ([proof.ios] stale_app = "refuse"), 1 error.
@@ -33,6 +33,18 @@
 # With --build and orientation_cmd, [proof.ios] orientation_build (when set) builds instead of build, so whatever the turn
 # needs (a UI-test runner) is in the derived data too.
 # --plan: print the launch environment the run would use (the password shown as <password>) and stop; touches no simulator.
+# --build skips the build when the app is already a build of this tree: its stamp (app-fresh.mjs) has HEAD's commit (or
+# one with no change under [proof.ios] sources since), the same build command, and no uncommitted change under the
+# sources. --rebuild builds anyway.
+# The builder slot: `factory slot wait` before the build and again before the simulator boots, so no proof starts while
+# two others build or the Mac is short of load or memory headroom ([slot]). --no-slot skips both waits (proof-matrix and
+# proof-compare wait once per cell or run themselves and set FK_SLOT_HELD=1 for their proofs).
+# [proof.ios] before: a command run from the project root before the app is installed and launched (e.g. the seed
+# restore), so a proof never starts on data an earlier one changed; proof-matrix runs it once and sets
+# FK_PROOF_BEFORE_DONE=1 for its cells.
+# A simulator this run booted is shut down when it ends (on failure too), unless --keep-booted: an idle booted simulator
+# still loads the Mac. One that was already booted stays booted.
+# --no-turn-back: after an --orientation clip, leave the simulator turned (for one about to be deleted).
 # Simulators only: never a physical device. Needs ffmpeg, and node.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory (factory proof ...)}/lib/sh/common.sh"
@@ -57,6 +69,8 @@ flag_known() { printf '%s\n' "$FLAG_NAMES" | grep -qxF -- "$1"; }
 
 UDID="${FK_SIM_SHOOTER_UDID:-}" SCENARIO="" OUT="" SECONDS_REC="${FK_PROOF_IOS_SECONDS:-20}" BUILD=0 DD_ARG="" FPS="${FK_PROOF_IOS_FPS:-20}"
 KEEP_FRAMES=0 INSTALL=1 SYSTEM_APPEARANCE="" WARM_RESUME=0 GATE=1 VERDICT_SKIP="" PLAN=0 ORIENTATION="" SOURCE_ROOT="$FK_ROOT"
+REBUILD=0 SLOT=1 KEEP_BOOTED=0 TURN_BACK=1
+[[ "${FK_SLOT_HELD:-0}" == 1 ]] && SLOT=0
 EXTRA_ENV=() VERDICT_ARGS=() FLAG_VALUES=()   # FLAG_VALUES: "name=value"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,6 +91,10 @@ while [[ $# -gt 0 ]]; do
     --verdict-skip) VERDICT_SKIP="${2:?}"; shift 2 ;;
     --verdict-arg) VERDICT_ARGS+=("${2:?}"); shift 2 ;;
     --plan) PLAN=1; shift ;;
+    --rebuild) REBUILD=1; shift ;;
+    --no-slot) SLOT=0; shift ;;
+    --keep-booted) KEEP_BOOTED=1; shift ;;
+    --no-turn-back) TURN_BACK=0; shift ;;
     --orientation) ORIENTATION="${2:?}"; shift 2 ;;
     --source-root) SOURCE_ROOT="${2:?}"; shift 2 ;;
     --*) if flag_known "${1#--}"; then FLAG_VALUES+=("${1#--}=${2?${1} wants a value}"); shift 2
@@ -147,17 +165,30 @@ command -v node >/dev/null || { echo "node not found (the verdict needs it)" >&2
 xcrun simctl list devices | grep -q "$UDID" || { echo "no simulator with UDID $UDID (xcrun simctl list devices)" >&2; exit 1; }
 
 DD="$(fk_proof_dd "$DD_ARG")"
+# slot_wait <what>: the builder-slot gate (factory slot), unless --no-slot or the caller holds the slot.
+slot_wait() {
+  [[ "$SLOT" == 1 ]] || return 0
+  "$FK_KIT_DIR/cmd/slot" wait --dd "$DD" --udid "$UDID" || { echo "no builder slot for the $1 (factory slot; --no-slot skips the gate)" >&2; exit 1; }
+}
+APP="$(fk_proof_app "$DD")"
+BUILT=0 BUILD_TPL=""
 if [[ "$BUILD" == 1 ]]; then
   BUILD_TPL="$(fk_proof_build_tpl "$([[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]] && echo 1 || echo 0)")"
   [[ -n "$BUILD_TPL" ]] || { echo "--build needs [proof.ios] build in factory.toml" >&2; exit 1; }
-  ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
+  if [[ "$REBUILD" == 0 && "$SOURCE_ROOT" != none && -d "$APP" ]] && SKIP="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$SOURCE_ROOT" --up-to-date --build-cmd "$BUILD_TPL")"; then
+    echo "$SKIP"
+  else
+    slot_wait build
+    ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
+    BUILT=1
+  fi
 fi
-APP="$(fk_proof_app "$DD")"
 [[ -d "$APP" ]] || { echo "no built app at $APP (pass --build)" >&2; exit 1; }
 # Which build this is; without --build, a warning (or, with [proof.ios] stale_app = "refuse", exit 3) when the app is older
 # than the source.
 if [[ "$SOURCE_ROOT" != none ]]; then
-  APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$SOURCE_ROOT" $([[ "$BUILD" == 1 ]] && echo --built))" || exit $?
+  if [[ "$BUILT" == 1 ]]; then STAMP=(--built --build-cmd "$BUILD_TPL"); else STAMP=(); fi
+  APP_LINE="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$SOURCE_ROOT" ${STAMP[@]+"${STAMP[@]}"})" || exit $?
   echo "$APP_LINE"
 fi
 
@@ -165,23 +196,29 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 rm -rf "$OUT/frames"
 if [[ "$KEEP_FRAMES" == 1 ]]; then FRAMES_DIR="$OUT/frames"; mkdir -p "$FRAMES_DIR"; else FRAMES_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sim-proof-frames.XXXXXX")"; fi
-TURNED=0
+TURNED=0 BOOTED_HERE=0
 # turn <orientation>: [proof.ios] orientation_cmd for this simulator.
 turn() {
   ( cd "$FK_ROOT" && bash -c "$(fk_fill "$ORIENT_CMD" udid "$UDID" orientation "$1" dd "$(printf '%q' "$DD")")" ) >>"$OUT/orientation.log" 2>&1
 }
 cleanup_frames() {
   [[ "$KEEP_FRAMES" == 1 ]] || rm -rf "$FRAMES_DIR"
-  if [[ "$TURNED" == 1 ]]; then
+  if [[ "$TURNED" == 1 && "$TURN_BACK" == 1 ]]; then
     TURNED=0
     turn portrait || echo "warning: could not turn $UDID back to portrait (see $OUT/orientation.log); it stays turned" >&2
+  fi
+  if [[ "$BOOTED_HERE" == 1 ]]; then
+    BOOTED_HERE=0
+    if xcrun simctl shutdown "$UDID" >/dev/null 2>&1; then echo "shut down $UDID (this proof booted it; --keep-booted keeps it up)"; fi
   fi
 }
 trap cleanup_frames EXIT
 VIDEO="$OUT/$SCENARIO.mp4"
 rm -f "$VIDEO"
 
+slot_wait proof
 echo "installing on ${UDID}..."
+if [[ "$KEEP_BOOTED" == 0 ]] && ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then BOOTED_HERE=1; fi
 xcrun simctl boot "$UDID" 2>/dev/null || true   # already-booted is fine
 xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
 if [[ -n "$SYSTEM_APPEARANCE" ]]; then xcrun simctl ui "$UDID" appearance "$SYSTEM_APPEARANCE"; fi
@@ -189,6 +226,10 @@ if [[ -n "$ORIENTATION" && -n "$ORIENT_CMD" ]]; then
   echo "turning $UDID to $ORIENTATION..."
   turn "$ORIENTATION" || { echo "[proof.ios] orientation_cmd failed for $ORIENTATION; tail of $OUT/orientation.log:" >&2; tail -15 "$OUT/orientation.log" >&2; exit 1; }
   TURNED=1
+fi
+if [[ -n "${FK_PROOF_IOS_BEFORE:-}" && "${FK_PROOF_BEFORE_DONE:-0}" != 1 ]]; then
+  echo "before: ${FK_PROOF_IOS_BEFORE}"
+  ( cd "$FK_ROOT" && bash -c "$FK_PROOF_IOS_BEFORE" ) >"$OUT/before.log" 2>&1 || { echo "[proof.ios] before failed; tail of $OUT/before.log:" >&2; tail -15 "$OUT/before.log" >&2; exit 1; }
 fi
 if [[ "$INSTALL" == 1 ]]; then xcrun simctl install "$UDID" "$APP"; fi
 
@@ -222,7 +263,7 @@ if [[ "$WARM_RESUME" == 1 ]]; then
   SECONDS_REC=$((SECONDS_REC + 6))
 fi
 
-LOAD_END="$(fk_load1)"
+LOAD_END="$(fk_load1)" MAX_LOAD="$(fk_max_load)"
 kill -INT "$REC_PID" 2>/dev/null || true
 wait "$REC_PID" 2>/dev/null || true
 trap cleanup_frames EXIT
@@ -293,12 +334,12 @@ if [[ -s "$OUT/verdict.json" ]]; then
     // above [slot] max_load a hold or a flash may be the load, not the app
     if (m !== "") v.load.unreliable = Math.max(n(s) ?? 0, n(e) ?? 0) > Number(m)
     fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n")
-  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}" "${FK_SLOT_MAX_LOAD:-}"
+  ' "$OUT/verdict.json" "${LOAD_START:-}" "${LOAD_END:-}" "$MAX_LOAD"
 fi
 echo "verdict:     $OUT/verdict.json"
 LOAD_NOTE=""
-if [[ -n "${FK_SLOT_MAX_LOAD:-}" ]] && awk -v a="${LOAD_START:-0}" -v b="${LOAD_END:-0}" -v m="$FK_SLOT_MAX_LOAD" 'BEGIN { exit !(a > m || b > m) }'; then
-  LOAD_NOTE=" UNRELIABLE: above [slot] max_load $FK_SLOT_MAX_LOAD, so a hold or a flash may be the load's (factory proof-compare)"
+if [[ -n "$MAX_LOAD" ]] && awk -v a="${LOAD_START:-0}" -v b="${LOAD_END:-0}" -v m="$MAX_LOAD" 'BEGIN { exit !(a > m || b > m) }'; then
+  LOAD_NOTE=" UNRELIABLE: above [slot] max_load $MAX_LOAD (default 2 x the CPU count), so a hold or a flash may be the load's (factory proof-compare)"
 fi
 echo "load:        ${LOAD_START:-?} at the start, ${LOAD_END:-?} at the end (1-minute average)$LOAD_NOTE"
 if [[ "$VERDICT_RC" == 4 ]]; then

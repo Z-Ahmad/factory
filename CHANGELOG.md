@@ -2,6 +2,25 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.20.0 (2026-10-28)
+
+### Resource rules as code: the slot gate everywhere, memory, idle simulators
+
+- **Slot gate everywhere.** `factory proof` waits for a builder slot before its build and before it boots the simulator; `proof-matrix` before its build and before each cell (its cells then skip their own wait: `FK_SLOT_HELD=1`). `--no-slot` skips the gate.
+- **hook-guard rule 7**: with `[slot]` or `[proof.ios]` set, a build or test (Bash `xcodebuild` with a building action, a `build.sh` / `test.sh`, an `npm run ios:test*`; the XcodeBuildMCP `build_*` / `test_*` tools) is denied while `factory slot status` says busy. The denial says what holds the slot and names the `[slot]` key. A simulator named in the call (`id=<UDID>`, `--udid`) is the caller's; with none, leftover simulators aren't counted. A slot that can't be read allows the call.
+- **Memory and simulator limits**: `[slot] max_swap_gb`, `min_free_pct` (memory_pressure's free percentage, `kern.memorystatus_level`) and `max_booted_sims`. Every limit that holds a slot names its key in the reason.
+- **Realistic load gate**: `[slot] max_load` defaults to 2 × the CPU count (it had no default), and `config validate` warns above 4 ×, where it never trips. The `unreliable` load flag in `verdict.json` and the matrix's post-boot load settle use the same default.
+- **`[sim] protected` simulators count as slot leftovers** now: protection keeps a simulator from deletion, not from loading the Mac. A proof's own run no longer hides a leftover.
+- **`factory sims idle [--shutdown]`**: lists, and shuts down (never erases or deletes), every booted simulator nothing uses: no running process names its UDID (`factory proof`, xcodebuild, recordVideo, XcodeBuildMCP's log capture and taps, an agent's command) and no app launch or boot within `[sim] idle_minutes` (default 30). `[sim] keep_booted` globs are never shut down. With `[sim] idle_minutes` set, `tick`, `preflight` and `end-night --apply` run it. The reader is `lib/sims.mjs`.
+- **Proofs shut down what they boot**: `factory proof` shuts down a simulator it booted when it ends (`--keep-booted` keeps it); `proof-matrix` boots the shooter only when a shooter cell runs and shuts it down again; `proof-compare` keeps it booted between rounds and shuts it down at the end.
+- **`proof-matrix --cells a,b`** runs only those cells; **`--rerun-failed <previous out>`** keeps every cell whose verdict there is PASS (copied in, `kept` in matrix.md) and runs the rest.
+- **No-op builds are skipped**: `--build` skips the build when the app's stamp is this checkout's, from HEAD (or from a commit with no change under `[proof.ios] sources`), made by the same build command, with nothing uncommitted under the sources (`app-fresh.mjs --up-to-date`; the stamp now records the build command). `--rebuild` builds anyway.
+- **`[proof.ios] before`**: a command (e.g. the seed restore) run from the project root before a proof installs and launches the app; once per matrix.
+- **Fresh matrix cells skip the turn back to portrait** (`factory proof --no-turn-back`): the simulator is deleted right after.
+- **cleanup never deletes a simulator in use** (a running proof, xcodebuild or recordVideo names it, or it booted or launched an app within `[sim] idle_minutes`), so a low-disk `disk-guard` can't delete one mid-proof.
+- **cleanup removes `compare-*` worktrees whose `dd-compare-*` build is gone** (or goes in the same run) and that have no changes, so proof-compare's base checkouts stay in step with their builds.
+- **`tick` prints a `WRAP:` line** for each live agent (transcript written in the last 10 minutes) whose context is past `[loop] wrap_context_k`, read from the `[stats] transcripts` (`stats/context.mjs`).
+
 ## v0.19.0 (2026-10-27)
 
 ### Hung services, and push protection scoped to the project

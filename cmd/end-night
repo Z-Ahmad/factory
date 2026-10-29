@@ -9,7 +9,8 @@
 #                (never one in [sim] protected, by name or UDID). Then bloated ones are ERASED (shutdown + erase, never
 #                deleted): [sim] shooter_udid and every [sim] erase_at_end_night entry (name, UDID or glob) whose data dir
 #                is over [sim] erase_above_gb (default 6). Size before and after is reported. A booted sim is left alone
-#                while any `simctl io ... recordVideo` runs. macOS only.
+#                while any `simctl io ... recordVideo` runs. With [sim] idle_minutes set, booted simulators nothing uses
+#                are shut down (`factory sims idle --shutdown`; listed in a dry run). macOS only.
 #   3 seed       [dev] wait_ports all listening -> [seed] restore (from the main checkout); --stop-emulators then SIGTERMs
 #                whatever listens on the [dev] all_ports (PIDs found via lsof, no pkill)
 #   4 token      read-only: each [never_touch] secret_nonempty file must exist and have a non-empty value for its key
@@ -153,6 +154,10 @@ if [[ -n "${ERASE_LIST//[$'\n']/}" ]]; then
   fi
 fi
 echo "sims: $SIMS_N via factory-cleanup + $EXTRA other ${SWEEP:+$(join_lines "$SWEEP") }= $SIMS_TOTAL $([[ "$APPLY" == 1 ]] && echo removed || echo "would be removed") (kept $(join_lines "${FK_SIM_PROTECTED:-}"))"
+# [sim] idle_minutes: booted simulators nothing uses are shut down (--apply) or listed (`factory sims idle`)
+if [[ -n "${FK_SIM_IDLE_MINUTES:-}" ]]; then
+  "$FK_KIT_DIR/cmd/sims" idle $([[ "$APPLY" == 1 ]] && echo --shutdown) 2>&1 | sed 's/^sims:/idle sims:/' || true
+fi
 
 # ---- 3. emulator seed ----
 header "3 emulator seed"

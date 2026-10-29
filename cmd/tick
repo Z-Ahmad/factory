@@ -10,7 +10,8 @@
 # gh runs with -R <owner/repo> (from [git] github, else the origin remote of [project] main_checkout),
 # so --pr works from any directory.
 # After writing, runs `factory night-lint --quiet --limit 12` on the night file and prints what it finds on stderr;
-# lint findings never change tick's exit status.
+# lint findings never change tick's exit status. Then prints a WRAP line for each live agent past [loop]
+# wrap_context_k ([stats] transcripts) and, with [sim] idle_minutes set, shuts down idle simulators (`factory sims idle`).
 # FK_NOW_HHMM overrides the clock in the log line (for tests).
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -82,6 +83,12 @@ echo "logged to $FILE"
 
 # Lint the file we just wrote (read-only). Findings go to stderr and never change tick's exit status.
 node "$FK_KIT_DIR/cmd/night-lint.mjs" --file "$FILE" ${NIGHT:+--night "$NIGHT"} --quiet --limit 12 >&2 || true
+
+# Between items: a WRAP line for each live agent past [loop] wrap_context_k (default 400; from the [stats] transcripts),
+# and, with [sim] idle_minutes set, idle simulators shut down (`factory sims idle --shutdown`, its summary line).
+# Neither changes tick's exit status.
+if [[ -n "${FK_STATS_TRANSCRIPTS:-}" ]]; then node "$FK_KIT_DIR/stats/context.mjs" --wrap-k "${FK_LOOP_WRAP_CONTEXT_K:-400}" || true; fi
+if [[ -n "${FK_SIM_IDLE_MINUTES:-}" ]]; then { "$FK_KIT_DIR/cmd/sims" idle --shutdown || true; } | tail -n 1; fi
 
 [[ -n "$PR" ]] || exit 0
 

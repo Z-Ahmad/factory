@@ -39,7 +39,37 @@ fk_load1() {
   elif [[ -r /proc/loadavg ]]; then awk '{ print $1 }' /proc/loadavg; fi
 }
 
-# fk_human <kilobytes>: 1536 -> 2M, 3145728 -> 3.0G
+# fk_ncpu: the logical CPU count (8 on an 8-core Mac); nothing when it cannot be read.
+fk_ncpu() {
+  local n
+  if n="$(sysctl -n hw.ncpu 2>/dev/null)" && [[ "$n" =~ ^[0-9]+$ ]]; then echo "$n"
+  elif command -v nproc >/dev/null 2>&1; then nproc; fi
+}
+
+# fk_max_load: [slot] max_load, else 2 x the CPU count (16 on 8 cores): the load above which a build slows and a proof's
+# holds and flashes may be the load's. Nothing when neither is known.
+fk_max_load() {
+  local n
+  if [[ -n "${FK_SLOT_MAX_LOAD:-}" ]]; then echo "$FK_SLOT_MAX_LOAD"; return 0; fi
+  n="$(fk_ncpu)"
+  if [[ -n "$n" ]]; then echo $((n * 2)); fi
+}
+
+# fk_swap_used_gb: swap in use in GB, one decimal ("9.4"), from `sysctl vm.swapusage`; nothing off macOS.
+fk_swap_used_gb() {
+  { sysctl -n vm.swapusage 2>/dev/null || true; } | awk '{ for (i = 1; i < NF; i++) if ($i == "used") { v = $(i + 2); u = substr(v, length(v)); v += 0
+    if (u == "G") v *= 1024; else if (u == "K") v /= 1024; printf "%.1f", v / 1024; exit } }'
+}
+
+# fk_mem_free_pct: the "System-wide memory free percentage" memory_pressure reports (sysctl kern.memorystatus_level),
+# a whole number; nothing off macOS.
+fk_mem_free_pct() {
+  local p
+  if p="$(sysctl -n kern.memorystatus_level 2>/dev/null)" && [[ "$p" =~ ^[0-9]+$ ]]; then echo "$p"; fi
+  return 0
+}
+
+# fk_human <kilobytes>:1536 -> 2M, 3145728 -> 3.0G
 fk_human() {
   awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1fG", k/1048576; else if (k >= 1024) printf "%.0fM", k/1024; else printf "%dK", k }'
 }

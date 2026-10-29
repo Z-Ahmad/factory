@@ -17,6 +17,12 @@
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
 //   6. Bash: `factory dev-restart` from a subagent (the hook input carries agent_id), unless
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
+//   7. A build or test while `factory slot status` says busy (with [slot] or [proof.ios] set): Bash running xcodebuild
+//      (an action that builds; -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or an
+//      npm/pnpm/yarn ios:test* script; and the XcodeBuildMCP build_* and test_* tools. The simulator named in the call
+//      (-destination id=<UDID>, --udid <UDID>) is the caller's own and not counted; with none named, booted simulators
+//      are not counted as leftovers (they may be the caller's), but load, memory and [slot] max_booted_sims still are.
+//      The denial says what holds the slot and which [slot] key. `factory slot` failing to answer allows the call.
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
@@ -24,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseToml } from '../cmd/config.mjs';
 
 class Deny extends Error {}
@@ -343,6 +350,11 @@ function commandOf(ws) {
 // ------------------------------------------------------------------ rules
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+// xcodebuild flags that only ask a question: no build, so no slot
+const XCB_QUERIES = new Set(['-list', '-showBuildSettings', '-showdestinations', '-showsdks', '-version', '-help', '-usage', '-checkFirstLaunchStatus', '-runFirstLaunch', '-showTestPlans', '-resolvePackageDependencies', '-downloadPlatform', '-downloadAllPlatforms', '-license']);
+const BUILD_SCRIPTS = new Set(['build.sh', 'test.sh']);
+const BUILD_TOOL = /^mcp__.*[Xx]code[Bb]uild[^_]*__(?:build|test)[a-z_]*$/;
+const UDID_IN = /(?:\bid=|--udid[= ]|-udid[= ])([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})/;
 const SCRIPT_RUNNERS = new Set([...SHELLS, 'source', '.', 'node', 'python', 'python3', 'ruby', 'perl', 'tsx', 'deno', 'bun']);
 
 const NPM_FAMILY = new Set(['npm', 'pnpm', 'yarn', 'bun']);
@@ -595,6 +607,27 @@ function checkWrites(c, redirs, ctx) {
   }
 }
 
+/** The build this command starts ("xcodebuild", "scripts/build.sh", "npm run ios:test"), or null. */
+function buildOf(c) {
+  if (c.name === 'xcodebuild') return c.args.some((a) => XCB_QUERIES.has(a)) ? null : 'xcodebuild';
+  if (BUILD_SCRIPTS.has(c.name)) return c.raw;
+  if (SHELLS.has(c.name)) {
+    const script = c.args.find((a) => !a.startsWith('-'));
+    if (script && BUILD_SCRIPTS.has(basename(script)) && !c.args.some((a) => /^-[a-zA-Z]*c/.test(a))) return script;
+  }
+  if (NPM_FAMILY.has(c.name)) {
+    const i = c.args[0] === 'run' || c.args[0] === 'run-script' ? 1 : 0;
+    if (/^ios:test/.test(c.args[i] ?? '')) return `${c.name} run ${c.args[i]}`;
+  }
+  return null;
+}
+
+function checkSlot(what, udid, ctx) {
+  if (!ctx.slotGate) return;
+  const r = ctx.slotStatus(udid);
+  if (r?.busy) deny(`${what} would start a build while the builder slot is busy: ${r.line} Wait for \`factory slot wait --dd <your derived data>${udid ? ` --udid ${udid}` : ''}\` to say go, then run it again (the limits are factory.toml [slot]).`);
+}
+
 function analyze(src, ctx, state, depth) {
   const segs = [];
   scan(src, 0, 'top', segs);
@@ -618,6 +651,11 @@ function analyze(src, ctx, state, depth) {
         const k = c.args.findIndex((x) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x));
         if (k !== -1 && c.args[k + 1] != null) analyze(c.args[k + 1], ctx, state, depth + 1);
       } else if (c.name === 'eval') analyze(c.args.join(' '), ctx, state, depth + 1);
+    }
+    const build = buildOf(c);
+    if (build && !state.slotChecked) {
+      state.slotChecked = true;
+      checkSlot(`\`${build}\``, UDID_IN.exec(src)?.[1]?.toUpperCase() ?? null, ctx);
     }
     if (c.name === 'git') checkGit(c, ctx);
     else if (c.name === 'gh') checkGh(c, ctx);
@@ -643,7 +681,22 @@ export function guardConfig(data, tomlPath) {
     allowMerge: data.loop?.allow_merge === true,
     neverMergeInto: globs(data.loop?.never_merge_into),
     resolveBase: ghPrBase,
+    slotGate: Boolean(data.slot || data.proof?.ios),
+    slotStatus: (udid) => slotStatus(tomlPath, udid),
   };
+}
+
+/** `factory slot status` for the hook: { busy, line }, or null when it could not answer (the call is then allowed). */
+export function slotStatus(tomlPath, udid) {
+  const kit = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const r = spawnSync(join(kit, 'bin', 'factory'), ['slot', 'status', ...(udid ? ['--udid', udid] : ['--ignore-leftovers'])], {
+    encoding: 'utf8',
+    timeout: 20000,
+    env: { ...process.env, FACTORY_TOML: tomlPath },
+  });
+  if (r.status === 0) return { busy: false, line: r.stdout.trim() };
+  if (r.status === 1 && r.stdout.startsWith('slot: busy')) return { busy: true, line: r.stdout.trim() };
+  return null;
 }
 
 /** Returns the deny reason, or null to allow. May throw on internal errors (the caller fails open). */
@@ -697,8 +750,10 @@ export function evaluate(payload, cfg) {
     if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit') {
       const p = input.file_path ?? input.notebook_path ?? input.path;
       if (typeof p === 'string' && p) ctx.checkTouch(p, 'editing');
+    } else if (BUILD_TOOL.test(tool ?? '')) {
+      checkSlot(tool.replace(/^mcp__.*__/, 'XcodeBuildMCP '), UDID_IN.exec(JSON.stringify(input))?.[1]?.toUpperCase() ?? null, ctx);
     } else if (tool === 'Bash' && typeof input.command === 'string') {
-      const state = { lsofPort: null, dynamicKill: false };
+      const state = { lsofPort: null, dynamicKill: false, slotChecked: false };
       analyze(input.command, ctx, state, 0);
       if (state.lsofPort && state.dynamicKill)
         deny(`agents may not stop the dev stack (dev.agents_may_start = false): killing whatever listens on :${state.lsofPort} is blocked`);
