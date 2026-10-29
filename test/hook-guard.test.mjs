@@ -42,7 +42,7 @@ agents_may_start = false
 read_api = { cwd = "/tmp/example", cmd = "npm run dev -w api", port = 4103 }
 `;
 
-let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgAnyone, cfgGithub, cfgOpen;
+let t, main, wt, cfg, cfgMerge, cfgGuarded, cfgAnyone, cfgGithub, cfgGithubGuarded, cfgOpen, kitDir;
 
 before(() => {
   t = scratch();
@@ -71,6 +71,13 @@ before(() => {
   cfgGuarded = { ...mk('\n[loop]\nallow_merge = true\nnever_merge_into = ["main", "release/*"]\n'), resolveBase: (ref) => bases[ref] ?? null };
   writeFileSync(join(gitdir, 'config'), '[remote "origin"]\n\turl = https://github.com/o/app.git\n');
   cfgGithub = guardConfig(parseToml(TOML.replace('never_push = ["main", "release/*"]', 'never_push = ["main", "release/*"]\ngithub = "o/app"')).data, join(main, 'factory.toml'));
+  cfgGithubGuarded = {
+    ...guardConfig(parseToml(TOML.replace('never_push = ["main", "release/*"]', 'never_push = ["main", "release/*"]\ngithub = "o/app"') + '\n[loop]\nallow_merge = true\nnever_merge_into = ["main"]\n').data, join(main, 'factory.toml')),
+    resolveBase: (ref) => bases[ref] ?? null,
+  };
+  kitDir = join(root, 'kit');
+  mkdirSync(join(kitDir, '.git'), { recursive: true });
+  writeFileSync(join(kitDir, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:o/kit.git\n');
   cfgAnyone = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = false\nrestart_by = "anyone"')).data, join(main, 'factory.toml'));
   cfgOpen = guardConfig(parseToml(TOML.replace('agents_may_start = false', 'agents_may_start = true')).data, join(main, 'factory.toml'));
 });
@@ -164,6 +171,14 @@ const TABLE = [
   ['allow_merge + never_merge_into: unknown base', () => bash('gh pr merge 99'), 'deny', /couldn't look up/, () => cfgGuarded],
   ['allow_merge + never_merge_into: PR in a variable', () => bash('gh pr merge "$PR"'), 'deny', /not named literally/, () => cfgGuarded],
   ['allow_merge + never_merge_into: gh api merge', () => bash('gh api -X PUT repos/o/r/pulls/12/merge'), 'deny', /gh pr merge/, () => cfgGuarded],
+  // ---- rule 4 scope: with [git] github, never_merge_into guards only that repository's PRs
+  ['merge into main of another repo by -R (github set)', () => bash('gh pr merge 7 -R o/kit --merge'), 'allow', null, () => cfgGithubGuarded],
+  ['merge into main of another repo by PR URL (github set)', () => bash('gh pr merge https://github.com/o/kit/pull/7'), 'allow', null, () => cfgGithubGuarded],
+  ['merge into main of the project by -R (github set)', () => bash('gh pr merge 7 -R o/app --squash'), 'deny', /merging into 'main'/, () => cfgGithubGuarded],
+  ['merge into main of the project by URL -R (github set)', () => bash('gh pr merge 7 --repo https://github.com/O/App'), 'deny', /merging into 'main'/, () => cfgGithubGuarded],
+  ['merge into main from the project checkout, no -R (github set)', () => bash('gh pr merge 7'), 'deny', /merging into 'main'/, () => cfgGithubGuarded],
+  ['merge into main after cd into another repo (github set)', () => bash(`cd ${kitDir} && gh pr merge 7 --merge`), 'allow', null, () => cfgGithubGuarded],
+  ['another repo still needs allow_merge (github set)', () => bash('gh pr merge 7 -R o/kit'), 'deny', /loop\.allow_merge/, () => cfgGithub],
   ['gh pr create / view / checks', () => bash('gh pr create --title x --body "will gh pr merge later" && gh pr view 3 && gh pr checks 3'), 'allow'],
 
   // ---- rule 3 scope: with [git] github, never_push guards only that repository's remote
@@ -338,4 +353,15 @@ test('rule 7: the slot gate is on with [slot] or [proof.ios], off without either
   assert.equal(guardConfig(parseToml(TOML).data, '/x/factory.toml').slotGate, false);
   assert.equal(guardConfig(parseToml(`${TOML}\n[slot]\nbuilders = 2\n`).data, '/x/factory.toml').slotGate, true);
   assert.equal(guardConfig(parseToml(`${TOML}\n[proof.ios]\nbundle_id = "a"\n`).data, '/x/factory.toml').slotGate, true);
+});
+
+test('repoSlug reads -R values and PR URLs', async () => {
+  const { repoSlug } = await import('../gates/hook-guard.mjs');
+  assert.equal(repoSlug('o/kit'), 'o/kit');
+  assert.equal(repoSlug('github.com/o/kit'), 'o/kit');
+  assert.equal(repoSlug('https://github.com/o/kit.git'), 'o/kit');
+  assert.equal(repoSlug('https://github.com/o/kit/pull/7'), 'o/kit');
+  assert.equal(repoSlug('git@github.com:o/kit.git'), 'o/kit');
+  assert.equal(repoSlug('gitlab.com/o/kit'), null);
+  assert.equal(repoSlug('12'), null);
 });

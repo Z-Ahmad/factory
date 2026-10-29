@@ -4,6 +4,10 @@ Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `fa
 
 ## v0.20.1 (2026-10-28)
 
+### Merge protection is scoped to the project's repository
+
+- With `[git] github` set, `[loop] never_merge_into` now guards only that repository's PRs, the same way `never_push` already guarded only its remote. The PR's repository comes from `-R`/`--repo`, a PR URL, or the remotes of the directory the command runs in (after any `cd`). Unknown, or a checkout with any remote naming the project or a non-GitHub host, stays guarded. Before this, merging the kit's own PR into the kit's `main` was denied as if it were the project's `main`.
+
 ### A cold boot no longer spoils the proof
 
 - After a cold boot, and after `--build` ran a build, `factory proof` waits until the 1-minute load is back under `[slot] max_load`, at most the new `[slot] boot_settle_s` (default 120). A cold-booted simulator then gets one unrecorded launch, before `[proof.ios] before` and the counted recording. Before this, a cold iPad boot pushed the load to 50–73 against a gate of 16, every such proof came out load-unreliable, and agents worked around it with `--keep-booted` and a discarded first run.

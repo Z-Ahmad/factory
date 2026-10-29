@@ -33,7 +33,7 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    | `wrap_context_k` | 400 | an agent past this many thousand tokens of context wraps up and hands back a patch (§9) |
    | `implementer_words` / `shooter_words` | 150 / 80 | report limits in the briefs |
    | `linear` | none | tracker issue prefix and the state to move shipped issues to |
-   | `allow_merge` | false | never merge a PR unless this is true or the human says so; `never_merge_into` (e.g. `["main"]`) keeps those bases the human's even then |
+   | `allow_merge` | false | never merge a PR unless this is true or the human says so; `never_merge_into` (e.g. `["main"]`) keeps those bases the human's even then (only in the `[git] github` repository when set) |
    | `item_ids` | `slug` | item IDs are plain-English slugs (`lifetime-globe`); `tick` refuses codes like `G3` (`any` turns it off) |
 
 5. Also read once: `factory config get tests` (unit + gate + retry_once), `targets`, `git.push_branch`,

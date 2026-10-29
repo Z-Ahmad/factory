@@ -14,6 +14,8 @@
 //      remote's URL names it): the kit's own main, or another project's, is not this project's.
 //   4. Bash: `gh pr merge`, unless [loop] allow_merge = true; even then, a PR whose base matches
 //      [loop] never_merge_into (its base looked up with `gh pr view`; unknown counts as protected).
+//      With [git] github set, never_merge_into guards only that repository's PRs (named by -R, by a PR
+//      URL, or by the remotes of the directory the command runs in): the kit's own main is not this project's.
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
 //   6. Bash: `factory dev-restart` from a subagent (the hook input carries agent_id), unless
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
@@ -507,6 +509,33 @@ function pushesToProject(info, remote, slug) {
   return !url || urlIsRepo(url, slug) || !/github\.com/i.test(url);
 }
 
+/** `owner/repo` from a -R value or a URL (`o/r`, `github.com/o/r`, `https://github.com/o/r/pull/8`), or null. */
+export function repoSlug(value) {
+  const m = /^(?:[a-z+]+:\/\/)?(?:[^/@]+@)?(?:([^/:]+)[:/])?([^/:]+)\/([^/]+?)(?:\.git)?(?:\/pull\/\d+.*)?\/?$/i.exec(value ?? '');
+  if (!m) return null;
+  if (m[1] && !/github\.com$/i.test(m[1])) return null;
+  return `${m[2]}/${m[3]}`;
+}
+
+/** True unless the PR is known to live in another repository than `slug` (unknown stays guarded). */
+function mergesInProject(repo, ref, dir, slug) {
+  const named = repo ?? (ref && /github\.com\//i.test(ref) ? ref : null);
+  if (named) {
+    const r = repoSlug(named);
+    return !r || r.toLowerCase() === slug.toLowerCase();
+  }
+  const info = gitInfo(dir);
+  if (!info) return true;
+  let urls;
+  try {
+    urls = [...readFileSync(join(info.common, 'config'), 'utf8').matchAll(/^\s*url\s*=\s*(.+)$/gm)].map((m) => m[1].trim());
+  } catch {
+    return true;
+  }
+  // gh picks among the remotes itself, so any remote naming the project (or a non-GitHub one) keeps the guard.
+  return !urls.length || urls.some((u) => urlIsRepo(u, slug) || !/github\.com/i.test(u));
+}
+
 const GH_MERGE_VALUE = ['-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit'];
 
 /** The PR's base branch, via `gh pr view` (null when it can't be told). `ref` null = the current branch's PR. */
@@ -527,6 +556,7 @@ function checkGh(c, ctx) {
       const k = c.args.findIndex((x) => x === '-R' || x === '--repo');
       const repo = k !== -1 ? c.args[k + 1] : (c.args.find((x) => x.startsWith('--repo='))?.slice(7) ?? null);
       const ref = mpos[2] ?? null;
+      if (ctx.github && !mergesInProject(repo, ref, ctx.cwd, ctx.github)) return;
       if (ref?.includes('$')) deny(`\`gh pr merge ${ref}\`: the PR is not named literally, so its base can't be checked (${protectedKey})`);
       const base = ctx.resolveBase(ref, repo, ctx.cwd);
       if (!base) deny(`\`gh pr merge\` is blocked: couldn't look up the PR's base branch to check it (${protectedKey}). A PR created in this same command doesn't exist yet when the hook runs: run the merge as its own command`);
