@@ -8,7 +8,9 @@
 #   base   --base-dd <dd>: an app already built from the base. --base <ref>: `factory worktree compare-<sha8> --base <ref>`
 #          (reused when it exists, and left for the next compare; remove it with `git worktree remove`), built once into
 #          <[disk] dd_root>/dd-compare-<sha8> with [proof.ios] build, from that worktree.
-# --slot: `factory slot wait` before every run (the builder-slot gate), so no run starts while others build.
+# --slot: `factory slot wait` before every run (the builder-slot gate), so no run starts while others build. Without it
+# each run's own `factory proof` still waits for a slot before it boots the simulator.
+# The rounds keep the simulator booted between them; when this compare booted it, it is shut down on exit.
 # Writes into <out>: base-<i>/ and patch-<i>/ (the usual proof artifacts) and compare.md, and ends with
 # `COMPARE: base hold <median> ms at load <median> vs patch <median> ms at load <median> (<delta>); flash base <median worst>
 # (FAIL k/N) vs patch <median worst> (FAIL k/N); PASS base k/N, patch k/N` (a one-off flash FAIL is weighed against how often
@@ -78,6 +80,10 @@ fi
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+if ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then
+  trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 && echo "shut down $UDID (this compare booted it)" || true' EXIT
+fi
+[[ "$SLOT" == 1 ]] && export FK_SLOT_HELD=1
 ROWS=() FAILED=0
 run_side() { # run_side <base|patch> <round>
   local side="$1" i="$2" dd root dir rc=0
@@ -86,7 +92,7 @@ run_side() { # run_side <base|patch> <round>
   rm -rf "$dir"; mkdir -p "$dir"
   if [[ "$SLOT" == 1 ]]; then "$FK_KIT_DIR/cmd/slot" wait --dd "$dd" --udid "$UDID" || { echo "no builder slot for $side-$i" >&2; FAILED=1; return 0; }; fi
   echo "== $side, round $i =="
-  "$SIM_PROOF" --udid "$UDID" --scenario "$SCENARIO" --out "$dir" --dd "$dd" --source-root "$root" --no-gate \
+  "$SIM_PROOF" --udid "$UDID" --scenario "$SCENARIO" --out "$dir" --dd "$dd" --source-root "$root" --no-gate --keep-booted \
     ${PASS_ARGS[@]+"${PASS_ARGS[@]}"} </dev/null >"$dir/run.log" 2>&1 || rc=$?
   if [[ "$rc" != 0 || ! -s "$dir/verdict.json" ]]; then
     echo "factory proof failed for $side-$i (exit $rc); tail of $dir/run.log:" >&2; tail -15 "$dir/run.log" >&2
