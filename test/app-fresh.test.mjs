@@ -124,3 +124,35 @@ test('app-fresh: an app another checkout built (a shared derived-data folder) is
     assert.equal(t.fresh([], { FK_PROOF_IOS_STALE_APP: 'refuse' }).status, 3);
   } finally { t.cleanup(); }
 });
+
+test('app-fresh --up-to-date: a build of HEAD with a clean tree is skipped; a source change, dirt or another build command is not', () => {
+  const t = project();
+  try {
+    assert.equal(t.fresh(['--up-to-date', '--build-cmd', 'b']).status, 1); // no stamp yet
+    assert.equal(t.fresh(['--built', '--build-cmd', 'b']).status, 0);
+    let r = t.fresh(['--up-to-date', '--build-cmd', 'b']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^build skipped: .* is already a build of [0-9a-f]+ with nothing uncommitted under the tree; --rebuild builds anyway\n$/);
+    r = t.fresh(['--up-to-date', '--build-cmd', 'other']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /building: built by another build command/);
+    // a commit outside [proof.ios] sources keeps the build; one inside does not
+    writeFileSync(join(t.root, 'web', 'page.ts'), 'b');
+    t.git('commit', '-qam', 'web');
+    const ios = { FK_PROOF_IOS_SOURCES: 'ios' };
+    r = t.fresh(['--up-to-date', '--build-cmd', 'b'], ios);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /\(built from [0-9a-f]+; nothing under ios changed since\)/);
+    assert.equal(t.fresh(['--up-to-date', '--build-cmd', 'b']).status, 1); // the whole tree is the default
+    writeFileSync(join(t.root, 'ios', 'View.swift'), 'dirty');
+    r = t.fresh(['--up-to-date', '--build-cmd', 'b'], ios);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /building: uncommitted ios\/View\.swift/);
+    t.git('commit', '-qam', 'ios');
+    r = t.fresh(['--up-to-date', '--build-cmd', 'b'], ios);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /HEAD [0-9a-f]+ changes ios/);
+  } finally {
+    t.cleanup();
+  }
+});

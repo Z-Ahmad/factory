@@ -12,7 +12,10 @@
 #                 ModuleCache.noindex SDKStatCaches.noindex SymbolCache.noindex CompilationCache.noindex
 #                 SDKExplicitPrecompiledModules). Symlinks are never followed or removed; nothing outside those roots is
 #                 touched. Each line says why: "(stale 14h)", "(worktree gone: agent-x)". macOS only.
-#   sims          simulators whose name matches [sim] ephemeral, never a name or UDID in [sim] protected. macOS only.
+#   sims          simulators whose name matches [sim] ephemeral, never a name or UDID in [sim] protected, and never one in
+#                 use (a running proof, xcodebuild, simctl recordVideo or other process names its UDID, or it booted or
+#                 launched an app less than [sim] idle_minutes ago, default 30: lib/sims.mjs), so a low-disk cleanup
+#                 never deletes a simulator mid-proof. macOS only.
 #   worktrees     <[git] worktrees_dir>/<[git] agent_worktrees> whose commits are all patch-equivalent on some
 #                 origin/<[git] push_branch prefix>* branch and whose untracked files are only symlinks. Names matching
 #                 [git] protected_worktrees are never touched unless --include-night <name>. Removing one also removes the
@@ -20,6 +23,8 @@
 #                 glob's literal prefix), its name, its branch's last segment, or its branch minus the literal prefix of
 #                 [git] agent_branches (4+ chars), and the [sim] ephemeral
 #                 simulators whose name contains one of those (shut down first; [sim] protected still wins).
+#                 Also <[git] worktrees_dir>/compare-* (proof-compare's base checkouts) whose <[disk] dd_root>/dd-compare-*
+#                 build is gone (or goes in this run) and which have no changes: the two are kept in step.
 #   frames        <[project] shots_dir>/**/frames/ dirs older than --frames-age days (default [disk] frames_age_days, else 2);
 #                 0 = all (contact/rest/mp4/loose PNGs stay)
 #   clips         every *.mp4 under [project] shots_dir ({n} = --night N, else every night's): the proof videos, which are
@@ -206,6 +211,19 @@ if want derived-data; then
 fi
 
 SIMS_DONE=" "
+# The simulators something uses (a running process names it, or it booted or launched an app less than [sim]
+# idle_minutes ago; lib/sims.mjs), read once: none of them is ever deleted.
+SIMS_USED=""
+if fk_is_darwin && { want sims || want worktrees; }; then
+  SIMS_USED="$(node "$FK_KIT_DIR/lib/sims.mjs" in-use --idle-min "${FK_SIM_IDLE_MINUTES:-30}" </dev/null 2>/dev/null || true)"
+fi
+# sim_in_use <udid>: prints what uses it and exits 0, or exits 1.
+sim_in_use() {
+  local why
+  why="$(printf '%s\n' "$SIMS_USED" | awk -F'\t' -v u="$1" '$1 == u { print $2; exit }')"
+  [[ -n "$why" ]] && { echo "$why"; return 0; }
+  return 1
+}
 # ---- 2. simulators ----
 if want sims; then
   header "sims"
@@ -217,6 +235,7 @@ if want sims; then
       name="${BASH_REMATCH[1]}"; udid="${BASH_REMATCH[2]}"; state="${BASH_REMATCH[3]}"
       glob_in "$name" "${FK_SIM_EPHEMERAL:-}" || continue
       if glob_in "$udid" "${FK_SIM_PROTECTED:-}" || glob_in "$name" "${FK_SIM_PROTECTED:-}"; then continue; fi
+      if why="$(sim_in_use "$udid")"; then echo "  KEPT  $name ($udid, $state): in use by $why"; SIMS_DONE="$SIMS_DONE$udid "; continue; fi
       echo "  $name ($udid, $state)"
       SIMS_DONE="$SIMS_DONE$udid "
       if [[ "$APPLY" == 1 ]]; then
@@ -261,6 +280,7 @@ wt_linked() {
         glob_in "$sname" "${FK_SIM_EPHEMERAL:-}" || continue
         if glob_in "$udid" "${FK_SIM_PROTECTED:-}" || glob_in "$sname" "${FK_SIM_PROTECTED:-}"; then continue; fi
         SIMS_DONE="$SIMS_DONE$udid "
+        if why="$(sim_in_use "$udid")"; then echo "    KEPT sim $sname ($udid, $state): in use by $why"; continue; fi
         echo "    sim $sname ($udid, $state)  (worktree gone: $name)"
         if [[ "$APPLY" == 1 ]]; then
           if [[ "$state" == Booted ]]; then xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true; fi
@@ -282,6 +302,18 @@ if want worktrees; then
   while IFS=$'\t' read -r path head branch; do
     [[ "$path" == "$WT_ROOT"* ]] || continue
     name="${path##*/}"
+    # proof-compare's base checkout: it goes with its build
+    if [[ "$name" == compare-* ]]; then
+      cdd="${DD_ROOT:+$DD_ROOT/dd-$name}"
+      if [[ -z "$cdd" ]] || { [[ -d "$cdd" ]] && [[ "$DD_SEEN" != *$'\n'"$cdd"$'\n'* ]]; }; then continue; fi
+      if [[ -n "$(cd "$path" && git status --porcelain 2>/dev/null || true)" ]]; then echo "  KEPT  $name (its build is gone, but it has changes)"; continue; fi
+      echo "  REMOVE $name  (proof-compare base; its build dd-$name is gone)"
+      if [[ "$APPLY" == 1 ]]; then
+        git worktree remove --force "$path"
+        if [[ -n "$branch" ]]; then git branch -D "$branch" >/dev/null 2>&1 || true; fi
+      fi
+      continue
+    fi
     if glob_in "$name" "${FK_GIT_PROTECTED_WORKTREES:-}"; then
       [[ "$name" == "$INCLUDE_NIGHT" ]] || { echo "  SKIP  $name (active factory worktree; --include-night $name to allow)"; continue; }
     elif ! glob_in "$name" "${FK_GIT_AGENT_WORKTREES:-}"; then

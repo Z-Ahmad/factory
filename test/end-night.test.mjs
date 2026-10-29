@@ -390,3 +390,16 @@ test('night-lint: errors make end-night exit 3 and are listed; warnings alone do
     assert.match(r.stdout, /factory-end-night: done \(exit 3: token empty, dirty worktree or night-file errors\)/);
     assert.equal(t.read(t.nightFile), NIGHT_TEXT.replace('## Needs the phone\n\n', '')); // lint never rewrites
   }));
+
+test('idle sims: with [sim] idle_minutes, a dry run lists the booted simulators nothing uses and --apply shuts them down', () =>
+  withNight({ simExtra: 'idle_minutes = 20' }, (n) => {
+    writeFileSync(n.p('bin', 'ps'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(n.p('bin', 'ps'), 0o755);
+    let r = n.end([], { FK_UNAME: 'Darwin' });
+    assert.match(r.stdout, /^idle sims: 3 booted, 0 in use; 3 idle: Shooter Phone, box-factory-1, box-test-kit \(--shutdown to stop them\)$/m);
+    assert.ok(!n.xcrunCalls().some((c) => c.startsWith('simctl shutdown')));
+    r = n.end(['--apply'], { FK_UNAME: 'Darwin' });
+    // box-factory-1 is an ephemeral sim that cleanup deletes first; the other two are shut down
+    assert.match(r.stdout, /^idle sims: .*idle shut down: /m);
+    assert.ok(n.xcrunCalls().includes('simctl shutdown 11111111-0000-0000-0000-00000000000A'), n.xcrunCalls().join('\n'));
+  }));

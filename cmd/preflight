@@ -4,8 +4,8 @@
 # First (not a step that can fail): unless [disk] dd_auto = false, `cleanup --apply --only derived-data` prunes stale
 # derived-data (no file changed for [disk] dd_stale_hours, default 6; in-use builds are left alone) and adds
 # "dd pruned N (X freed)" to the line when it removed something.
-# Runs, in order and stopping at the first failure: disk-guard, git, xcode, keep-awake, dev-up (without its own seed
-# restore), then [seed] restore.
+# Runs, in order and stopping at the first failure: disk-guard, git, xcode, keep-awake, idle sims, dev-up (without its
+# own seed restore), then [seed] restore.
 #   git         the main checkout, and the worktree you run from, must be git working trees with core.bare unset: a
 #               scratch `git init` that inherited a hook's GIT_DIR can set core.bare = true on the shared repo, and then
 #               every git command in every worktree fails. Exit 5, with the fix.
@@ -20,6 +20,7 @@
 #   keep-awake  macOS only, unless [preflight] keep_awake = false: makes sure one `caffeinate -dimsu` runs for the night
 #               ([preflight] keep_awake_hours, default 12; PID in <state_dir>/caffeinate.pid; end-night --apply stops
 #               it). Never fails the preflight. A closed MacBook lid sleeps the Mac anyway.
+#   idle sims   macOS only, with [sim] idle_minutes set: `factory sims idle --shutdown`, its summary in the line. Never fails.
 # Prints ONE line on stdout: "factory-preflight: ok - disk 67 GB free; xcode ok; awake (pid 123); dev up (no-op); seed ok",
 # or "factory-preflight: FAILED at <step> (exit N)". On failure the failing step's output follows on stderr.
 # Exit 0 when every step passed, otherwise the exit code of the first failing step (named in the line):
@@ -129,6 +130,12 @@ if [[ "${FK_PREFLIGHT_KEEP_AWAKE:-true}" != false ]] && fk_is_darwin; then
   else AWAKE="awake: caffeinate did not start; "; fi
 fi
 
+SIMS=""
+if [[ -n "${FK_SIM_IDLE_MINUTES:-}" ]] && fk_is_darwin; then
+  LAST="$({ "$FK_KIT_DIR/cmd/sims" idle --shutdown 2>/dev/null || true; } | tail -n 1)"
+  [[ -z "$LAST" ]] || SIMS="${LAST}; "
+fi
+
 if OUT="$("$FK_KIT_DIR/cmd/dev-up" --no-seed 2>&1)"; then RC=0; else RC=$?; fi
 (( RC == 0 )) || fail dev-up "$RC" "$OUT"
 if [[ "$OUT" == *"nothing to start"* ]]; then DEV="dev up (no-op)"; else DEV="dev started"; fi
@@ -140,4 +147,4 @@ if [[ -z "${FK_SEED_RESTORE:-}" ]]; then SEED="seed skipped (no [seed] restore)"
   SEED="seed ok${LAST:+ ($LAST)}"
 fi
 
-echo "factory-preflight: ok - ${DD}$DISK; ${XCODE}${AWAKE}$DEV; $SEED"
+echo "factory-preflight: ok - ${DD}$DISK; ${XCODE}${AWAKE}${SIMS}$DEV; $SEED"

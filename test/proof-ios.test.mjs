@@ -167,7 +167,7 @@ case "$*" in "simctl list devices") echo "    Phone (ABC) (Booted)" ;; *recordVi
     const dd = join(t.dir, 'dd');
     mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
     writeFileSync(join(dd, 'Build', 'Example.app', 'Example'), 'bin');
-    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out'), '--seconds', '0', '--orientation', 'landscape'], {
+    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out'), '--seconds', '0', '--orientation', 'landscape', '--no-slot'], {
       PATH: `${bin}:${process.env.PATH}`,
     });
     assert.equal(r.status, 1, r.stdout + r.stderr);
@@ -177,7 +177,7 @@ case "$*" in "simctl list devices") echo "    Phone (ABC) (Booted)" ;; *recordVi
     writeFileSync(join(t.dir, 'factory.toml'), readFileSync(join(t.dir, 'factory.toml'), 'utf8')
       .replace('orientation_cmd = "echo {udid} {orientation} {dd} >> turns.log"', 'orientation_cmd = "exit 1"\norientation_build = "echo for-testing >> builds.log"')
       .replace('build         = "scripts/build.sh {dd}"', 'build         = "echo app-only >> builds.log"'));
-    const b = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out2'), '--seconds', '0', '--build', '--orientation', 'landscape'], {
+    const b = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'out2'), '--seconds', '0', '--build', '--orientation', 'landscape', '--no-slot'], {
       PATH: `${bin}:${process.env.PATH}`,
     });
     assert.equal(b.status, 1);
@@ -273,5 +273,53 @@ test('fk_proof_dd: the default is per worktree, and every dd gets a .metadata_ne
     for (const d of [join(ddRoot, 'dd-app'), join(ddRoot, 'dd-app-night-9'), join(wt, 'build', 'dd')]) assert.ok(existsSync(join(d, '.metadata_never_index')), d);
   } finally {
     s.cleanup();
+  }
+});
+
+test('proof: waits for a slot before the build and the boot, runs [proof.ios] before, skips a no-op build, shuts down a sim it booted', () => {
+  const t = project((s) => s
+    .replace('build         = "scripts/build.sh {dd}"', 'build         = "echo built >> builds.log"')
+    .replace('fail_markers  = ["LAYOUT-LOOP"]\n', 'fail_markers  = ["LAYOUT-LOOP"]\nsources       = ["src"]\nbefore        = "echo seeded >> before.log"\n'));
+  try {
+    const bin = join(t.dir, 'bin');
+    mkdirSync(bin);
+    const stub = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+    // the sim starts shut down; no video is ever written, so each run fails after the launch, as a stopped proof does
+    stub('xcrun', `echo "$*" >> '${join(t.dir, 'xcrun.log')}'
+case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recordVideo*) sleep 3 ;; esac`);
+    stub('ffmpeg', 'exit 0');
+    stub('ffprobe', 'exit 0');
+    stub('ps', 'exit 0');
+    stub('sysctl', 'case "$2" in vm.loadavg) echo "{ 1.00 1.00 1.00 }" ;; hw.ncpu) echo 8 ;; *) exit 1 ;; esac');
+    const git = (...a) => execFileSync('git', ['-C', t.dir, ...a], { env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+    mkdirSync(join(t.dir, 'src'));
+    writeFileSync(join(t.dir, 'src', 'a.swift'), 'a');
+    git('init', '-q');
+    git('add', 'src');
+    git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'one');
+    const dd = join(t.dir, 'dd');
+    mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
+    writeFileSync(join(dd, 'Build', 'Example.app', 'Example'), 'bin');
+    const proof = (out) => t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, out), '--seconds', '0', '--build'], { PATH: `${bin}:${process.env.PATH}` });
+    let r = proof('o1');
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /no video written/);
+    assert.equal(r.stdout.match(/^slot: go /gm)?.length, 2, r.stdout);
+    assert.equal(readFileSync(join(t.dir, 'builds.log'), 'utf8'), 'built\n');
+    assert.equal(readFileSync(join(t.dir, 'before.log'), 'utf8'), 'seeded\n');
+    const calls = readFileSync(join(t.dir, 'xcrun.log'), 'utf8').trim().split('\n');
+    assert.equal(calls.at(-1), 'simctl shutdown ABC');
+    assert.ok(calls.indexOf('simctl boot ABC') < calls.findIndex((c) => c.startsWith('simctl install')));
+    // the same tree again: no build, one slot wait (the boot)
+    r = proof('o2');
+    assert.match(r.stdout, /^build skipped: .*Example\.app is already a build of [0-9a-f]+ with nothing uncommitted under src/m);
+    assert.equal(r.stdout.match(/^slot: go /gm)?.length, 1, r.stdout);
+    assert.equal(readFileSync(join(t.dir, 'builds.log'), 'utf8'), 'built\n');
+    // --keep-booted leaves it up
+    writeFileSync(join(t.dir, 'xcrun.log'), '');
+    t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'o3'), '--seconds', '0', '--keep-booted', '--no-slot'], { PATH: `${bin}:${process.env.PATH}` });
+    assert.ok(!readFileSync(join(t.dir, 'xcrun.log'), 'utf8').includes('simctl shutdown'));
+  } finally {
+    t.cleanup();
   }
 });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lstatSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { factory } from './helpers.mjs';
 import { tree } from './fixture-tree.mjs';
@@ -248,3 +249,35 @@ test('$TMPDIR: a tmp_dirs entry may be $TMPDIR/<sub>', () =>
     },
     { diskExtra: `tmp_dirs = ["$TMPDIR/sub"]` },
   ));
+
+test('sims: a simulator a running proof (or recordVideo, or xcodebuild) names is never deleted, even when low disk asks', () =>
+  withTree((t) => {
+    writeFileSync(t.p('bin', 'ps'), `#!/usr/bin/env bash\necho "  41 01:00:00 /bin/bash /kit/proof/ios/sim-proof-core.sh --udid 11111111-0000-0000-0000-000000000002 --dd /dd/x"\n`);
+    chmodSync(t.p('bin', 'ps'), 0o755);
+    const r = cleanup(t, ['--apply', '--only', 'sims']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^ {2}KEPT {2}box-factory-1 \(11111111-0000-0000-0000-000000000002, Booted\): in use by factory proof \(pid 41\)$/m);
+    assert.deepEqual(t.xcrunCalls(), ['simctl delete 11111111-0000-0000-0000-000000000003', 'simctl delete 11111111-0000-0000-0000-000000000004']);
+    const g = factory(['disk-guard'], { env: { ...t.env, DF_GB: '10' }, cwd: t.main });
+    assert.equal(g.status, 2);
+    assert.ok(!t.xcrunCalls().some((c) => c.includes('000000000002')), t.xcrunCalls().join('\n'));
+  }));
+
+test('worktrees: a proof-compare base checkout goes once its dd-compare-* build is gone, and stays while the build does', () =>
+  withTree((t) => {
+    for (const n of ['compare-aaaa1111', 'compare-bbbb2222', 'compare-cccc3333'])
+      execFileSync('git', ['-C', t.main, 'worktree', 'add', '-q', '--detach', join(t.wt, n), 'trunk']);
+    mkdirSync(t.p('cache', 'dd-compare-bbbb2222'));
+    writeFileSync(join(t.wt, 'compare-cccc3333', 'local.txt'), 'x');
+    let r = cleanup(t, ['--only', 'derived-data', '--only', 'worktrees']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^ {2}REMOVE compare-aaaa1111 {2}\(proof-compare base; its build dd-compare-aaaa1111 is gone\)$/m);
+    assert.match(r.stdout, /^ {2}KEPT {2}compare-cccc3333 \(its build is gone, but it has changes\)$/m);
+    assert.doesNotMatch(r.stdout, /compare-bbbb2222/);
+    // the build goes stale and is pruned in the same run: its checkout goes with it
+    utimesSync(t.p('cache', 'dd-compare-bbbb2222'), new Date('2001-01-01'), new Date('2001-01-01'));
+    r = cleanup(t, ['--apply', '--only', 'derived-data', '--only', 'worktrees']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /REMOVE compare-bbbb2222/);
+    assert.deepEqual(t.names('main', '.worktrees').filter((n) => n.startsWith('compare-')), ['compare-cccc3333']);
+  }));

@@ -297,3 +297,45 @@ test('remoteUrl and urlIsRepo read a remote and match its GitHub slug', async ()
   assert.equal(urlIsRepo('https://github.com/o/app/', 'o/app'), true);
   assert.equal(urlIsRepo('https://github.com/o/app-two.git', 'o/app'), false);
 });
+
+test('rule 7: builds and tests wait for a free builder slot; queries, other commands and an unset [slot] pass', () => {
+  const calls = [];
+  const busy = { ...cfg, slotGate: true, slotStatus: (u) => (calls.push(u), { busy: true, line: 'slot: busy (2 other builders: dd-a (pid 1), dd-b (pid 2) ([slot] builders = 2); load 9)' }) };
+  const free = { ...busy, slotStatus: (u) => (calls.push(u), { busy: false, line: 'slot: free' }) };
+  const mcp = (name, input = {}) => ({ tool_name: `mcp__XcodeBuildMCP__${name}`, tool_input: input, cwd: main });
+  const U = '26AED99E-6F78-4D72-972C-98F25869B233';
+  for (const p of [
+    bash('xcodebuild -scheme App build'),
+    bash(`cd ios && xcodebuild test -scheme App -destination 'platform=iOS Simulator,id=${U.toLowerCase()}'`),
+    bash('./seaglass-ios/scripts/build.sh dd-x'),
+    bash('bash scripts/test.sh'),
+    bash('npm run ios:test -- --only Foo'),
+    bash('sh -c "xcodebuild -scheme App"'),
+    mcp('build_run_sim'),
+    mcp('test_sim', { extraArgs: ['-destination', `id=${U}`] }),
+    { ...mcp('build_sim'), tool_name: 'mcp__plugin_x_XcodeBuildMCP__build_sim' },
+  ]) {
+    const reason = evaluate(p, busy);
+    assert.match(reason ?? '', /builder slot is busy: slot: busy \(2 other builders.*\[slot\] builders = 2.*factory slot wait/, JSON.stringify(p));
+    assert.equal(evaluate(p, free), null);
+  }
+  // the simulator named in the call is the caller's own; with none, leftovers are not counted (null)
+  assert.deepEqual(calls.filter((_, i) => i % 2 === 0), [null, U, null, null, null, null, null, U, null]);
+  for (const p of [
+    bash('xcodebuild -list'),
+    bash('xcodebuild -showBuildSettings -scheme App'),
+    bash('cat build.sh'),
+    bash('npm run test'),
+    mcp('list_sims'),
+    mcp('screenshot'),
+  ]) assert.equal(evaluate(p, busy), null, JSON.stringify(p));
+  assert.equal(evaluate(bash('xcodebuild build'), { ...busy, slotGate: false }), null);
+  // `factory slot` failing to answer allows the call
+  assert.equal(evaluate(bash('xcodebuild build'), { ...busy, slotStatus: () => null }), null);
+});
+
+test('rule 7: the slot gate is on with [slot] or [proof.ios], off without either', () => {
+  assert.equal(guardConfig(parseToml(TOML).data, '/x/factory.toml').slotGate, false);
+  assert.equal(guardConfig(parseToml(`${TOML}\n[slot]\nbuilders = 2\n`).data, '/x/factory.toml').slotGate, true);
+  assert.equal(guardConfig(parseToml(`${TOML}\n[proof.ios]\nbundle_id = "a"\n`).data, '/x/factory.toml').slotGate, true);
+});
