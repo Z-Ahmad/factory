@@ -2,6 +2,12 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.20.2 (2026-10-29)
+
+### dev-restart stops what never listened
+
+- `dev-restart` used to KILL only what still listened after `[dev] stop_s`. A process in the stack's group that never opened a port and ignored TERM survived the restart, orphaned. One was a ts-node-dev child stuck in its synchronous wait for a compile that its stopped parent would never finish: its TERM handler is JavaScript and the loop never yields. It spun a core for 37 hours. Once the grace runs out, `dev-restart` now KILLs whatever is left in the groups it stopped.
+
 ## v0.20.1 (2026-10-28)
 
 ### Merge protection is scoped to the project's repository

@@ -3,7 +3,8 @@
 # usage: factory dev-restart [--no-seed] [--dry-run]
 # Stops whatever listens on the [dev] all_ports (the wait_ports when all_ports is not set): TERM to
 # each listener's process group (dev-up starts the stack as one), then, after [dev] stop_s (default
-# 30) with ports still open, KILL to what still listens. Then runs dev-up, which starts it again
+# 30) with ports still open, KILL to what still listens, and to any of those groups' processes still
+# alive (one that never listened and ignores TERM). Then runs dev-up, which starts it again
 # and restores the seed (skipped with --no-seed). --dry-run prints the process groups it would stop.
 # hook-guard lets only the main session run it: a subagent is denied unless [dev] restart_by = "anyone".
 # Exit 0 when the stack is back up, 1 on a bad argument or missing config, 4 when a port would not
@@ -54,6 +55,20 @@ while [[ -n "$(listeners)" ]]; do
     sleep 1
     [[ -z "$(listeners)" ]] || { echo "factory-dev-restart: ports still open after KILL: $(listeners | tr '\n' ' ')" >&2; exit 4; }
     echo "factory-dev-restart: sent KILL to what still listened after ${STOP}s"
+    break
+  fi
+  sleep "$POLL"; waited=$((waited + POLL))
+done
+
+# A group's process that never listened can outlive its listeners: a ts-node-dev child stuck in
+# its synchronous wait for a compile its stopped parent will never finish ignores TERM (its handler
+# is JavaScript and the loop never yields), and spun a core for 37 hours once (Oct 2026). What the
+# grace left of the groups gets KILL.
+members() { local g; for g in $GROUPS_TXT; do [[ "$g" == pid:* ]] || pgrep -g "$g" 2>/dev/null || true; done; }
+while [[ -n "$(members)" ]]; do
+  if (( waited >= STOP )); then
+    for g in $GROUPS_TXT; do [[ "$g" == pid:* ]] || kill -KILL -- "-$g" 2>/dev/null || true; done
+    echo "factory-dev-restart: sent KILL to what was left of ${GROUPS_TXT% } after ${STOP}s"
     break
   fi
   sleep "$POLL"; waited=$((waited + POLL))
