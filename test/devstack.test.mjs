@@ -305,6 +305,29 @@ test('dev-restart: stops the running stack, then dev-up starts it again and seed
     },
   ));
 
+test('dev-restart: KILLs a group member that never listened and ignores TERM', () =>
+  withProject(
+    {
+      // A stuck child beside the server: no port, a TERM handler that can never run. It gives up after
+      // two minutes on its own, so a run interrupted before the restart can't leave it spinning.
+      dev: 'up = "node -e \'process.on(\\"SIGTERM\\", () => {}); const end = Date.now() + 120000; while (Date.now() < end) {}\' & echo $! > {marker}; exec node {server} {a}"\ncwd = "stack"\nwait_ports = [{a}]\ntimeout_s = 30\nstop_s = 3',
+    },
+    async (t) => {
+      const first = t.run(['dev-up', '--no-seed']);
+      assert.equal(first.status, 0, first.stderr);
+      t.pids.push(Number(first.stdout.match(/\(pid (\d+)\)/)[1]));
+      await waitFor(() => t.read(t.marker).trim() !== '', 5000);
+      const stuck = Number(t.read(t.marker).trim().split('\n')[0]);
+      assert.ok(alive(stuck));
+      const r = t.run(['dev-restart', '--no-seed']);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /sent KILL to what was left of/);
+      await waitFor(() => !alive(stuck), 5000);
+      const m = r.stdout.match(/factory-dev-up: started .* \(pid (\d+)\)/);
+      if (m) t.pids.push(Number(m[1]));
+    },
+  ));
+
 test('dev-restart: an unknown argument exits 1', () =>
   withProject({ dev: 'wait_ports = [{a}]' }, (t) => {
     const r = t.run(['dev-restart', '--nope']);
