@@ -116,14 +116,14 @@ if [[ -n "$BLOCKED" ]]; then
   if ! tick "$TMP/new.md" "$PR_MARK" "" ""; then :; fi
   WANT="$OPEN" TAG=" — $PR_TAG" awk '
     BEGIN { want = ENVIRON["WANT"]; n = length(want) }
-    substr($0, 1, n) == want && index($0, ENVIRON["TAG"]) == 0 { print $0 ENVIRON["TAG"]; next }
+    substr($0, 1, n) == want && index($0, ENVIRON["TAG"]) == 0 { cr = sub(/\r$/, ""); print $0 ENVIRON["TAG"] (cr ? "\r" : ""); next }
     { print }' "$TMP/new.md" > "$TMP/new2.md" && mv "$TMP/new2.md" "$TMP/new.md"
 else
   # Tick the box, then append " — <sha>" to the end of the line.
   if grep -qF -- "$OPEN" "$TMP/new.md"; then
     WANT="$OPEN" NEWP="$DONE" TAG=" — $PR_TAG" awk '
       BEGIN { want = ENVIRON["WANT"]; n = length(want); done = 0 }
-      !done && substr($0, 1, n) == want { print ENVIRON["NEWP"] substr($0, n + 1) ENVIRON["TAG"]; done = 1; next }
+      !done && substr($0, 1, n) == want { cr = sub(/\r$/, ""); print ENVIRON["NEWP"] substr($0, n + 1) ENVIRON["TAG"] (cr ? "\r" : ""); done = 1; next }
       { print }' "$TMP/new.md" > "$TMP/new2.md" && mv "$TMP/new2.md" "$TMP/new.md"
   elif grep -qF -- "$DONE" "$TMP/new.md"; then
     echo "PR line for $ITEM already ticked; leaving it" >&2

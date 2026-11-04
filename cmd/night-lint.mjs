@@ -113,7 +113,8 @@ const findings = [];
 const error = (line, msg) => findings.push({ level: 'error', line, msg });
 const warn = (line, msg) => findings.push({ level: 'warn', line, msg });
 
-const lines = readFileSync(path, 'utf8').split('\n');
+// CRLF too: editors on Windows save night files that way.
+const lines = readFileSync(path, 'utf8').split(/\r?\n/);
 if (lines[lines.length - 1] === '') lines.pop();
 const ln = (i) => i + 1;
 
