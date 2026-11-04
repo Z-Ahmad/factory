@@ -99,7 +99,7 @@ const SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
 function sections(text) {
   const out = new Map();
   let cur = null;
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     const h = /^##\s+(.*)$/.exec(line);
     if (h) {
       cur = h[1].trim().toLowerCase();
