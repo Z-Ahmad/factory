@@ -69,6 +69,14 @@ const TEMPLATE_SUFFIX = /\.(?:example|sample|template|dist|tpl)$/i;
 
 const expandTilde = (p) => (p === '~' ? homedir() : p.startsWith('~/') ? homedir() + p.slice(1) : p);
 
+// Windows: Git Bash writes C:\x as /c/x, and node paths use backslashes; globs and roots are compared with forward
+// slashes. Elsewhere both are no-ops.
+const WIN = process.platform === 'win32';
+const fromMsys = (p) => (WIN ? p.replace(/^\/([a-z])(?=\/|$)/i, (_, d) => `${d.toUpperCase()}:`) : p);
+const slash = (p) => (WIN ? p.replace(/\\/g, '/') : p);
+// A never_touch glob that names an absolute path (/x, C:/x) guards a place outside the repository too.
+const isAbsGlob = (g) => g.startsWith('/') || /^[a-z]:[\\/]/i.test(g);
+
 /** realpath of the deepest existing ancestor, plus the (not yet existing) rest. */
 function realish(p) {
   let cur = p;
@@ -753,13 +761,18 @@ export function evaluate(payload, cfg) {
     return (rootsCache = [...set]);
   };
   const matchPath = (p, from, gs) => {
-    const abs = resolve(from, expandTilde(p));
-    for (const cand of new Set([abs, realish(abs)]))
-      for (const root of roots()) {
-        if (!cand.startsWith(`${root}/`)) continue;
+    const abs = resolve(fromMsys(from), fromMsys(expandTilde(p)));
+    const absGs = gs.filter((g) => isAbsGlob(g.src));
+    for (const real of new Set([abs, realish(abs)])) {
+      const cand = slash(real);
+      const hit = anyGlob(absGs, cand);
+      if (hit) return hit;
+      for (const root of roots().map(slash)) {
+        if (!cand.toLowerCase().startsWith(`${root.toLowerCase()}/`)) continue;
         const hit = anyGlob(gs, cand.slice(root.length + 1));
         if (hit) return hit;
       }
+    }
     return null;
   };
 
