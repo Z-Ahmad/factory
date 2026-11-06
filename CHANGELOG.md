@@ -2,6 +2,19 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.20.3 (2026-11-06)
+
+### Projects on Windows, and projects with no dev stack
+
+- `factory preflight` skips the dev-stack step when `[dev]` sets neither `up` nor `wait_ports` (a game or a CLI has no
+  dev server): its line says "dev skipped (no [dev])", as it already did for `[seed]`. It used to fail at dev-up with
+  "[dev] wait_ports is not set". `dev-status` then says there is no dev stack and exits 0.
+- `hook-guard` compares paths with forward slashes and case-insensitively, reads Git Bash's `/c/x` as `C:\x`, and lets
+  a `never_touch` glob name an absolute path outside the repository (a game install, a save folder). On Windows the
+  globs never matched before.
+- `night-lint` and `night-new` read night files saved with CRLF line endings (they found no sections before), and
+  `tick` writes a PR body's sha before a line's CR, not after it.
+
 ## v0.20.2 (2026-10-29)
 
 ### dev-restart stops what never listened
