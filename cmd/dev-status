@@ -3,11 +3,14 @@
 # usage: factory dev-status
 # One line per [dev] all_ports entry (or the wait_ports when all_ports is not set): ":PORT up", ":PORT down",
 # or, with [dev] probe = "http", ":PORT hung" (it accepts connections but never answers: `factory dev-restart`).
-# Exit 0 when every [dev] wait_ports entry is up, 1 when any is down or hung, 2 when no ports are configured.
+# Exit 0 when every [dev] wait_ports entry is up, 1 when any is down or hung, 2 when no ports are configured but
+# [dev] up is. A project with no [dev] at all (no dev stack) prints that and exits 0.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 
 ALL="${FK_DEV_ALL_PORTS:-${FK_DEV_WAIT_PORTS:-}}"
+# No dev stack at all (no [dev] up either): nothing to check, which is not a failure.
+if [[ -z "$ALL" && -z "${FK_DEV_UP:-}" ]]; then echo "factory dev-status: no dev stack ([dev] not set)"; exit 0; fi
 [[ -n "$ALL" ]] || { echo "factory dev-status: [dev] all_ports and wait_ports are not set" >&2; exit 2; }
 
 STATE=""
