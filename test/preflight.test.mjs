@@ -45,6 +45,20 @@ esac`);
 }
 const XCODE_ON = 'xcode = true';
 
+test('dev: a project with no [dev] (no dev stack, e.g. a game) skips the step and passes', () => {
+  const t = tree({});
+  try {
+    const r = factory(['preflight'], { env: t.env, cwd: t.main });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /dev skipped \(no \[dev\]\); seed skipped/);
+    const s = factory(['dev-status'], { env: t.env, cwd: t.main });
+    assert.equal(s.status, 0, s.stderr);
+    assert.match(s.stdout, /no dev stack/);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test('xcode: off by default without [proof.ios]; on with it, and ok adds one segment', () =>
   withProject({}, async (t) => {
     const r = t.run({ XCB_FL_RC: '69' });

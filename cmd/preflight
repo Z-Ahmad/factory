@@ -5,7 +5,8 @@
 # derived-data (no file changed for [disk] dd_stale_hours, default 6; in-use builds are left alone) and adds
 # "dd pruned N (X freed)" to the line when it removed something.
 # Runs, in order and stopping at the first failure: disk-guard, git, xcode, keep-awake, idle sims, dev-up (without its
-# own seed restore), then [seed] restore.
+# own seed restore; skipped, "dev skipped (no [dev])", when neither [dev] up nor wait_ports is set: a project with no
+# dev stack, such as a game), then [seed] restore.
 #   git         the main checkout, and the worktree you run from, must be git working trees with core.bare unset: a
 #               scratch `git init` that inherited a hook's GIT_DIR can set core.bare = true on the shared repo, and then
 #               every git command in every worktree fails. Exit 5, with the fix.
@@ -136,9 +137,14 @@ if [[ -n "${FK_SIM_IDLE_MINUTES:-}" ]] && fk_is_darwin; then
   [[ -z "$LAST" ]] || SIMS="${LAST}; "
 fi
 
-if OUT="$("$FK_KIT_DIR/cmd/dev-up" --no-seed 2>&1)"; then RC=0; else RC=$?; fi
-(( RC == 0 )) || fail dev-up "$RC" "$OUT"
-if [[ "$OUT" == *"nothing to start"* ]]; then DEV="dev up (no-op)"; else DEV="dev started"; fi
+# A project with no dev stack (a game, a CLI: neither [dev] up nor wait_ports set) skips the step, as [seed] does.
+if [[ -z "${FK_DEV_UP:-}" && -z "${FK_DEV_WAIT_PORTS:-}" ]]; then
+  DEV="dev skipped (no [dev])"
+else
+  if OUT="$("$FK_KIT_DIR/cmd/dev-up" --no-seed 2>&1)"; then RC=0; else RC=$?; fi
+  (( RC == 0 )) || fail dev-up "$RC" "$OUT"
+  if [[ "$OUT" == *"nothing to start"* ]]; then DEV="dev up (no-op)"; else DEV="dev started"; fi
+fi
 
 if OUT="$(fk_seed_restore)"; then RC=0; else RC=$?; fi
 (( RC == 0 )) || fail seed "$RC" "$OUT"
