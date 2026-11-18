@@ -2,6 +2,25 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.21.0 (2026-11-18)
+
+### A still page is not a flash or a hold
+
+simctl writes a frame only when the screen changes, so a scenario that cuts to a page, holds it still for 2.5 s and cuts
+back recorded that page as two frames and failed twice: as a 2-frame flash (A -> B -> A counts frames, not time) and as
+a 2.5 s hold (the cuts read as motion on both sides of the gap). A real scenario (a review list -> a trip's detail ->
+back) failed every cell of its matrix this way while its grow-in was clean frame by frame.
+
+- **Flash:** a burst whose B stayed on screen longer than `--flash-dwell` ms (default 250; `[proof.ios.verdict]
+  flash_dwell_ms`) is a cut and a cut back. It is listed in `verdict.json` as `flash.returns` (with its `dwellMs`) and
+  on the VERDICT line as "n cut-and-back", and is not judged. A blink of a frame or three still fails as before.
+- **Hold:** with app ground truth (`--steps`, aligned by SYNC markers), a gap the app never felt is a still screen: its
+  ground-truth lines span the gap and no HITCH within 1.5 s covers half of it (`stillInApp` in `ground-truth.mjs`; the
+  wide window is because one early SYNC anchor drifts over half a second from the video ten seconds on). Listed as
+  `hold.stills` and "n still screen", not judged. Without ground truth, holds are judged from pixels as before.
+- The 6-clip ground-truth corpus gives the same verdicts as v0.20.3, including its injected 150 ms hold (its own 203 ms
+  HITCH keeps it a FAIL).
+
 ## v0.20.3 (2026-11-06)
 
 ### Projects on Windows, and projects with no dev stack

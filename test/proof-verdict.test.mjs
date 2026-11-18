@@ -76,6 +76,32 @@ test('frames dropped mid-motion are a hold; 50-100 ms only warns', () => {
   assert.ok(mid.v.flagsPng, 'a WARN hold still writes flags.png')
 })
 
+// A still page: one frame of B at 1.5 s between two identical A frames. simctl writes no frames while the screen sits still,
+// so B's frame count says nothing about how long it was up: `dwellFrames` frames dropped after it keep B on screen that long.
+function stillPageClip(name, dwellFrames) {
+  const path = join(dir, `${name}.mp4`)
+  const drop = dwellFrames > 0 ? `select='not(between(n\\,91\\,${90 + dwellFrames}))',setpts=PTS,` : ''
+  run(['-f', 'lavfi', '-i', 'color=c=0x335577:s=240x520:r=60:d=3', '-vf', `drawbox=x=20:y=80:w=200:h=300:color=0xF2EEE4:t=fill,negate=enable=eq(n\\,90),${drop}format=yuv420p`, '-fps_mode', 'vfr', '-c:v', 'libx264', '-crf', '12', path])
+  return path
+}
+
+test('a B that stays up past --flash-dwell is a cut and a cut back, listed and not judged; a 1-frame B still fails', () => {
+  const blink = verdict(stillPageClip('blink', 0))
+  assert.equal(blink.code, 4)
+  assert.equal(blink.v.flash.status, 'FAIL')
+  assert.equal(blink.v.flash.returns.length, 0)
+  const page = verdict(stillPageClip('still-page', 60)) // B up for ~1 s, recorded as one frame
+  assert.equal(page.v.flash.status, 'PASS', JSON.stringify(page.v.flash))
+  assert.equal(page.v.flash.count, 0)
+  assert.equal(page.v.flash.returns.length, 1)
+  assert.ok(page.v.flash.returns[0].dwellMs >= 900, `dwell ${page.v.flash.returns[0].dwellMs} ms`)
+  // Its 1 s gap is still a hold here: the cuts read as motion on both sides, and only the app's own ground truth
+  // (stillInApp) can say the screen was still. Without it holds are judged from pixels, as before.
+  assert.equal(page.v.hold.status, 'FAIL')
+  const tight = verdict(stillPageClip('still-page-tight', 60), ['--flash-dwell', '2000'])
+  assert.equal(tight.v.flash.status, 'FAIL', '--flash-dwell above the dwell judges it again')
+})
+
 // A clip with a 6-frame hole at 1.5 s, named for the scenario a budget can match.
 function holdClip(name) {
   const path = join(dir, `${name}.mp4`)
