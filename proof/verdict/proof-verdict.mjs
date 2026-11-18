@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // usage: factory proof-verdict <clip.mp4> [--out <dir>] [--steps <steps.log>] [--json]
 //                     [--scenario <name>] [--budgets <file.json>] [--no-budget] [--fail-marker <text> ...] [--skip-start auto|<s>] [--launch-window 8] [--launch-search 15] [--ignore FROM-TO ...]
-//                     [--flash-warn 12] [--flash-fail 30] [--ref-weight 8] [--hold-warn 50] [--hold-fail 100]
+//                     [--flash-warn 12] [--flash-fail 30] [--flash-dwell 250] [--ref-weight 8] [--hold-warn 50] [--hold-fail 100]
 //                     [--bounce-warn 20] [--bounce-fail 60] [--bounce-window 1.2] [--bounce-level 40] [--bounce-region 0.4]
 //                     [--hold-motion 0.4] [--ignore-top 0.075] [--grid 8x16] [--width 120] [--max-flags 8] [--no-flags]
 // A machine verdict for a sim-proof clip (the orchestrator's frame-by-frame eyeballing, as numbers). Runs on any
@@ -14,13 +14,18 @@
 //                       (0..255, mean absolute difference over the tile); the heavy ref-weight means only a NEAR-EXACT
 //                       return counts (a camera fly that happens to look like where it was scores ~0). A whole-frame
 //                       luma spike that reverts (a white or black flash) is a flash too. Adjacent flagged frames fold
-//                       into one burst. WARN >= --flash-warn, FAIL >= --flash-fail.
+//                       into one burst. WARN >= --flash-warn, FAIL >= --flash-fail. simctl records only on change, so k
+//                       counts frames, not time: a B that stayed on screen longer than --flash-dwell ms (a cut to a still
+//                       page and a cut back) is two cuts, not a flash. Those are listed as flash.returns, never judged.
 //   (b) HOLD / STALL    simctl records variable frame rate, so a gap in presentation timestamps is a frame the app
 //                       did not draw. A gap >= --hold-warn ms (WARN; --hold-fail ms FAILs) counts only when the screen
 //                       is MOVING on both sides of it (the frames before the gap, and the frame that ends it: a settling
 //                       spring's last near-identical frame is not a stall): a static screen legitimately has long gaps. Holds inside the
 //                       launch window (the first --launch-window s after the launch screen: a cold boot's tile load)
 //                       can only WARN.
+//                       With app ground truth (--steps, aligned by SYNC markers), a hold the app never felt is a still
+//                       screen, not a stall: a cut to a page that then sits still reads as motion on both sides of its
+//                       gap. It is listed as hold.stills, not judged, unless a HITCH inside it covers half the gap.
 //   (e) HITCH / SETTLE  app-reported ground truth in --steps (proof/verdict/ground-truth.mjs has the line contract): HITCH
 //                       lines are holds the app measured itself (same bands as hold; WARN-only in the launch window);
 //                       SETTLE judges the UI (not the map, not LIVE rects) for change after each UI MOTION end, at one
@@ -63,7 +68,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { anchorDistance, anchorsFrom, goodAnchors, judgeHitches, makeAligner, markerRuns, parseGroundTruth, settleChange, settleWindows, uiMask } from './ground-truth.mjs'
+import { anchorDistance, anchorsFrom, goodAnchors, judgeHitches, makeAligner, markerRuns, parseGroundTruth, settleChange, settleWindows, stillInApp, uiMask } from './ground-truth.mjs'
 
 export const DEFAULTS = {
   skipStart: 'auto', // 'auto' = detect iOS's leading frames; or a number of seconds to skip blind
@@ -73,6 +78,7 @@ export const DEFAULTS = {
   width: 120, // decoded frame width in pixels
   flashWarn: 12, // approved clips peak at 8 (past the launch); a footer jumping 100 pt scores 87-126
   flashFail: 30,
+  flashDwell: 250, // ms: a flash's B on screen longer than this is a cut and a cut back (simctl writes no frames while it sits still)
   holdWarn: 50, // 60-72 ms sim stalls were approved on a real phone: 50-100 ms is for a reviewer to judge
   holdFail: 100,
   holdMotion: 0.4, // mean grey-level change per frame that counts as "moving" beside a gap
@@ -113,6 +119,7 @@ export const ENV_KEYS = {
   width: ['width', 'number'],
   flash_warn: ['flashWarn', 'number'],
   flash_fail: ['flashFail', 'number'],
+  flash_dwell_ms: ['flashDwell', 'number'],
   hold_warn_ms: ['holdWarn', 'number'],
   hold_fail_ms: ['holdFail', 'number'],
   hold_motion: ['holdMotion', 'number'],
@@ -541,6 +548,7 @@ function parseArgs(argv) {
     else if (k === '--width') o.width = num(val(), k)
     else if (k === '--flash-warn') set('flashWarn', num(val(), k))
     else if (k === '--flash-fail') set('flashFail', num(val(), k))
+    else if (k === '--flash-dwell') set('flashDwell', num(val(), k))
     else if (k === '--hold-warn') set('holdWarn', num(val(), k))
     else if (k === '--hold-fail') set('holdFail', num(val(), k))
     else if (k === '--hold-motion') o.holdMotion = num(val(), k)
@@ -682,6 +690,12 @@ function decodeSelected(clip, w, h, want) {
 
 // One flash is seen from several frames (and k's); fold candidates <= maxK + 1 frames apart into one burst, keeping the
 // worst. A footer that jumps on every other frame of a scrub is one burst, not 400.
+/** How long a flash candidate's B stayed on screen (ms): from its first frame to the frame that brings A back. */
+export function burstDwellMs(e, pts) {
+  const end = pts[Math.min(e.i + e.k, pts.length - 1)]
+  return (end - pts[e.i]) * 1000
+}
+
 function bursts(events, gap = DEFAULTS.maxK + 1) {
   const out = []
   for (const e of [...events].sort((a, b) => a.i - b.i)) {
@@ -727,8 +741,12 @@ async function run() {
   const windowEnd = launch.windowS > 0 && Number.isFinite(startT) ? startT + launch.windowS : -1
 
   const kept = candidates.filter((e) => e.i > launch.startFrame && !inRanges(pts[e.i], o.ignore))
-  const flashes = bursts(kept.filter((e) => e.score >= o.flashWarn)).sort((a, b) => b.score - a.score)
-  const holds = findHolds(pts, scan.motion, { startFrame: launch.startFrame, holdWarn: o.holdWarn, holdMotion: o.holdMotion })
+  // A B that sat on screen past --flash-dwell is a cut and a cut back, not a flash: listed, not judged.
+  const longReturn = (e) => burstDwellMs(e, pts) > o.flashDwell
+  const returns = bursts(kept.filter((e) => e.score >= o.flashWarn && longReturn(e))).sort((a, b) => b.score - a.score)
+  const judged = kept.filter((e) => !longReturn(e))
+  const flashes = bursts(judged.filter((e) => e.score >= o.flashWarn)).sort((a, b) => b.score - a.score)
+  let holds = findHolds(pts, scan.motion, { startFrame: launch.startFrame, holdWarn: o.holdWarn, holdMotion: o.holdMotion })
     .filter((h) => !inRanges(h.t, o.ignore))
     .map((h) => {
       const base = statusOf(h.gapMs, o.holdWarn, o.holdFail)
@@ -752,6 +770,9 @@ async function run() {
     align = makeAligner(anchors)
   }
   const hitch = gt?.found ? judgeHitches(gt, { holdWarn: o.holdWarn, holdFail: o.holdFail, launchWindow: o.launchWindow, align }) : null
+  // Holds the app never felt (its ground truth spans the gap, no HITCH covers half of it) are still screens: listed, not judged.
+  const stills = holds.filter((h) => stillInApp(h, gt, align))
+  holds = holds.filter((h) => !stills.includes(h))
 
   // Settle check: after UI motion ends the UI (not the map) stays still until the next motion or step. Judged at one pixel
   // per point, and only where a SYNC anchor is near enough to place the window on the right frames.
@@ -795,7 +816,7 @@ async function run() {
     for (const hd of holds.slice(0, o.debug)) process.stderr.write(`  ${hd.gapMs.toFixed(0)}ms at t=${hd.t.toFixed(3)} ${hd.status}${hd.launch ? ' (launch)' : ''} before=${hd.before.toFixed(2)} after=${hd.after.toFixed(2)}\n`)
   }
 
-  const worstFlash = kept.reduce((m, e) => Math.max(m, e.score), 0)
+  const worstFlash = judged.reduce((m, e) => Math.max(m, e.score), 0)
   const worstHold = holds.reduce((m, h) => Math.max(m, h.gapMs), 0)
   const worstBounce = bounces.reduce((m, b) => Math.max(m, b.score), 0)
   const shownBounces = bounces.filter((b) => b.score >= o.bounceWarn)
@@ -844,8 +865,8 @@ async function run() {
     launch: { mode: launch.mode, startFrame: launch.startFrame, startS: round(startT, 3), holdWindowS: launch.windowS, why: launch.why },
     budget: budget ?? null,
     settings: { skipStart: o.skipStart, launchWindow: o.launchWindow, ignoreTop: o.ignoreTop, grid: o.grid, width: W, flashWarn: o.flashWarn, flashFail: o.flashFail, holdWarn: o.holdWarn, holdFail: Number.isFinite(o.holdFail) ? o.holdFail : null, holdMotion: o.holdMotion, bounceWarn: o.bounceWarn, bounceFail: Number.isFinite(o.bounceFail) ? o.bounceFail : null, bounceWindow: o.bounceWindow, bounceLevel: o.bounceLevel, bounceRegion: o.bounceRegion },
-    flash: { status: flashStatus, worstScore: round(worstFlash, 2), count: flashes.length, events: flashes.slice(0, 50).map(flashEvent) }, // count = bursts (adjacent flagged frames folded)
-    hold: { status: holdStatus, worstMs: round(worstHold, 1), count: holds.length, events: holds.slice(0, 50).map(holdEvent) },
+    flash: { status: flashStatus, worstScore: round(worstFlash, 2), count: flashes.length, events: flashes.slice(0, 50).map(flashEvent), returns: returns.slice(0, 50).map((e) => ({ t: round(pts[e.i], 3), k: e.k, dwellMs: round(burstDwellMs(e, pts), 1), score: round(e.score, 2) })) }, // count = bursts (adjacent flagged frames folded); returns = cuts and cuts back, not judged
+    hold: { status: holdStatus, worstMs: round(worstHold, 1), count: holds.length, events: holds.slice(0, 50).map(holdEvent), stills: stills.slice(0, 50).map(holdEvent) }, // stills = gaps the app never felt, not judged
     bounce: { status: bounceStatus, worstScore: round(worstBounce, 2), count: shownBounces.length, events: shownBounces.slice(0, 50).map(bounceEvent) },
     layoutLoop: { status: loopStatus, count: loops.length, lines: loops.slice(0, 20) },
     // app-reported: present when steps.log carries the ground-truth lines; `gate` says whether it decided the verdict
@@ -864,8 +885,8 @@ async function run() {
   else {
     const launchBit = launch.mode === 'detected' ? `launch screen at ${startT.toFixed(1)}s` : launch.mode === 'fallback' ? `launch screen NOT found: skipped to ${startT.toFixed(1)}s (first non-uniform frame + ${o.fallbackExtraS}s)` : `skip ${blind}s (--skip-start)`
     const bits = [
-      `flash ${flashStatus} worst ${worstFlash.toFixed(1)}${flashes.length ? ` (${flashes.length})` : ''}`,
-      `hold ${holdStatus} worst ${worstHold.toFixed(0)}ms${holds.length ? ` (${holds.length})` : ''}`,
+      `flash ${flashStatus} worst ${worstFlash.toFixed(1)}${flashes.length ? ` (${flashes.length})` : ''}${returns.length ? `; ${returns.length} cut-and-back` : ''}`,
+      `hold ${holdStatus} worst ${worstHold.toFixed(0)}ms${holds.length ? ` (${holds.length})` : ''}${stills.length ? `; ${stills.length} still screen` : ''}`,
       `bounce ${bounceStatus} worst ${worstBounce.toFixed(1)}${shownBounces.length ? ` (${shownBounces.length})` : ''}`,
       `layout-loop ${loops.length}`,
       ...(settle ? [`settle ${settleStatus}${settle.events.length ? ` worst ${settle.events[0].changedPx}px (${settle.events.length})` : ''} ${settle.judged} judged${settle.notJudged ? `, ${settle.notJudged} not judged (no SYNC near)` : ''}${o.settleGate ? '' : ' report-only'}`] : []),

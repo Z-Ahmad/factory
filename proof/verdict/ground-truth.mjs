@@ -193,6 +193,31 @@ export function judgeHitches(gt, { holdWarn, holdFail, launchWindow, align = nul
   return { status, worstMs: events.reduce((m, e) => Math.max(m, e.durMs), 0), count: events.length, total: gt.hitches.length, events }
 }
 
+/**
+ * Whether a hold (a gap in the clip's timestamps, `{ t, gapMs }` in clip seconds / ms) is a still screen rather than a
+ * stall. simctl writes a frame only when the screen changes, so a cut to a page that then sits still for 2.5 s is a
+ * 2.5 s gap with "motion" on both sides (the cut). A real stall is one the app feels: its display link reports a frame
+ * that late. So the hold is still when the app was reporting across the whole gap (its ground-truth lines span it, aligned
+ * to the clip) and no HITCH within `tolS` of it covers at least `share` of the gap. The tolerance is wide on purpose: with
+ * one early SYNC anchor the media clock drifts from the video by over half a second ten seconds on (the kit corpus's
+ * injected 150 ms hold lands 0.6 s from its own HITCH), and a big hitch anywhere near keeps the hold. Short hitches
+ * inside it are still judged by judgeHitches. False (keep the hold) without ground truth or alignment.
+ */
+export function stillInApp(hold, gt, align, { share = 0.5, tolS = 1.5 } = {}) {
+  if (!gt?.found || !align) return false
+  const medias = [gt.clock?.media, ...gt.syncs, ...gt.hitches.map((h) => h.media), ...gt.maprects.map((m) => m.media), ...gt.sheettops.map((x) => x.media), ...gt.steps.map((x) => x.media)]
+    .filter(Number.isFinite)
+  if (!medias.length) return false
+  const start = hold.t
+  const end = hold.t + hold.gapMs / 1000
+  if (start < align(Math.min(...medias)) || end > align(Math.max(...medias))) return false
+  return !gt.hitches.some((h) => {
+    if (!Number.isFinite(h.media) || !(h.durMs >= share * hold.gapMs)) return false
+    const t = align(h.media)
+    return t >= start - tolS && t <= end + tolS
+  })
+}
+
 /** The value of a stepwise signal (`list` of { media, … } on change) at media time t: the last one at or before t. */
 export function valueAt(list, t) {
   let v = null

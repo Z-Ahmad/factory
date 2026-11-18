@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { anchorsFrom, fieldsOf, goodAnchors, judgeHitches, makeAligner, parseGroundTruth, settleWindows, wallOf } from '../proof/verdict/ground-truth.mjs'
+import { anchorsFrom, fieldsOf, goodAnchors, judgeHitches, makeAligner, parseGroundTruth, settleWindows, stillInApp, wallOf } from '../proof/verdict/ground-truth.mjs'
 
 const TOOL = fileURLToPath(new URL('../proof/verdict/proof-verdict.mjs', import.meta.url))
 const dir = mkdtempSync(join(tmpdir(), 'ground-truth-test.'))
@@ -167,4 +167,27 @@ test('settle check: a window far from any SYNC anchor is not judged', () => {
   assert.equal(v.settle.notJudged, 1)
   assert.equal(v.settle.status, 'PASS')
   assert.equal(code, 0)
+})
+
+test('stillInApp: a gap the app never felt is a still screen; one it felt, or one outside its log, is a hold', () => {
+  // The app logged from media 100 to 114; the clip runs 2 s behind its media clock (an aligner from two anchors).
+  const gt = parseGroundTruth(log([
+    [0, 'CLOCK media=100.0000 wall=' + WALL0.toFixed(3)],
+    [0.5, 'SYNC media=100.5000'],
+    [4.2, 'HITCH media=104.2000 dur=60.0 expected=16.7 frame=200 step=still page'],
+    [11, 'HITCH media=111.0000 dur=1900.0 expected=16.7 frame=300 step=stalled'],
+    [14, 'SHEETTOP media=114.0000 y=500.00'],
+  ]))
+  const align = makeAligner([{ media: 100.5, pts: 2.5 }, { media: 105, pts: 7 }])
+  // 2.5 s gap at clip 4.0-6.5 (media 102.0-104.5): only a 60 ms hitch near it, so the screen was still.
+  assert.equal(stillInApp({ t: 4.0, gapMs: 2500 }, gt, align), true)
+  // 2 s gap at clip 12.2-14.2 (media 110.2-112.2): a 1.9 s hitch covers it, so it was a stall.
+  assert.equal(stillInApp({ t: 12.2, gapMs: 2000 }, gt, align), false)
+  // The same big hitch 1 s outside a gap (alignment can drift that far) still keeps the hold: it may be this one.
+  assert.equal(stillInApp({ t: 10.0, gapMs: 2000 }, gt, align), false)
+  // A gap past the app's last line (media 114 = clip 16): no ground truth there, so it stays a hold.
+  assert.equal(stillInApp({ t: 15.5, gapMs: 1000 }, gt, align), false)
+  // No alignment or no ground truth: judged from pixels alone, as before.
+  assert.equal(stillInApp({ t: 4.0, gapMs: 2500 }, gt, null), false)
+  assert.equal(stillInApp({ t: 4.0, gapMs: 2500 }, parseGroundTruth(''), align), false)
 })
