@@ -589,6 +589,9 @@ export const SCHEMA = table({
     poll_s: int(),
     timeout_s: int(),
   }),
+  // hook-guard: build_scripts = globs of npm/pnpm/yarn/bun script names that build or test (e.g. "ios:test*"); rule 7
+  // denies them outside `factory run`. Default none: a script not listed (a status report, a lint) always passes.
+  hook: table({ build_scripts: strs() }),
   // `factory wip-save`: names or paths never copied from the worktree into the saved patch (default xcuserdata .build
   // DerivedData node_modules .DS_Store; setting it replaces the list)
   wip: table({ exclude: strs() }),

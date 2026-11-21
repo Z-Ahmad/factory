@@ -314,7 +314,8 @@ test('remoteUrl and urlIsRepo read a remote and match its GitHub slug', async ()
 });
 
 test('rule 7: a build or test outside `factory run` is denied with the command to use; inside one it passes', () => {
-  const gated = { ...cfg, slotGate: true, runCheck: () => assert.fail('Bash builds never ask run --check') };
+  const listed = guardConfig(parseToml(`${TOML}\n[hook]\nbuild_scripts = ["ios:test*", "ios:device", "ios:release"]\n`).data, '/x/factory.toml');
+  const gated = { ...cfg, slotGate: true, buildScripts: listed.buildScripts, runCheck: () => assert.fail('Bash builds never ask run --check') };
   for (const [cmd, job] of [
     ['xcodebuild -scheme App build', 'build'],
     ["cd ios && xcodebuild test -scheme App -destination 'platform=iOS Simulator,id=X'", 'test'],
@@ -347,6 +348,11 @@ test('rule 7: a build or test outside `factory run` is denied with the command t
   assert.match(evaluate(bash('factory run --job build -- git push --force origin x'), gated) ?? '', /force/i);
   for (const cmd of ['xcodebuild -list', 'xcodebuild -showBuildSettings -scheme App', 'cat build.sh', 'npm run test', 'echo "xcodebuild build"'])
     assert.equal(evaluate(bash(cmd), gated), null, cmd);
+  // a script [hook] build_scripts does not list (a read-only status report) passes; with no list, no script is a build
+  assert.equal(evaluate(bash('npm run ios:status'), gated), null);
+  assert.equal(evaluate(bash('pnpm ios:status --json'), gated), null);
+  assert.equal(evaluate(bash('npm run ios:device'), { ...gated, buildScripts: [] }), null);
+  assert.match(evaluate(bash('npm run ios:device'), gated) ?? '', /`factory run --job build -- npm run ios:device`/);
   assert.equal(evaluate(bash('xcodebuild build'), { ...gated, slotGate: false }), null);
 });
 

@@ -22,10 +22,12 @@ check in the same second, and a job's leftovers (a recording, a test runner) out
   group they left (only when it holds nothing older than the lease), and kills orphaned `simctl io … recordVideo`
   processes and kit test runs older than `[slot] orphan_minutes` (default 60). It prints what it kills.
 - **`factory run --status`** (leases, queue, gate readings), `--check --job <t>` and `--wait --job <t>`.
-- **hook-guard** now denies a raw `xcodebuild` (also via `xcrun`), `build.sh`, `test.sh` or `ios:*` script outside
-  `factory run`, naming the wrapped command to use; inside `factory run` it passes unless the job weighs 0. The
-  XcodeBuildMCP build and test tools are denied while `factory run --check --job build` says a build would wait. The
-  wrapped command is still checked by the other rules.
+- **hook-guard** now denies a raw `xcodebuild` (also via `xcrun`), `build.sh`, `test.sh`, or an npm script listed in the
+  new `[hook] build_scripts` (globs, default none) outside `factory run`, naming the wrapped command to use. A script not
+  on the list, such as a read-only status report, passes; before, every `ios:test*` script was gated without asking.
+  Projects list their build scripts, e.g. `build_scripts = ["ios:test*", "ios:native", "ios:testflight*"]`. Inside
+  `factory run` a build passes unless the job weighs 0, and the wrapped command is still checked by the other rules. The
+  XcodeBuildMCP build and test tools are denied while `factory run --check --job build` says a build would wait.
 - Proofs wait with `factory run --wait` (and skip it inside a lease, through `FK_SLOT_HELD`).
 
 ### Removed and deprecated
@@ -42,6 +44,7 @@ check in the same second, and a job's leftovers (a recording, a test runner) out
 
 - New keys: `[slot] capacity`, `[slot.weights]` (job type -> int), `max_swapouts_per_min`, `orphan_minutes`; `poll_s`
   now defaults to 5.
+- New `[hook] build_scripts` (string globs).
 - New optional `[proof.tier]` table (tier name -> matrix name, strings), which `config validate` accepts.
 
 ## v0.21.0 (2026-11-18)

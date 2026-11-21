@@ -179,6 +179,8 @@ test('[slot] capacity, [slot.weights], max_swapouts_per_min and orphan_minutes, 
   assert.deepEqual(r.errors, []);
   assert.deepEqual(r.resolved.slot.weights, { build: 3, lint: 1 });
   assert.deepEqual(r.resolved.proof.tier, { motion: 'default', visual: 'quick', logic: 'none' });
+  assert.deepEqual(load(`${validText}\n[hook]\nbuild_scripts = ["ios:test*", "ios:native"]\n`).errors, []);
+  assert.equal(load(`${validText}\n[hook]\nbuild_scripts = "ios:*"\n`).errors[0].path, 'hook.build_scripts');
   const bad = load(`${validText}\n[slot.weights]\nbuild = "two"\n\n[proof.tier]\nmotion = 1\n`);
   assert.deepEqual(bad.errors.map((e) => e.path).sort(), ['proof.tier.motion', 'slot.weights.build']);
 });

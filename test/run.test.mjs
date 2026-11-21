@@ -459,7 +459,7 @@ test('slot status / slot wait: deprecated aliases of run --status and run --wait
 });
 
 test('hook-guard asks factory run itself: an XcodeBuildMCP build is denied while a build would wait, allowed once there is room', async () => {
-  const t = project('capacity = 4');
+  const t = project('capacity = 4\n\n[hook]\nbuild_scripts = ["app:test*", "app:build"]');
   try {
     const hook = (tool, input = {}) => factory(['hook-guard'], {
       env: t.env,
@@ -478,6 +478,9 @@ test('hook-guard asks factory run itself: an XcodeBuildMCP build is denied while
     r = hook('Bash', { command: 'xcodebuild -scheme App build' });
     assert.match(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason, /must run through `factory run`/);
     assert.equal(hook('Bash', { command: 'factory run --job build -- xcodebuild -scheme App build' }).stdout, '');
+    // [hook] build_scripts from factory.toml: a listed script is a build, an unlisted read-only one passes
+    assert.match(JSON.parse(hook('Bash', { command: 'npm run app:test -- --only Foo' }).stdout).hookSpecificOutput.permissionDecisionReason, /`factory run --job test -- npm run app:test -- --only Foo`/);
+    assert.equal(hook('Bash', { command: 'npm run app:status' }).stdout, '');
     t.release('a');
     await a.done;
     r = hook('mcp__XcodeBuildMCP__build_run_sim');

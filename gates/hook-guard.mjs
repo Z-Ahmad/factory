@@ -21,7 +21,8 @@
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
 //   7. A build or test outside `factory run` (with [slot] or [proof.ios] set): Bash running xcodebuild (also through
 //      xcrun; an action that builds: -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or
-//      an npm/pnpm/yarn/bun ios:* script. The denial names the `factory run --job <type> -- <cmd>` to use instead, which
+//      an npm/pnpm/yarn/bun script named by a [hook] build_scripts glob (default none, so a read-only script such as
+//      a status report always passes). The denial names the `factory run --job <type> -- <cmd>` to use instead, which
 //      queues for a weighted lease. Inside `factory run` such a build is allowed, unless its --job weighs 0 (unit, tsc),
 //      which takes no lease. The rest of the wrapped command is checked by the other rules as usual. The XcodeBuildMCP
 //      build_* and test_* tools cannot be wrapped: they are denied while `factory run --check --job build` says a build
@@ -648,7 +649,7 @@ function checkWrites(c, redirs, ctx) {
 }
 
 /** The build this command starts: { what ("xcodebuild", "scripts/build.sh", "npm run ios:test"), job }, or null. */
-function buildOf(c) {
+function buildOf(c, ctx) {
   const xcb = (args) => (args.some((a) => XCB_QUERIES.has(a)) ? null : { what: 'xcodebuild', job: args.includes('test') || args.includes('test-without-building') ? 'test' : 'build' });
   if (c.name === 'xcodebuild') return xcb(c.args);
   if (c.name === 'xcrun' && c.args[0] === 'xcodebuild') return xcb(c.args.slice(1));
@@ -661,7 +662,8 @@ function buildOf(c) {
   if (NPM_FAMILY.has(c.name)) {
     const i = c.args[0] === 'run' || c.args[0] === 'run-script' ? 1 : 0;
     const name = c.args[i] ?? '';
-    if (/^ios:/.test(name)) return { what: `${c.name} run ${name}`, job: /^ios:test/.test(name) ? 'test' : 'build' };
+    // only the scripts the project lists as builds ([hook] build_scripts); a script named like a test is a test job
+    if (name && anyGlob(ctx.buildScripts ?? [], name)) return { what: `${c.name} run ${name}`, job: /test/i.test(name) ? 'test' : 'build' };
   }
   return null;
 }
@@ -722,7 +724,7 @@ function analyze(src, ctx, state, depth) {
         if (k !== -1 && c.args[k + 1] != null) analyze(c.args[k + 1], ctx, state, depth + 1);
       } else if (c.name === 'eval') analyze(c.args.join(' '), ctx, state, depth + 1);
     }
-    const build = buildOf(c);
+    const build = buildOf(c, ctx);
     if (build) checkBuild(c, build, ctx, state);
     if (c.name === 'git') checkGit(c, ctx);
     else if (c.name === 'gh') checkGh(c, ctx);
@@ -750,6 +752,7 @@ export function guardConfig(data, tomlPath) {
     resolveBase: ghPrBase,
     slotGate: Boolean(data.slot || data.proof?.ios),
     weights: { ...DEFAULT_WEIGHTS, ...(data.slot?.weights ?? {}) },
+    buildScripts: globs(data.hook?.build_scripts),
     runCheck: (job) => runCheck(tomlPath, job),
   };
 }
