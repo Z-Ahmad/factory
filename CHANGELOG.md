@@ -2,6 +2,51 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.22.0 (unreleased)
+
+### `factory run`: weighted leases for heavy jobs
+
+The builder slot counted what was running and let each caller poll `slot wait`; nothing stopped four agents passing the
+check in the same second, and a job's leftovers (a recording, a test runner) outlived it. `factory run` replaces it.
+
+- **`factory run --job <type> [--dd] [--sim] [--owner] [--owner-pid] [--timeout] -- <cmd…>`** takes a weighted
+  reservation out of `[slot] capacity` (default 4): build, test, release, device and archive weigh 2; proof, vite,
+  playwright, rules and install 1; unit and tsc 0 (no lease). Leases live in `<state_dir>/slot/leases.json` under
+  `/usr/bin/lockf`. The job queues first come, first served and waits inside the command, prints the minutes it waited,
+  runs in its own process group, and stops that group and frees the lease on exit, on SIGINT/SIGTERM/SIGHUP, or when
+  `--owner-pid` dies. Exit 75 when the wait passes `--timeout` / `[slot] timeout_s`.
+- **Gates** for every admission: memory pressure normal (`kern.memorystatus_vm_pressure_level` = 1), fewer than
+  `[slot] max_swapouts_per_min` (default 1000) `vm_stat` swap-outs over the last minute, free memory at least
+  `[slot] min_free_pct` (default 15), and the 1-minute load at most `[slot] max_load`. Swap in use is never a gate.
+- **Reaper** (`factory run --reap`, and at every admission): frees leases whose runner is gone and kills the process
+  group they left (only when it holds nothing older than the lease), and kills orphaned `simctl io … recordVideo`
+  processes and kit test runs older than `[slot] orphan_minutes` (default 60). It prints what it kills.
+- **`factory run --status`** (leases, queue, gate readings), `--check --job <t>` and `--wait --job <t>`.
+- **hook-guard** now denies a raw `xcodebuild` (also via `xcrun`), `build.sh`, `test.sh`, or an npm script listed in the
+  new `[hook] build_scripts` (globs, default none) outside `factory run`, naming the wrapped command to use. A script not
+  on the list, such as a read-only status report, passes; before, every `ios:test*` script was gated without asking.
+  Projects list their build scripts, e.g. `build_scripts = ["ios:test*", "ios:native", "ios:testflight*"]`. Inside
+  `factory run` a build passes unless the job weighs 0, and the wrapped command is still checked by the other rules. The
+  XcodeBuildMCP build and test tools are denied while `factory run --check --job build` says a build would wait.
+- Proofs wait with `factory run --wait` (and skip it inside a lease, through `FK_SLOT_HELD`).
+
+### Removed and deprecated
+
+- `factory slot status` and `slot wait` are deprecated aliases of `run --status` and `run --wait --job build`, each
+  printing a deprecation line; `--dd`, `--udid` and `--ignore-leftovers` are accepted and ignored.
+- `[slot] max_booted_sims` is removed and `[slot] builders` is no longer read (`capacity` replaced both).
+- `[slot] max_swap_gb` is removed: macOS keeps pages in swap long after the pressure that wrote them ends, so it held
+  builds on an idle Mac (9.9 GB in use while `memory_pressure` showed 50-66% free). `min_free_pct` now defaults to 15
+  (`0` turns it off). A `factory.toml` that still sets a removed key fails validation with a message naming the
+  replacement; delete the line.
+
+### Config
+
+- New keys: `[slot] capacity`, `[slot.weights]` (job type -> int), `max_swapouts_per_min`, `orphan_minutes`; `poll_s`
+  now defaults to 5.
+- New `[hook] build_scripts` (string globs).
+- New optional `[proof.tier]` table (tier name -> matrix name, strings), which `config validate` accepts.
+
 ## v0.21.0 (2026-11-18)
 
 ### A still page is not a flash or a hold

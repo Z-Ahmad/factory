@@ -542,6 +542,9 @@ export const SCHEMA = table({
         orientation: str(),
       }),
     },
+    // tier name -> matrix name ("none" or any string the project's rules give meaning), e.g. motion = "default":
+    // read by the orchestrator and the project's rules to pick how much proof an item needs; the kit only checks it.
+    tier: strMap(),
   }),
   // `factory stats`: where the agent transcripts live and how a night's numbers are read.
   //   transcripts   directories holding <session>.jsonl (and <session>/subagents/*.jsonl); a * may stand in a path segment
@@ -566,21 +569,29 @@ export const SCHEMA = table({
   // xcode_probe: an extra command that must print an "iOS Simulator" row, rerun only when Xcode or CoreSimulator changes;
   // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12), stopped by end-night.
   preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
-  // `factory slot`: builders = how many builds/proofs may run at once (you included, default 2); max_load = the highest
-  // 1-minute load to start at (default 2 x the CPU count; `config validate` warns above 4 x); max_swap_gb = the most swap
-  // in use, min_free_pct = the least memory free (memory_pressure's percentage), max_booted_sims = the most booted
-  // simulators, yours included (each unset: no limit); poll_s (15) and timeout_s (3600) for `slot wait`.
+  // `factory run` (and the deprecated `factory slot` aliases): capacity = the sum of job weights that may run at once
+  // (default 4); weights = job type -> weight, merged over the defaults (build/test/release/device/archive 2;
+  // proof/vite/playwright/rules/install 1; unit/tsc 0); max_load = the highest 1-minute load to admit at (default 2 x the
+  // CPU count; `config validate` warns above 4 x); min_free_pct = the least memory free (memory_pressure's percentage;
+  // default 15, 0 = off); max_swapouts_per_min = the most vm_stat swap-outs over the last minute (default 1000 pages);
+  // orphan_minutes = the age past which the reaper kills orphaned recordings and kit test runs (default 60);
+  // poll_s (5) and timeout_s (3600) for a queued run. builders is no longer read (capacity replaced it).
   slot: table({
     builders: int(),
+    capacity: int(),
+    weights: { t: 'table', values: int() },
     max_load: num(),
-    max_swap_gb: num(),
     min_free_pct: int(),
-    max_booted_sims: int(),
+    max_swapouts_per_min: int(),
+    orphan_minutes: int(),
     // after a cold boot or a build, how long a proof waits for the load to come back under max_load (default 120)
     boot_settle_s: int(),
     poll_s: int(),
     timeout_s: int(),
   }),
+  // hook-guard: build_scripts = globs of npm/pnpm/yarn/bun script names that build or test (e.g. "ios:test*"); rule 7
+  // denies them outside `factory run`. Default none: a script not listed (a status report, a lint) always passes.
+  hook: table({ build_scripts: strs() }),
   // `factory wip-save`: names or paths never copied from the worktree into the saved patch (default xcuserdata .build
   // DerivedData node_modules .DS_Store; setting it replaces the list)
   wip: table({ exclude: strs() }),
@@ -703,6 +714,15 @@ function checkNode(spec, value, path, report) {
   }
 }
 
+// Keys a release removed, with what replaced them: named in place of a bare "unknown key".
+const REMOVED = {
+  'slot.max_swap_gb':
+    'was removed: swap in use stays high long after memory pressure ends, so it held idle Macs. ' +
+    'Delete it; [slot] min_free_pct (default 15) is the memory gate',
+  'slot.max_booted_sims':
+    'was removed: `factory run` weighs jobs against [slot] capacity instead, and the reaper stops what a job leaves. Delete it',
+};
+
 function checkTableKeys(spec, value, path, report) {
   const here = path.join('.');
   if (spec.keys) {
@@ -717,8 +737,10 @@ function checkTableKeys(spec, value, path, report) {
     }
     if (!spec.values) {
       for (const k of Object.keys(value)) {
-        if (!(k in spec.keys))
-          report([...path, k].join('.'), `unknown key '${k}'${here ? ` in [${here}]` : ''}`);
+        if (!(k in spec.keys)) {
+          const name = [...path, k].join('.');
+          report(name, REMOVED[name] ? `'${k}' ${REMOVED[name]}` : `unknown key '${k}'${here ? ` in [${here}]` : ''}`);
+        }
       }
     }
   }

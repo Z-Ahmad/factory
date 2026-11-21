@@ -36,9 +36,9 @@
 # --build skips the build when the app is already a build of this tree: its stamp (app-fresh.mjs) has HEAD's commit (or
 # one with no change under [proof.ios] sources since), the same build command, and no uncommitted change under the
 # sources. --rebuild builds anyway.
-# The builder slot: `factory slot wait` before the build and again before the simulator boots, so no proof starts while
-# two others build or the Mac is short of load or memory headroom ([slot]). --no-slot skips both waits (proof-matrix and
-# proof-compare wait once per cell or run themselves and set FK_SLOT_HELD=1 for their proofs).
+# The slot: `factory run --wait` before the build and again before the simulator boots, so no proof starts while the
+# Mac's [slot] capacity is taken or its memory or load gates hold. --no-slot skips both waits, and so does running the
+# proof inside `factory run` (FK_SLOT_HELD=1; proof-matrix and proof-compare set it for their own proofs too).
 # [proof.ios] before: a command run from the project root before the app is installed and launched (e.g. the seed
 # restore), so a proof never starts on data an earlier one changed; proof-matrix runs it once and sets
 # FK_PROOF_BEFORE_DONE=1 for its cells.
@@ -169,10 +169,11 @@ command -v node >/dev/null || { echo "node not found (the verdict needs it)" >&2
 xcrun simctl list devices | grep -q "$UDID" || { echo "no simulator with UDID $UDID (xcrun simctl list devices)" >&2; exit 1; }
 
 DD="$(fk_proof_dd "$DD_ARG")"
-# slot_wait <what>: the builder-slot gate (factory slot), unless --no-slot or the caller holds the slot.
+# slot_wait <job> <what>: wait until a <job> would start (`factory run --wait`), unless --no-slot or the caller holds a
+# lease (FK_SLOT_HELD, set by `factory run`).
 slot_wait() {
   [[ "$SLOT" == 1 ]] || return 0
-  "$FK_KIT_DIR/cmd/slot" wait --dd "$DD" --udid "$UDID" || { echo "no builder slot for the $1 (factory slot; --no-slot skips the gate)" >&2; exit 1; }
+  node "$FK_KIT_DIR/cmd/run.mjs" --wait --job "$1" || { echo "no room for the $2 (factory run --wait; --no-slot skips the gate, factory run --job $1 -- … holds a lease)" >&2; exit 1; }
 }
 APP="$(fk_proof_app "$DD")"
 BUILT=0 BUILD_TPL=""
@@ -182,7 +183,7 @@ if [[ "$BUILD" == 1 ]]; then
   if [[ "$REBUILD" == 0 && "$SOURCE_ROOT" != none && -d "$APP" ]] && SKIP="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$SOURCE_ROOT" --up-to-date --build-cmd "$BUILD_TPL")"; then
     echo "$SKIP"
   else
-    slot_wait build
+    slot_wait build build
     ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
     BUILT=1
   fi
@@ -220,7 +221,7 @@ trap cleanup_frames EXIT
 VIDEO="$OUT/$SCENARIO.mp4"
 rm -f "$VIDEO"
 
-slot_wait proof
+slot_wait proof proof
 echo "installing on ${UDID}..."
 COLD=0
 if ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then COLD=1; fi

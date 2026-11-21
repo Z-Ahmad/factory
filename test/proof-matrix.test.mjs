@@ -15,6 +15,7 @@ function project() {
   mkdirSync(p('tools'));
   writeFileSync(p('tools', 'accounts.mjs'), "const SECRET = 'pw';\n");
   writeFileSync(p('factory.toml'), readFileSync(fixture('valid.toml'), 'utf8')
+    .replace('"~/example-factory"', JSON.stringify(p('state'))) // run leases and swap samples stay in the scratch dir
     .replace('fail_markers  = ["LAYOUT-LOOP"]\n', `fail_markers  = ["LAYOUT-LOOP"]\nbefore        = "echo seeded >> ${p('before.log')}"\n`));
   mkdirSync(p('dd', 'Build', 'Example.app'), { recursive: true });
   writeFileSync(p('dd', 'Build', 'Example.app', 'Example'), 'bin');
@@ -28,6 +29,7 @@ case "$*" in
   *" appearance") echo light ;;
 esac`);
   stub('ps', 'exit 0');
+  stub('vm_stat', 'exit 1');
   stub('sysctl', 'case "$2" in vm.loadavg) echo "{ 1.00 1.00 1.00 }" ;; hw.ncpu) echo 8 ;; *) exit 1 ;; esac');
   stub('ffmpeg', 'exit 0');
   stub('ffprobe', 'exit 0');

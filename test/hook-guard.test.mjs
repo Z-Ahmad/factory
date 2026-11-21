@@ -313,40 +313,62 @@ test('remoteUrl and urlIsRepo read a remote and match its GitHub slug', async ()
   assert.equal(urlIsRepo('https://github.com/o/app-two.git', 'o/app'), false);
 });
 
-test('rule 7: builds and tests wait for a free builder slot; queries, other commands and an unset [slot] pass', () => {
-  const calls = [];
-  const busy = { ...cfg, slotGate: true, slotStatus: (u) => (calls.push(u), { busy: true, line: 'slot: busy (2 other builders: dd-a (pid 1), dd-b (pid 2) ([slot] builders = 2); load 9)' }) };
-  const free = { ...busy, slotStatus: (u) => (calls.push(u), { busy: false, line: 'slot: free' }) };
-  const mcp = (name, input = {}) => ({ tool_name: `mcp__XcodeBuildMCP__${name}`, tool_input: input, cwd: main });
-  const U = '26AED99E-6F78-4D72-972C-98F25869B233';
-  for (const p of [
-    bash('xcodebuild -scheme App build'),
-    bash(`cd ios && xcodebuild test -scheme App -destination 'platform=iOS Simulator,id=${U.toLowerCase()}'`),
-    bash('./seaglass-ios/scripts/build.sh dd-x'),
-    bash('bash scripts/test.sh'),
-    bash('npm run ios:test -- --only Foo'),
-    bash('sh -c "xcodebuild -scheme App"'),
-    mcp('build_run_sim'),
-    mcp('test_sim', { extraArgs: ['-destination', `id=${U}`] }),
-    { ...mcp('build_sim'), tool_name: 'mcp__plugin_x_XcodeBuildMCP__build_sim' },
+test('rule 7: a build or test outside `factory run` is denied with the command to use; inside one it passes', () => {
+  const listed = guardConfig(parseToml(`${TOML}\n[hook]\nbuild_scripts = ["ios:test*", "ios:device", "ios:release"]\n`).data, '/x/factory.toml');
+  const gated = { ...cfg, slotGate: true, buildScripts: listed.buildScripts, runCheck: () => assert.fail('Bash builds never ask run --check') };
+  for (const [cmd, job] of [
+    ['xcodebuild -scheme App build', 'build'],
+    ["cd ios && xcodebuild test -scheme App -destination 'platform=iOS Simulator,id=X'", 'test'],
+    ['xcrun xcodebuild -scheme App archive', 'build'],
+    ['./app-ios/scripts/build.sh dd-x', 'build'],
+    ['bash scripts/test.sh', 'test'],
+    ['npm run ios:test -- --only Foo', 'test'],
+    ['npm run ios:device', 'build'],
+    ['pnpm ios:release', 'build'],
+    ['sh -c "xcodebuild -scheme App"', 'build'],
+    ['factory run --job unit -- true && xcodebuild build', 'build'],
   ]) {
-    const reason = evaluate(p, busy);
-    assert.match(reason ?? '', /builder slot is busy: slot: busy \(2 other builders.*\[slot\] builders = 2.*factory slot wait/, JSON.stringify(p));
+    const reason = evaluate(bash(cmd), gated);
+    assert.match(reason ?? '', new RegExp(`must run through \`factory run\`.*\`factory run --job ${job} -- `), cmd);
+  }
+  assert.match(evaluate(bash('npm run ios:test -- --only Foo'), gated), /`factory run --job test -- npm run ios:test -- --only Foo`/);
+  // inside `factory run` (the project's shim, a path, or bin/factory): allowed
+  for (const cmd of [
+    'factory run --job build -- xcodebuild -scheme App build',
+    'scripts/factory/factory run --job test --dd dd-x --owner me -- npm run ios:test',
+    'cd ios && ../bin/factory run --job build -- bash scripts/build.sh dd-x',
+    'factory run --job release -- sh -c "xcodebuild -scheme App archive"',
+  ]) assert.equal(evaluate(bash(cmd), gated), null, cmd);
+  // a build under a job that weighs 0 takes no lease
+  assert.match(evaluate(bash('factory run --job unit -- xcodebuild build'), gated), /takes no lease \(unit weighs 0\): use --job build/);
+  assert.equal(evaluate(bash('factory run --job unit -- npm test'), gated), null);
+  // [slot.weights] counts: a project's own job type with a weight passes
+  assert.equal(evaluate(bash('factory run --job ci -- xcodebuild build'), { ...gated, weights: { ...gated.weights, ci: 2 } }), null);
+  // the rest of the wrapped command is still checked by the other rules
+  assert.match(evaluate(bash('factory run --job build -- git push --force origin x'), gated) ?? '', /force/i);
+  for (const cmd of ['xcodebuild -list', 'xcodebuild -showBuildSettings -scheme App', 'cat build.sh', 'npm run test', 'echo "xcodebuild build"'])
+    assert.equal(evaluate(bash(cmd), gated), null, cmd);
+  // a script [hook] build_scripts does not list (a read-only status report) passes; with no list, no script is a build
+  assert.equal(evaluate(bash('npm run ios:status'), gated), null);
+  assert.equal(evaluate(bash('pnpm ios:status --json'), gated), null);
+  assert.equal(evaluate(bash('npm run ios:device'), { ...gated, buildScripts: [] }), null);
+  assert.match(evaluate(bash('npm run ios:device'), gated) ?? '', /`factory run --job build -- npm run ios:device`/);
+  assert.equal(evaluate(bash('xcodebuild build'), { ...gated, slotGate: false }), null);
+});
+
+test('rule 7: the XcodeBuildMCP build and test tools are denied while `factory run --check` says a build would wait', () => {
+  const asked = [];
+  const busy = { ...cfg, slotGate: true, runCheck: (job) => (asked.push(job), { busy: true, line: 'run: a build would wait (capacity 4/4 in use: build (a), build (b), needs 2 ([slot] capacity))' }) };
+  const free = { ...busy, runCheck: () => ({ busy: false, line: 'run: a build would start now' }) };
+  const mcp = (name, input = {}) => ({ tool_name: `mcp__XcodeBuildMCP__${name}`, tool_input: input, cwd: main });
+  for (const p of [mcp('build_run_sim'), mcp('test_sim'), { ...mcp('build_sim'), tool_name: 'mcp__plugin_x_XcodeBuildMCP__build_sim' }]) {
+    assert.match(evaluate(p, busy) ?? '', /would start a build the Mac has no room for: run: a build would wait \(capacity 4\/4.*`factory run --job (build|test) -- <xcodebuild …>`/, JSON.stringify(p));
     assert.equal(evaluate(p, free), null);
   }
-  // the simulator named in the call is the caller's own; with none, leftovers are not counted (null)
-  assert.deepEqual(calls.filter((_, i) => i % 2 === 0), [null, U, null, null, null, null, null, U, null]);
-  for (const p of [
-    bash('xcodebuild -list'),
-    bash('xcodebuild -showBuildSettings -scheme App'),
-    bash('cat build.sh'),
-    bash('npm run test'),
-    mcp('list_sims'),
-    mcp('screenshot'),
-  ]) assert.equal(evaluate(p, busy), null, JSON.stringify(p));
-  assert.equal(evaluate(bash('xcodebuild build'), { ...busy, slotGate: false }), null);
-  // `factory slot` failing to answer allows the call
-  assert.equal(evaluate(bash('xcodebuild build'), { ...busy, slotStatus: () => null }), null);
+  assert.deepEqual(asked, ['build', 'test', 'build']);
+  for (const p of [mcp('list_sims'), mcp('screenshot')]) assert.equal(evaluate(p, busy), null);
+  // a check that fails to answer allows the call
+  assert.equal(evaluate(mcp('build_sim'), { ...busy, runCheck: () => null }), null);
 });
 
 test('rule 7: the slot gate is on with [slot] or [proof.ios], off without either', () => {
