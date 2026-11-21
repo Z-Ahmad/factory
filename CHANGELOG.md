@@ -2,7 +2,16 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
-## v0.22.0 (unreleased)
+## v0.22.1
+
+### `factory run` no longer waits on the load average
+
+The 1-minute load stays high for about a minute after a job ends, so `factory run` held a build for two minutes on a
+Mac that was close to idle. Capacity, memory pressure, swap-outs and free memory are the gates; the load is still shown.
+Proofs still wait for the load to settle under `[slot] max_load` before they record, and still mark a clip
+load-unreliable above it.
+
+## v0.22.0
 
 ### The night-file loop is gone; cleanup knows today's agent worktrees
 

@@ -177,7 +177,7 @@ test('run: [slot.weights] adds job types and changes weights; an unknown type is
   }
 });
 
-test('run: the gates: pressure, swap-outs per minute, free memory and load each hold admission and name their key; swap in use never does', async () => {
+test('run: the gates: pressure, swap-outs per minute, and free memory each hold admission and name their key; swap in use and load never do', async () => {
   const t = project('capacity = 4');
   try {
     // a Mac with 10 GB of swap in use (vm.swapusage) and half its memory free: it admits
@@ -192,10 +192,11 @@ test('run: the gates: pressure, swap-outs per minute, free memory and load each 
     t.set('free', 9);
     assert.match(t.run(['--check', '--job', 'build']).stdout, /memory 9% free < 15% \(\[slot\] min_free_pct\)/);
     t.set('free', 50);
-    t.set('load', 16.5);
-    assert.match(t.run(['--check', '--job', 'build']).stdout, /load 16\.5 > 16 \(\[slot\] max_load\)/);
-    t.set('ncpu', 10);
-    assert.equal(t.run(['--check', '--job', 'build']).status, 0, 'max_load defaults to 2 x the CPU count');
+    // the load is shown but never holds: it lags a job that already ended
+    t.set('load', 40);
+    r = t.run(['--check', '--job', 'build']);
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(r.stdout, /load 40\)/);
     // swap-outs: 4000 pages since a sample a minute ago
     t.set('load', 1);
     writeFileSync(t.p('state', 'slot', 'swapouts.json'), JSON.stringify([{ t: Date.now() - 60000, n: 1000 }]));
@@ -432,7 +433,7 @@ test('run: pure helpers: etime, the swap-out rate, the gate text', () => {
   const cfg = { maxSwapouts: 1000, minFree: 15, maxLoad: 16 };
   assert.deepEqual(gates({ pressure: null, free: null, load: null, swapouts: null, swapRate: null }, cfg), { ok: true, held: [], text: 'no readings' });
   const g = gates({ pressure: 4, free: 10, load: 20, swapouts: 5, swapRate: 2000 }, cfg);
-  assert.deepEqual(g.held, ['pressure', 'max_swapouts_per_min', 'min_free_pct', 'max_load']);
+  assert.deepEqual(g.held, ['pressure', 'max_swapouts_per_min', 'min_free_pct']);
 });
 
 test('slot status / slot wait: deprecated aliases of run --status and run --wait', () => {
@@ -447,10 +448,10 @@ test('slot status / slot wait: deprecated aliases of run --status and run --wait
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /deprecated: run the job itself with factory run --job <type> -- <cmd>/);
     assert.match(r.stdout, /^run: go after 0\.0 min/);
-    t.set('load', 99);
+    t.set('pressure', 4);
     r = slot(['wait', '--timeout', '1']);
     assert.equal(r.status, 2);
-    assert.match(r.stdout, /^run: waiting \(.*load 99 > 16 \(\[slot\] max_load\)\)\n(?:.*\n)*run: gave up after 1s/);
+    assert.match(r.stdout, /^run: waiting \(.*pressure .*\)\n(?:.*\n)*run: gave up after 1s/);
     assert.equal(slot(['frob']).status, 1);
   } finally {
     t.cleanup();

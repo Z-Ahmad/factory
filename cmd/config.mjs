@@ -547,7 +547,7 @@ export const SCHEMA = table({
   preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
   // `factory run` (and the deprecated `factory slot` aliases): capacity = the sum of job weights that may run at once
   // (default 4); weights = job type -> weight, merged over the defaults (build/test/release/device/archive 2;
-  // proof/vite/playwright/rules/install 1; unit/tsc 0); max_load = the highest 1-minute load to admit at (default 2 x the
+  // proof/vite/playwright/rules/install 1; unit/tsc 0); max_load = the load a proof waits to settle under before it records (factory run never waits on load) (default 2 x the
   // CPU count; `config validate` warns above 4 x); min_free_pct = the least memory free (memory_pressure's percentage;
   // default 15, 0 = off); max_swapouts_per_min = the most vm_stat swap-outs over the last minute (default 1000 pages);
   // orphan_minutes = the age past which the reaper kills orphaned recordings and kit test runs (default 60);

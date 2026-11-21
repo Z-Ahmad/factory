@@ -17,7 +17,9 @@
 //             swap long after the pressure that wrote them ends.
 //   free      sysctl kern.memorystatus_level (memory_pressure's free percentage) at least [slot] min_free_pct (default
 //             15; 0 = off)
-//   load      the 1-minute load at most [slot] max_load (default 2 x the CPU count)
+//   load      shown, never a gate: the 1-minute average stays high for a minute after a job ends, so it held
+//             builds on an idle Mac. Capacity and memory are the gates; proofs still wait for the load to settle
+//             ([slot] max_load) before they record.
 // A reading the system does not give (off macOS) holds nothing. Once admitted it prints how many minutes it waited, runs
 // the command in its own process group, and frees the lease when it exits, after stopping whatever the command left
 // running in that group. SIGINT, SIGTERM or SIGHUP, or the death of --owner-pid (or a numeric --owner), stop the whole
@@ -164,11 +166,7 @@ export function gates(r, cfg) {
     parts.push(`memory ${r.free}% free${ok ? '' : ` < ${cfg.minFree}% ([slot] min_free_pct)`}`);
     if (!ok) held.push('min_free_pct');
   }
-  if (r.load != null) {
-    const ok = r.load <= cfg.maxLoad;
-    parts.push(`load ${r.load}${ok ? '' : ` > ${cfg.maxLoad} ([slot] max_load)`}`);
-    if (!ok) held.push('max_load');
-  }
+  if (r.load != null) parts.push(`load ${r.load}`);
   return { ok: held.length === 0, held, text: parts.join('; ') || 'no readings' };
 }
 
