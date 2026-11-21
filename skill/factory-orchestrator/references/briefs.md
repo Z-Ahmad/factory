@@ -13,7 +13,7 @@ Worker rules:
   other simulator call too. Never set shared tool defaults. Never touch the human's device.
 - Scratch goes in `mktemp -d` and is deleted when you're done: frame strips, profiler traces (they run to GBs), build
   copies. No loose /tmp/<name> folders. Delete any simulator you create.
-- Before any xcodebuild or proof: `factory slot wait --dd {dd}` (the builder-slot gate; two builders at most).
+- Every xcodebuild, test run or proof goes through `factory run --job <build|test|proof> --dd {dd} -- <cmd>` (a weighted lease; it waits inside, never poll).
 - Never start or stop the shared dev stack. If you need your own server, run it on a separate port and kill only the
   processes you started (`factory read-api up|down` when the project has one).
 - Never edit the files factory.toml lists under [never_touch], never run its never_run_in_worktree scripts here, and
@@ -66,7 +66,7 @@ Run:
   factory proof-matrix --scenario {scenario} --matrix {matrix} --out {shots_dir}/{id}-{label} [--build --dd {dd}] [{flags}]
   and/or factory proof {scenario} --out {shots_dir}/{id}-{label} --udid {udid} [{flags}]
 Which matrix: the rules file's table. A FAIL (exit 4) is a result, not an error: report it, don't rerun until it passes.
-Before every build or proof: factory slot wait --dd {dd} --udid {udid} (blocks while too much else runs; report its lines).
+Run every build or proof as factory run --job <build|proof> --dd {dd} --sim {udid} -- <cmd> (it queues while too much else runs; report its lines).
 A hold FAIL with a high load in verdict.json: factory proof-compare --scenario {scenario} --base {base_ref} --udid {udid}
   --out {shots_dir}/{id}-compare, and report its COMPARE line. iPad and landscape items: add --orientation landscape, or use
   a matrix whose cells set orientation.

@@ -55,20 +55,6 @@ fk_max_load() {
   if [[ -n "$n" ]]; then echo $((n * 2)); fi
 }
 
-# fk_swap_used_gb: swap in use in GB, one decimal ("9.4"), from `sysctl vm.swapusage`; nothing off macOS.
-fk_swap_used_gb() {
-  { sysctl -n vm.swapusage 2>/dev/null || true; } | awk '{ for (i = 1; i < NF; i++) if ($i == "used") { v = $(i + 2); u = substr(v, length(v)); v += 0
-    if (u == "G") v *= 1024; else if (u == "K") v /= 1024; printf "%.1f", v / 1024; exit } }'
-}
-
-# fk_mem_free_pct: the "System-wide memory free percentage" memory_pressure reports (sysctl kern.memorystatus_level),
-# a whole number; nothing off macOS.
-fk_mem_free_pct() {
-  local p
-  if p="$(sysctl -n kern.memorystatus_level 2>/dev/null)" && [[ "$p" =~ ^[0-9]+$ ]]; then echo "$p"; fi
-  return 0
-}
-
 # fk_human <kilobytes>:1536 -> 2M, 3145728 -> 3.0G
 fk_human() {
   awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1fG", k/1048576; else if (k >= 1024) printf "%.0fM", k/1024; else printf "%dK", k }'

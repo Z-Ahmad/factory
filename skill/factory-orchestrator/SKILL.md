@@ -241,7 +241,7 @@ hook; show the human the diff or the command and ask.
 | every firing | `factory preflight` · `factory dev-status` (review) · `factory disk-guard` |
 | worktrees | `factory worktree <name> [--base <ref>]` |
 | proofs | `factory proof` · `proof-matrix` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` · `proof-calibrate` |
-| builds, stopped agents | `factory slot wait --dd <name>` before every build or proof (`factory proof` and `proof-matrix` wait themselves; hook-guard denies a build while busy) · `factory sims idle --shutdown` · `proof-matrix --rerun-failed <prev out>` re-runs only the failed cells · `factory wip-save <worktree> --base <ref> --out <patch>` |
+| builds, stopped agents | `factory run --job <type> -- <cmd>` for every build, test or proof (it queues for a weighted lease and waits inside; hook-guard denies a raw build; `factory run --status` shows leases and gates) · `factory sims idle --shutdown` · `proof-matrix --rerun-failed <prev out>` re-runs only the failed cells · `factory wip-save <worktree> --base <ref> --out <patch>` |
 | a second API | `factory read-api up` / `down` (stops only its own process) |
 | bookkeeping | `factory tick` · `factory night-new` · `factory night-lint` · `factory end-night` · `factory stats` |
 | upkeep | `factory cleanup [--only <category>] [--apply]` |
