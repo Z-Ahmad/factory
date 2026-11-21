@@ -88,17 +88,16 @@ test('sims idle: off macOS it is skipped; bad arguments exit 1', () => {
   }
 });
 
-test('tick shuts idle simulators down once [sim] idle_minutes is set, and not before', () => {
+test('doctor shuts idle simulators down once [sim] idle_minutes is set, and not before', () => {
   const t = project('idle_minutes = 20');
   try {
     t.procs();
-    writeFileSync(t.p('state', 'night-9.md'), '# night 9\n\n- [ ] lifetime-globe.\n\n## Log\n');
-    const tick = factory(['tick', '--night', '9', '--item', 'lifetime-globe', '--sha', 'abc1234', '--log', 'done'], {
+    const tick = factory(['doctor'], {
       env: { ...t.env, FK_UNAME: 'Darwin', FK_NOW_HHMM: '01:00' },
       cwd: t.main,
     });
     assert.equal(tick.status, 0, tick.stderr);
-    assert.match(tick.stdout, /^sims: 3 booted, 0 in use; 3 idle shut down: Shooter Phone, box-factory-1, box-test-kit$/m);
+    assert.match(tick.stdout, /; sims: 3 booted, 0 in use; 3 idle shut down: Shooter Phone, box-factory-1, box-test-kit; dev skipped/);
     assert.equal(t.xcrunCalls().filter((c) => c.startsWith('simctl shutdown')).length, 3);
   } finally {
     t.cleanup();
@@ -106,13 +105,13 @@ test('tick shuts idle simulators down once [sim] idle_minutes is set, and not be
   const off = project();
   try {
     off.procs();
-    writeFileSync(off.p('state', 'night-9.md'), '# night 9\n\n- [ ] lifetime-globe.\n\n## Log\n');
-    const tick = factory(['tick', '--night', '9', '--item', 'lifetime-globe', '--sha', 'abc1234', '--log', 'done'], {
+    const tick = factory(['doctor'], {
       env: { ...off.env, FK_UNAME: 'Darwin', FK_NOW_HHMM: '01:00' },
       cwd: off.main,
     });
     assert.equal(tick.status, 0, tick.stderr);
     assert.doesNotMatch(tick.stdout, /sims:/);
+    assert.match(tick.stdout, /^factory-doctor: ok/);
     assert.deepEqual(off.xcrunCalls(), []);
   } finally {
     off.cleanup();

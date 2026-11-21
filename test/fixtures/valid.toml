@@ -7,10 +7,7 @@ ref  = "v0.1.0"
 name          = "example-app"
 main_checkout = "/tmp/example"
 state_dir     = "~/example-factory"                # ~ expands to the home directory
-night_file    = "{state_dir}/night-{n}.md"         # {state_dir} is filled in; {n} is left for the command
 shots_dir     = "{state_dir}/night-{n}/shots"
-item_line     = "- [ ] {id}."
-log_line      = "{hhmm} · {id} · {sha} · {note}"
 
 [git]
 worktrees_dir       = ".worktrees"
@@ -125,6 +122,5 @@ args        = ["--verdict-arg", "--launch-search"]
 wipe = ["{dd_root}/dd-device"]
 
 [loop]
-item_ids = "any"
 models = { implement = "sonnet", ideate = "opus", banned = ["haiku"] }
 rounds = 1

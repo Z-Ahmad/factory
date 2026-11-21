@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# desc: the dev stack: up | status | restart | read-api (start, check, restart it; a second API instance)
+# usage: factory dev up [--no-seed] [dir] | status | restart [--no-seed] [--dry-run] | read-api up|down
+#   up        start [dev] up detached if its ports are down, wait for them, restore the seed (lib/dev/up)
+#   status    one line per port: up, down or hung; exit 1 when a wait port is not up (lib/dev/status)
+#   restart   stop what listens on the ports, then up; the orchestrator's (lib/dev/restart)
+#   read-api  serve a second API instance on its own port (up) or stop it (down) (lib/dev/read-api)
+# The old names (dev-up, dev-status, dev-restart, read-api) still work and print a deprecation line.
+set -euo pipefail
+SUB="${1:-}"
+case "$SUB" in
+  up|status|restart|read-api) shift; exec "${FK_KIT_DIR:?run this through bin/factory}/lib/dev/$SUB" "$@" ;;
+  *) echo "usage: factory dev up|status|restart|read-api [args]" >&2; exit 1 ;;
+esac

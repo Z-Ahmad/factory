@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # desc: start the dev stack detached if its ports are down, wait for them, then restore the seed
-# usage: factory dev-up [--no-seed] [dir]
+# usage: factory dev up [--no-seed] [dir]
 # Starts [dev] up (e.g. "npm run dev") DETACHED in its own process session, so it outlives the
 # session that launched it, in [dev] cwd (a path relative to [project] main_checkout, or absolute;
 # the optional dir argument overrides it). Output is appended to [dev] log. Then waits up to
@@ -9,7 +9,7 @@
 # from the seed restore.
 # Exit 0 when the stack is up (and the seed restored), 1 on a bad argument, missing config or
 # missing directory, 2 when the ports did not come up in time, 3 when the seed restore failed,
-# 6 when a port is up but hung ([dev] probe = "http"): the orchestrator runs `factory dev-restart`.
+# 6 when a port is up but hung ([dev] probe = "http"): the orchestrator runs `factory dev restart`.
 # FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -36,7 +36,7 @@ hung_ports() { local p; for p in "${PORTS[@]}"; do [[ "$(fk_port_state "$p")" ==
 if stack_up; then
   HUNG="$(hung_ports)"
   if [[ -n "$HUNG" ]]; then
-    echo "factory-dev-up: port(s) ${HUNG% } accept connections but never answer (hung); run \`factory dev-restart\`" >&2
+    echo "factory-dev-up: port(s) ${HUNG% } accept connections but never answer (hung); run \`factory dev restart\`" >&2
     exit 6
   fi
   echo "factory-dev-up: ports already up ($PORTS_TXT); nothing to start"

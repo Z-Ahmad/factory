@@ -42,7 +42,7 @@ echo "VERDICT: $v"
 echo "{\\"verdict\\":\\"$v\\",\\"hold\\":{\\"worstMs\\":10},\\"flash\\":{\\"worstScore\\":0.1},\\"bounce\\":{\\"worstScore\\":0},\\"layoutLoop\\":{\\"count\\":0}}" > "$out/verdict.json"
 `);
   chmodSync(p('core.sh'), 0o755);
-  const run = (args, env = {}) => factory(['proof-matrix', '--scenario', 'scrub', '--dd', p('dd'), ...args], {
+  const run = (args, env = {}, cmd = 'proof-matrix') => factory([cmd, '--scenario', 'scrub', '--dd', p('dd'), ...args], {
     cwd: dir,
     env: { FACTORY_TOML: p('factory.toml'), FK_UNAME: 'Darwin', PATH: `${p('bin')}:${process.env.PATH}`, FK_PROOF_CORE: p('core.sh'), ...env },
   });
@@ -98,6 +98,24 @@ test('proof-matrix --rerun-failed: PASS cells are kept from the previous run, th
     assert.ok(!t.lines('xcrun.log').some((l) => /simctl (boot|shutdown)/.test(l)), t.lines('xcrun.log').join('\n'));
     assert.deepEqual(t.lines('before.log').filter(Boolean), []);
     assert.deepEqual(t.lines('core.log').filter(Boolean), []);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('proof --cells <matrix> is the matrix run; a --cells value that is no matrix name is the old cell list; proof-matrix is an alias', () => {
+  const t = project();
+  try {
+    const named = t.run(['--cells', 'first-launch', '--plan'], {}, 'proof');
+    assert.equal(named.status, 0, named.stdout + named.stderr);
+    assert.match(named.stdout, /matrix first-launch/);
+    assert.ok(!named.stderr.includes('is now'), 'proof itself prints no deprecation');
+    const list = t.run(['--cells', 'light,dark', '--out', t.p('out')], {}, 'proof');
+    assert.equal(list.status, 0, list.stdout + list.stderr);
+    assert.match(list.stdout, /^MATRIX: PASS \(2\/2 cells/m);
+    const alias = t.run(['--plan'], {}, 'proof-matrix');
+    assert.equal(alias.status, 0, alias.stdout + alias.stderr);
+    assert.match(alias.stderr, /'proof-matrix' is now 'factory proof --cells <matrix>'/);
   } finally {
     t.cleanup();
   }

@@ -39,7 +39,6 @@ ref  = "v0.0.0"
 name          = "fixture"
 main_checkout = "${dir}"
 state_dir     = "${p('state')}"
-night_file    = "{state_dir}/night-{n}.md"
 
 [git]
 worktrees_dir   = ".worktrees"

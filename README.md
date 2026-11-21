@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.20, early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, bookkeeping (`tick`, `end-night`, `night-lint`), machine upkeep (`cleanup`, `disk-guard`, `dev-up`, `dev-status`, `read-api`, `worktree`, `preflight`), and video proofs (`proof`, `proof-matrix`, `proof-verdict`, `proof-calibrate`, `clip-frames`; iOS Simulator today). A safety hook (`hook-guard`), per-night statistics (`stats`), and the orchestrator itself: a Claude Code skill (`install-skill`) and a night-file template (`night-new`).
+> **Status: v0.22 (unreleased), early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, machine upkeep (`doctor`, `cleanup`, `restack`, `dev`, `worktree`, `sims`, `slot`), video proofs (`proof`, `proof-compare`, `proof-verdict`, `clip-frames`; iOS Simulator today), a safety hook (`hook-guard`), and the orchestrator itself: a Claude Code skill (`install-skill`).
 
 ## Why it exists
 
@@ -32,37 +32,30 @@ Three roles:
 | Orchestrator | one strong agent session | Takes one item per loop firing, briefs workers, reviews proofs, commits, keeps the log |
 | Workers | cheaper agents, one per item | Write the code in an isolated git worktree and record the proof; they never commit |
 
-Two files:
-
-- **`factory.toml`**, committed in your repo. It holds every value a script would otherwise hard-code: ports, paths, branch names, simulator ids, files no agent may touch.
-- **A night file** outside the repo (e.g. `~/example-factory/night-12.md`). It holds the backlog and the log, nothing else.
+One file: **`factory.toml`**, committed in your repo. It holds every value a script would otherwise hard-code: ports, paths, branch names, simulator ids, files no agent may touch. The backlog lives where your tracker keeps it (Linear, GitHub issues); the orchestrator keeps its own notes outside the repo.
 
 ## Walkthrough: one night
 
-A made-up app, `example-app`, through one night. Every command shown is in the kit.
+A made-up app, `example-app`, through one night.
 
-**1. The backlog.** Before the first firing, you write and order it:
+**1. The backlog.** Before the first firing, you write and order it in your tracker:
 
-```markdown
-## Backlog
-- [ ] P1. Splash flashes white on a cold launch in dark mode
-- [ ] C.  Photo viewer: a finger should end the slideshow
-- [ ] H.  [needs-user] Pick the onboarding copy
-
-## Log
+```
+splash-flash     Splash flashes white on a cold launch in dark mode
+photo-slideshow  Photo viewer: a finger should end the slideshow
+onboarding-copy  [needs-user] Pick the onboarding copy
 ```
 
 **2. Each firing does one item.**
 
 | Step | Who | What |
 |---|---|---|
-| Preflight | orchestrator | Check free disk, check the dev server is up, update the worktree, reset the test data: `factory preflight` |
+| Doctor | orchestrator | Check free disk, the dev stack and its worktree, reset the test data: `factory doctor` |
 | Ideate (taste items only) | strong model | 2–3 options with side-by-side screenshots. You pick one before anything is built |
 | Implement | worker | Changes the code in the night's worktree; reports back in ≤150 words |
-| Prove | worker | Records the change running in the app with a self-driving test scenario (no manual taps): `factory proof <scenario>` or `factory proof-matrix` |
+| Prove | worker | Records the change running in the app with a self-driving test scenario (no manual taps): `factory proof <scenario>` or `factory proof --cells <matrix>` |
 | Review | orchestrator | Reads the verdict first, then looks at the flagged frames. At most one round of fixes |
-| Ship | orchestrator | Runs your project's pre-commit checks, commits, pushes to the night's branch |
-| Log | orchestrator | `factory tick --night 12 --item P1 --sha 3f2a91c --pr 41 --log "…"` |
+| Ship | orchestrator | Runs your project's pre-commit checks, commits, pushes the item's branch and opens its PR |
 
 **3. Proofs end in a verdict.** The worker's recording is scored by a script, which prints one line and writes the evidence:
 
@@ -89,15 +82,7 @@ A **matrix** runs the same scenario where defects usually hide: light and dark t
 MATRIX: FAIL (2/3 cells)
 ```
 
-**4. The log.** `factory tick` checks the item off in the night file and in the pull request's checklist, then appends one line:
-
-```
-02:14 · P1 · 3f2a91c · splash waits for the first painted frame; matrix 4/4 PASS; check warm-launch timing on a device
-```
-
-A stuck item is marked `--blocked "<why>"` and the loop moves on.
-
-**5. Morning.** The night ends by sweeping scratch files and temporary simulators and checking that no secret was blanked. It then writes a summary: what shipped, what's blocked, what to test on a real device (`factory end-night`). You review one draft pull request whose checklist matches the night file.
+**4. Morning.** `factory cleanup` takes back the night's disk (proof videos, merged agent worktrees, build caches), and `factory restack` retargets any PR whose parent was merged. You review the PRs and the proofs' verdict lines.
 
 ## Getting started
 
@@ -113,10 +98,7 @@ ref  = "v0.8.0"
 [project]
 name          = "example-app"
 main_checkout = "~/code/example-app"
-state_dir     = "~/example-factory"            # night files, screenshots, logs: kept out of the repo
-night_file    = "{state_dir}/night-{n}.md"
-item_line     = "- [ ] {id}."
-log_line      = "{hhmm} · {id} · {sha} · {note}"
+state_dir     = "~/example-factory"            # screenshots, logs: kept out of the repo
 
 [git]
 github          = "you/example-app"
@@ -155,16 +137,15 @@ scripts/factory help
 
 To work on the kit itself, point the launcher at your checkout: `FACTORY_KIT_DIR=~/path/to/factory scripts/factory …`.
 
-**4. Run a night.** Install the orchestrator skill once, write down your project's own rules, and start a night file:
+**4. Run a night.** Install the orchestrator skill once and write down your project's own rules:
 
 ```
 scripts/factory install-skill          # links skill/factory-orchestrator into ~/.claude/skills
-scripts/factory night-new 1 --theme "first run"
 ```
 
 - **Your rules file.** Put the rules no script can check in a short file and name it in `factory.toml` (`[loop] rules = "docs/factory-rules.md"`): your hard quality bar, the guardrails every worker brief should carry, the decisions that are settled.
-- **Your backlog.** Fill the night file's Backlog.
-- **Start the loop.** In Claude Code, run `/loop` with a one-line prompt that points at the night file, e.g. `/loop Run the factory night in ~/example-factory/night-1.md`. The skill takes it from there: one item per firing, proofs with verdicts, and a log you read in the morning.
+- **Your backlog.** Put the items in your tracker.
+- **Start the loop.** In Claude Code, run `/loop` with a one-line prompt that names the backlog. The skill takes it from there: one item per firing, proofs with verdicts, and PRs you read in the morning.
 
 ## Commands
 
@@ -173,31 +154,21 @@ scripts/factory night-new 1 --theme "first run"
 | `factory config validate` | ✓ | Checks `factory.toml`: required keys, types, typos, placeholders |
 | `factory config get <key>` | ✓ | Prints one value, e.g. `factory config get git.github` |
 | `factory config env --sh` | ✓ | Prints every value as `FK_*` shell exports |
-| `factory tick` | ✓ | Checks off a backlog item in the night file and the PR checklist, and appends a log line. `--blocked "why"`, `--dry-run`, `--pr N` |
-| `factory cleanup` | ✓ | Lists what can be freed: **stale derived data** (build folders nobody has written to for `[disk] dd_stale_hours`, in `dd_root` and `dd_roots_extra`), old proof frames, **proof videos (`clips`)**, stale build folders, temp files (in `/tmp` and in `$TMPDIR`), extra archives, throwaway simulators, merged agent worktrees. Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>`, `--night N` (limits `clips` to one night). See [`[disk]` and `[sim]`: what end-night frees](#disk-and-sim-what-end-night-frees) |
-| `factory disk-guard` | ✓ | Prints free disk space. Below `[disk] min_gb` it runs `cleanup --apply` on the `[disk] low_cleanup` categories (default frames, temp files, simulators, stale derived data). Exits 2 if space is still below `floor_gb`, so the loop stops |
-| `factory dev-up` | ✓ | Starts the dev stack (`[dev] up`) in the background if its ports are down, then resets the test data. Does nothing when it's already up |
-| `factory dev-restart` | ✓ | Stops the dev stack (TERM to each listener's process group on `[dev] all_ports`, KILL after `stop_s`) and runs `dev-up` again. For a wedged emulator. Only the main session may run it: hook-guard denies it from a subagent unless `[dev] restart_by = "anyone"`. `--dry-run`, `--no-seed` |
-| `factory dev-status` | ✓ | One line per dev port: up, down, or (with `[dev] probe = "http"`) hung, a port that accepts connections but never answers. Exit 1 if a required port is down or hung |
-| `factory read-api up\|down` | ✓ | Runs a second API server on its own port (`[dev] read_api`) and stops only the one it started |
+| `factory cleanup` | ✓ | Lists what can be freed: **stale derived data** (build folders nobody has written to for `[disk] dd_stale_hours`, in `dd_root` and `dd_roots_extra`), old proof frames, **proof videos (`clips`)**, temp files (in `/tmp` and in `$TMPDIR`), extra archives, throwaway simulators, and **merged agent worktrees** (any worktree on a `[git] agent_branches` glob whose PR merged, or whose branch is in a target; never a locked, dirty, protected or just-touched one; unpushed commits older than 7 days are flagged, not removed). Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>`, `--night N` (limits `clips` to one night), `--if-below <GB> [--floor <GB>]` (sweep only when free disk is under that: what `disk-guard` did). See [`[disk]` and `[sim]`: what cleanup frees](#disk-and-sim-what-cleanup-frees) |
+| `factory restack` | ✓ | For each open PR whose base branch was merged or deleted: `gh pr edit --base <target>`, then in a temporary worktree merge `origin/<target>` into its head, show the diff stat and push with a plain `git push` (never forced). A PR in a GitHub stack (`gh stack`) is skipped: GitHub restacks it. Dry run by default; `--apply` acts; `--target <branch>`, `--pr <n>` |
+| `factory dev up\|status\|restart\|read-api` | ✓ | The dev stack. `up` starts `[dev] up` in the background if its ports are down, then resets the test data (nothing to do when it is up). `status`: one line per dev port, up, down, or (with `[dev] probe = "http"`) hung, a port that accepts connections but never answers; exit 1 if a required port is down or hung. `restart` stops it (TERM to each listener's process group on `[dev] all_ports`, KILL after `stop_s`) and runs `up` again, for a wedged emulator; only the main session may run it: hook-guard denies it from a subagent unless `[dev] restart_by = "anyone"`; `--dry-run`, `--no-seed`. `read-api up\|down` runs a second API server on its own port (`[dev] read_api`) and stops only the one it started. The old names (`dev-up`, `dev-status`, `dev-restart`, `read-api`) still work and print a deprecation line |
 | `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent. Shares installed dependencies and caches from the main checkout through symlinks, but makes npm workspace links and derived build outputs match the worktree's own branch, so a worker never borrows the main checkout's. See [`[worktree]`](#worktree-sharing-from-the-main-checkout) |
-| `factory preflight` | ✓ | Start of every firing: prune stale derived data (`[disk] dd_auto`), disk-guard, a **git check** (exit 5 when a checkout is no longer a working tree, e.g. `core.bare = true` set by a stray `git init`), an **Xcode check** (exit 4 when Xcode can't build for the simulator), **keep-awake** (one night-long `caffeinate`), then dev-up, then a test-data reset. One summary line; it names the step that failed. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
-| `factory end-night --night N` | ✓ | End of the night. Dry run by default; `--apply` deletes the night's proof videos, sweeps scratch files and temporary simulators, stops preflight's `caffeinate`, and **erases** a simulator whose data has bloated (`[sim] shooter_udid`, `erase_at_end_night`). It checks that no required secret is blank, that every worktree is clean and that the night file lints without errors (exit 3 if not), then appends a final line to the log |
-| `factory night-lint [--night N \| --file <path>]` | ✓ | Checks a night file against the shape `night-new` writes and `tick` appends to: title, header bullets, the four sections in order, backlog lines per `[project] item_line`, log lines per `log_line`. Read-only, never rewrites. Errors exit 1; warnings print and exit 0. `tick` runs it after every write; `end-night` runs it and fails on errors. See [`night-lint`](#night-lint-what-it-checks) |
-| `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify` (pushes to `never_push` only toward the `[git] github` repository when it is set), `gh pr merge` (or, with `allow_merge`, merges into a `[loop] never_merge_into` base, again only in the `[git] github` repository when it is set), starting or killing the dev stack outside `factory dev-up` / `dev-restart` (the latter only from the main session), and a build or test outside `factory run`. Silent when allowed (~45 ms), and it fails open on its own errors |
-| `factory stats [--night N]` | ✓ | Per-night statistics from the agent session transcripts plus GitHub, for charts: wall and active time, subagents by model, tool calls and tool time, estimated model hours, tokens (and cost for models you give prices), PR lines by area, builds, items shipped and blocked, questions asked. Nights are time windows you list in a JSON file; every event is assigned by its own timestamp. Writes `nights-stats.json` and `.csv`, prints a table. Read-only |
-| `factory night-new <N> [--from <prev>] [--theme "…"]` | ✓ | Starts the next night file from the template, carrying over the previous night's open and blocked items, "With the user" and "Needs the phone". Never overwrites |
+| `factory doctor` | ✓ | Start of every firing: prune stale derived data (`[disk] dd_auto`); **disk** (`cleanup --apply --if-below [disk] min_gb --floor floor_gb`: exit 2 when space is still under the floor); a **git check** (exit 5 when a checkout is no longer a working tree, e.g. `core.bare = true` set by a stray `git init`); an **Xcode check** (exit 4 when Xcode can't build for the simulator); **keep-awake** (one night-long `caffeinate`); the **dev-stack worktree** (`[dev] cwd`) is flagged when its branch is gone on origin or it is behind its target, and a tool the dev command needs but `node_modules/.bin` and PATH lack fails with exit 7 while the stack is down (it would never come up); then `dev up`, then a test-data reset. One summary line; it names the step that failed. `preflight` still works as an alias. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
+| `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify` (pushes to `never_push` only toward the `[git] github` repository when it is set), `gh pr merge` (or, with `allow_merge`, merges into a `[loop] never_merge_into` base, again only in the `[git] github` repository when it is set), and starting or killing the dev stack outside `factory dev up` / `dev restart` (the latter only from the main session). Silent when allowed (~45 ms), and it fails open on its own errors |
 | `factory install-skill` | ✓ | Links the `factory-orchestrator` skill into `~/.claude/skills`, so Claude Code loads the loop. `--dry-run`, `--uninstall` |
 | `factory help` | ✓ | Lists the commands |
-| `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only). `--orientation landscape` turns the simulator first and back after (see [orientation](#proof-orientation-the-slot-and-same-load-compares)); `verdict.json` records the load at the start and end of the clip |
-| `factory proof-matrix --scenario <s>` | ✓ | Runs one scenario across the cells in `[proof.cell.*]` (themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails |
+| `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only). `--orientation landscape` turns the simulator first and back after (see [orientation](#proof-orientation-builder-slots-and-same-load-compares)); `verdict.json` records the load at the start and end of the clip |
+| `factory proof --cells <matrix> --scenario <s>` | ✓ | Runs one scenario across the cells of `[proof.matrix.<matrix>]` (cells in `[proof.cell.*]`: themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails. A `--cells` value that names no matrix is the old `--cells a,b` (only those cells of the default matrix); `proof-matrix` still works as an alias |
 | `factory proof-compare --scenario <s> --base <ref>` | ✓ | Base and patch side by side at the same load: builds the base once in its own worktree, alternates base and patch runs on one simulator, writes `compare.md` and a `COMPARE` line with median holds and loads. `--base-dd` for a prebuilt base, `--slot` to gate each run |
 | `factory run --job <type> -- <cmd…>` | ✓ | Runs a heavy job (a build, a test run, a proof, a vite build, an emulator suite) under a **weighted reservation**: queued first come, first served, admitted when its weight fits `[slot] capacity` and the memory and load gates hold, so the Mac is never oversubscribed and the caller never polls. Runs the command in its own process group, stops that group on exit, on a signal or when `--owner-pid` dies, and frees the lease. `--status`, `--reap`, `--check`. See [`factory run`](#factory-run-weighted-leases-for-heavy-jobs) |
 | `factory slot status\|wait` | ✓ | Deprecated aliases: `slot status` is `run --status`, `slot wait` is `run --wait --job build` (blocks until a build would start, without a lease). Each prints a deprecation line |
-| `factory sims idle [--shutdown]` | ✓ | Lists the booted simulators nothing uses (no running process names the UDID, no app launched and no boot within `[sim] idle_minutes`); `--shutdown` shuts them down (never erases or deletes). tick, preflight and `end-night --apply` run it when `[sim] idle_minutes` is set |
-| `factory wip-save <worktree> --base <ref> --out <patch>` | ✓ | Saves a stopped agent's uncommitted work as a `git diff --binary` patch (modes, binaries, deletions) without running git in its worktree: exports `<base>` (plus `--on <patch>`) to a scratch repo, copies the worktree's files over, and checks the patch applies |
+| `factory sims idle [--shutdown]` | ✓ | Lists the booted simulators nothing uses (no running process names the UDID, no app launched and no boot within `[sim] idle_minutes`); `--shutdown` shuts them down (never erases or deletes). `doctor` runs it when `[sim] idle_minutes` is set |
 | `factory proof-verdict <clip.mp4>` | ✓ | Scores any recording for flash, hold, bounce and the app's fail markers. No simulator needed |
-| `factory proof-calibrate <manifest.json>` | ✓ | Runs the verdict over your own labelled clips ("this one must fail") and prints a confusion table, so threshold changes are checked against real defects |
 | `factory clip-frames <clip.mp4> …` | ✓ | Grabs frames or contact sheets from a simulator recording without seeking (seeking those files returns stale frames) |
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the main git checkout, so it works from any worktree. Use `FACTORY_TOML=<path>` to name one explicitly.
@@ -209,8 +180,8 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | Section | Required | Holds |
 |---|---|---|
 | `[kit]` | yes | `repo` and `ref`: which kit version this project uses |
-| `[project]` | yes | Name, main checkout path, state directory, night-file path and line formats |
-| `[git]` | yes | Worktree location and branch naming; `github = "owner/repo"` for PR checklists |
+| `[project]` | yes | Name, main checkout path, state directory, proof shots folder |
+| `[git]` | yes | Worktree location and branch naming; `github = "owner/repo"` for `gh -R`; `agent_branches` (a glob or a list of globs) for the branches `cleanup` clears once merged |
 | `[[targets]]` | yes | Branches work can land on, and which paths go where |
 | `[worktree]` | no | What each worktree shares from the main checkout instead of rebuilding: cache folders, `node_modules`, build outputs, public env files |
 | `[never_touch]` | no | Files no agent may edit, and scripts never to run inside a worktree |
@@ -218,26 +189,25 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[seed]` | no | Commands to snapshot and restore test data |
 | `[disk]` | no | Free-space thresholds, and what cleanup may delete: caches, frames, **proof videos (`clips`)**, scratch in `/tmp` and `$TMPDIR` |
 | `[preflight]` | no | The Xcode check (on for iOS projects) and the night-long keep-awake `caffeinate`. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
-| `[sim]` | no | Simulator ids and names: the one proofs run on, protected ones, throwaway patterns, and which ones end-night **erases** when they bloat |
+| `[sim]` | no | Simulator ids and names: the one proofs run on, protected ones, throwaway patterns, and the throwaway patterns `cleanup` deletes |
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
-| `[stats]` | no | Where the session transcripts are, the nights (windows) file, the output folder, code areas, an optional price table |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
-| `[slot]`, `[wip]` | no | `factory run`'s capacity, job weights and gates; what `wip-save` never copies |
-| `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch); `item_ids = "slug"` (default) makes `tick` refuse item IDs that aren't plain-English slugs (`lifetime-globe`, not `G3`), `"any"` turns it off |
+| `[slot]` | no | `factory run`'s capacity, job weights and gates |
+| `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch) |
 
-`{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{id}` (item) are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
+`{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{name}` are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
 
 ### `[preflight]`: Xcode and keep-awake
 
 | Key | Default | What it does |
 |---|---|---|
-| `[preflight] xcode` | on when `[proof.ios]` is set | `xcodebuild -checkFirstLaunchStatus` must pass and `xcrun simctl list devices available` must list an iOS simulator. An App Store update of Xcode can leave it needing `sudo xcodebuild -runFirstLaunch` (an admin password): then every build, test and proof fails with exit 70, and agents burn hours on workarounds. Preflight exits **4** instead, prints the fix and says to stop the night and notify the human. The line notes "App Store auto-update on" when it is. macOS only; `false` turns it off. |
+| `[preflight] xcode` | on when `[proof.ios]` is set | `xcodebuild -checkFirstLaunchStatus` must pass and `xcrun simctl list devices available` must list an iOS simulator. An App Store update of Xcode can leave it needing `sudo xcodebuild -runFirstLaunch` (an admin password): then every build, test and proof fails with exit 70, and agents burn hours on workarounds. `doctor` exits **4** instead, prints the fix and says to stop the night and notify the human. The line notes "App Store auto-update on" when it is. macOS only; `false` turns it off. |
 | `[preflight] xcode_probe` | unset | An extra command run from the main checkout that must print an `iOS Simulator` row, e.g. `xcodebuild -project ios/App.xcodeproj -scheme App -showdestinations -skipPackageUpdates`. It is slow (15 s or more), so it reruns only when `xcodebuild -version` or CoreSimulator's version changed since it last passed, which is exactly what an Xcode update changes. |
-| `[preflight] keep_awake` | `true` | macOS: preflight makes sure one `caffeinate -dimsu` runs (PID in `<state_dir>/caffeinate.pid`), so the Mac doesn't sleep mid-night; `end-night --apply` stops it. A closed MacBook lid sleeps the Mac anyway. |
-| `[preflight] keep_awake_hours` | `12` | How long each `caffeinate` lasts; a later preflight starts a new one if it has ended. |
+| `[preflight] keep_awake` | `true` | macOS: `doctor` makes sure one `caffeinate -dimsu` runs (PID in `<state_dir>/caffeinate.pid`), so the Mac doesn't sleep mid-night; it ends when `keep_awake_hours` run out. A closed MacBook lid sleeps the Mac anyway. |
+| `[preflight] keep_awake_hours` | `12` | How long each `caffeinate` lasts; a later `doctor` starts a new one if it has ended. |
 
-The proof commands check the build they install, too: without `--build`, `factory proof` and `proof-matrix` print an `app:` line (when it was built and from which commit; matrix.md starts with it) and warn when the installed app is older than the source. `[proof.ios] sources` (git pathspecs, default the whole tree) says which changes count; `[proof.ios] stale_app = "refuse"` makes a stale app exit 3 instead of warning.
+The proof commands check the build they install, too: without `--build`, `factory proof` (single or matrix) prints an `app:` line (when it was built and from which commit; matrix.md starts with it) and warn when the installed app is older than the source. `[proof.ios] sources` (git pathspecs, default the whole tree) says which changes count; `[proof.ios] stale_app = "refuse"` makes a stale app exit 3 instead of warning.
 
 ### Proof orientation, the slot and same-load compares
 
@@ -246,14 +216,13 @@ The proof commands check the build they install, too: without `--build`, `factor
 | `[proof.ios] orientation_cmd` | unset | A command that turns a simulator: `{udid}`, `{orientation}` and `{dd}` are filled in, run from the project root. `factory proof --orientation landscape` runs it before install and runs it again with `portrait` after the clip (on failure too: a turn persists on the simulator). Simulators have no rotate command, so a project typically drives `XCUIDevice.shared.orientation` from a UI-test method with `xcodebuild test-without-building`; that costs a test-runner launch, so it happens once per proof. |
 | `[proof.ios] orientation_build` | unset | The `--build` command when `orientation_cmd` will turn the simulator (`{dd}` filled in), e.g. a `build-for-testing` that also builds the UI-test runner the turn needs. Without it `--build` uses `build`, and a turn that needs the runner fails. |
 | `[proof.ios] orientation_env` | unset | An environment variable the app reads at launch, set to the orientation (`env_prefix` is prepended, as for `flag_env`). Either key, or both, may be set. |
-| `[proof.cell.<c>] orientation` | unset | The cell runs with `--orientation <o>`; `proof-matrix --orientation <o>` is the default for cells without one. matrix.md shows it next to the device. |
+| `[proof.cell.<c>] orientation` | unset | The cell runs with `--orientation <o>`; `proof --cells <matrix> --orientation <o>` is the default for cells without one. matrix.md shows it next to the device. |
 | `[slot] max_load` | 2 × CPUs | The load above which a proof's `verdict.json` says `"unreliable": true`, and one of `factory run`'s gates (see [`factory run`](#factory-run-weighted-leases-for-heavy-jobs)). `config validate` warns above 4 × the CPUs, where it never trips. |
 | `[slot] boot_settle_s` | `120` | After a cold boot or a build, how long a proof waits for the 1-minute load to come back under `max_load` before the counted clip. A cold-booted simulator then gets one unrecorded launch, and `--orientation` turns it after the settle. A settle that runs out is said (`settle: timed out`), the clip records anyway and may come out load-unreliable; `verdict.json`'s `load.settle` has `waited_s` and `timed_out`. |
 
-The slot is checked everywhere a build or a boot starts: `factory proof` waits (`factory run --wait`) before its build and before it boots the simulator (`--no-slot` skips both, and so does running the proof inside `factory run`), and `proof-matrix` before its build and before each cell.
+The slot is checked everywhere a build or a boot starts: `factory proof` waits (`factory run --wait`) before its build and before it boots the simulator (`--no-slot` skips both, and so does running the proof inside `factory run`), and `proof --cells` before its build and before each cell.
 
-Proofs stop loading the Mac once they are done: a simulator `factory proof` booted is shut down when it ends (`--keep-booted` keeps it), `proof-matrix` boots the shooter only for a shooter cell and shuts it down again, and `factory sims idle --shutdown` shuts down every booted simulator nothing uses (see `[sim] idle_minutes`). `--build` skips a build that would change nothing (the app's stamp is from HEAD, or from a commit with no change under `[proof.ios] sources`, with the same build command and nothing uncommitted under the sources; `--rebuild` builds anyway). `[proof.ios] before` (e.g. the seed restore) runs before each proof installs the app, once per matrix. `proof-matrix --cells a,b` runs some cells; `--rerun-failed <previous out>` keeps the cells that passed there and runs the rest.
-| `[wip] exclude` | `xcuserdata .build DerivedData node_modules .DS_Store` | Names or paths `wip-save` never copies (the worktree's `.gitignore` applies too, and so do `[worktree] cache_symlinks` and `copy_files`). Setting it replaces the list; add secrets files that are not gitignored. |
+Proofs stop loading the Mac once they are done: a simulator `factory proof` booted is shut down when it ends (`--keep-booted` keeps it), a matrix proof boots the shooter only for a shooter cell and shuts it down again, and `factory sims idle --shutdown` shuts down every booted simulator nothing uses (see `[sim] idle_minutes`). `--build` skips a build that would change nothing (the app's stamp is from HEAD, or from a commit with no change under `[proof.ios] sources`, with the same build command and nothing uncommitted under the sources; `--rebuild` builds anyway). `[proof.ios] before` (e.g. the seed restore) runs before each proof installs the app, once per matrix. `proof --cells a,b` runs some cells of the default matrix; `--rerun-failed <previous out>` keeps the cells that passed there and runs the rest.
 
 ### `factory run`: weighted leases for heavy jobs
 
@@ -336,42 +305,26 @@ build  = "npm run build -w packages/core"  # shell command, run from the worktre
 
 **`copy_files` is only for values that are public by construction**, such as env files that end up in a browser bundle. A copy does not follow later edits to the original, and a copied secret sits in another folder, outside the places you guard. Secrets and anything private are never copied: leave them out, and workers must stop and report that they need them (see the worker rules in the skill). Listing a path in `[never_touch]` as well is a good habit.
 
-### `[disk]` and `[sim]`: what end-night frees
+### `[disk]` and `[sim]`: what cleanup frees
 
-A night's disk goes to proof videos, dead simulator app containers and tool scratch. `factory end-night --night N --apply` (and `factory cleanup`) take them back, and keep the evidence that matters: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages and logs.
+A night's disk goes to proof videos, dead simulator app containers, tool scratch and agent worktrees nobody removed. `factory cleanup --apply` takes them back, and keeps the evidence that matters: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages and logs.
 
 | Key | Default | What it does |
 |---|---|---|
 | `[disk] dd_stale_hours` | `6` | A derived-data folder is **stale** when no file under it was modified for this many hours. A build in use is written constantly, so it is never stale. The check stops at the first fresh file, so busy folders cost almost nothing. Only stale folders are removed (`factory cleanup --dd-all` drops the rule for `dd_root`, not for extra roots). |
 | `[disk] dd_roots_extra` | `[]` | More derived-data roots, e.g. `["~/Library/Developer/Xcode/DerivedData"]` (`~` and `$HOME` expand). Every child folder that is stale and matches no `dd_extra_keep` glob goes. `/` and the home folder are refused as roots. |
 | `[disk] dd_extra_keep` | `["ModuleCache.noindex", "SDKStatCaches.noindex", "SymbolCache.noindex", "CompilationCache.noindex", "SDKExplicitPrecompiledModules"]` | Globs never removed from the extra roots (Xcode's shared caches). Setting it replaces the default list; `[]` keeps nothing. `dd_keep` / `dd_keep_derive` / `dd_keep_patterns` still decide what stays in `dd_root`. |
-| `[disk] dd_auto` | `true` | `factory preflight` runs the stale prune first (`cleanup --apply --only derived-data`) and prints `dd pruned N (X freed)` in its one line when it removed something; `end-night` includes derived data in its disk step (a dry run lists it). `false` leaves it to a manual `factory cleanup`. |
-| `[disk] clips` | `"delete"` | `"delete"`: the `clips` cleanup category removes every `*.mp4` under `[project] shots_dir` (`{n}` = the night; a bare `factory cleanup` takes every night's, `--night N` one). `"keep"`: leaves them. `end-night` runs it for the night being closed, in a dry run too, and reports the size. |
+| `[disk] dd_auto` | `true` | `factory doctor` runs the stale prune first (`cleanup --apply --only derived-data`) and prints `dd pruned N (X freed)` in its one line when it removed something. `false` leaves it to a manual `factory cleanup`. |
+| `[disk] clips` | `"delete"` | `"delete"`: the `clips` cleanup category removes every `*.mp4` under `[project] shots_dir` (`{n}` = the night; a bare `factory cleanup` takes every night's, `--night N` one). `"keep"`: leaves them. |
 | `[disk] tmp_dirs` | `["$TMPDIR"]` | Extra scratch directories the `tmp` category also sweeps for loose **files or directories**. `$TMPDIR` is the per-user temp dir (`/var/folders/…/T/` on macOS), where Instruments traces and TestFlight upload scratch land; `/tmp` stays `[disk] tmp_dir`. `[]` turns it off. A `$TMPDIR/sub` entry works too. |
 | `[disk] tmp_dirs_globs` | `["*.ktrace", "*.trace", "instruments*", "XcodeDistPipeline.*"]` | The only names removed from `tmp_dirs`, and only top-level entries owned by you with an mtime over an hour old. Nothing else in `$TMPDIR` is touched. (`tmp_globs` still applies to `tmp_dir` alone.) |
-| `[sim] erase_above_gb` | `6` | End-night `--apply` **erases** (`simctl shutdown` + `simctl erase`, never delete) `[sim] shooter_udid` and every `erase_at_end_night` sim whose `data` directory is bigger than this many GB (decimals allowed). Reinstalling the app leaves dead containers behind; an erase takes them with it and keeps the UDID. |
-| `[sim] erase_at_end_night` | `[]` | More simulators to erase when bloated: names, UDIDs or globs. |
-| `[sim] idle_minutes` | unset (30 for `sims idle`) | A booted simulator nothing has used for this long is idle. Set, `tick`, `preflight` and `end-night --apply` shut idle simulators down (`factory sims idle --shutdown`); `cleanup` never deletes a simulator in use. |
+| `[sim] idle_minutes` | unset (30 for `sims idle`) | A booted simulator nothing has used for this long is idle. Set, `doctor` shuts idle simulators down (`factory sims idle --shutdown`); `cleanup` never deletes a simulator in use. |
 | `[sim] keep_booted` | `[]` | Names, UDIDs or globs `sims idle` never shuts down. |
-| `[sim] runtime` | unset | The simulator runtime every simulator the kit creates uses (`proof-matrix` fresh cells; default: the shooter's runtime), e.g. `"com.apple.CoreSimulator.SimRuntime.iOS-26-5"` or `"iOS-26-5"`. Pin it when a newer default runtime misbehaves. `factory config validate` checks it is installed; it reaches project scripts as `FK_SIM_RUNTIME`; `preflight` names booted simulators (not `[sim] protected`) on another runtime. |
+| `[sim] runtime` | unset | The simulator runtime every simulator the kit creates uses (matrix fresh cells; default: the shooter's runtime), e.g. `"com.apple.CoreSimulator.SimRuntime.iOS-26-5"` or `"iOS-26-5"`. Pin it when a newer default runtime misbehaves. `factory config validate` checks it is installed; it reaches project scripts as `FK_SIM_RUNTIME`; `doctor` names booted simulators (not `[sim] protected`) on another runtime. |
 
-Every derived-data line says why it goes (`stale 14h`, `worktree gone: agent-x`). Folders are never removed through a symlink, and nothing outside the configured roots is touched. When `cleanup` removes an agent worktree (`[git] agent_worktrees`) it also removes the `dd_root` folders whose name contains the worktree's lane slug (its name minus the glob's literal prefix), its name, its branch's last segment, or its branch minus the literal prefix of `[git] agent_branches` (a glob such as `"factory/lane-*"`; unset by default) (4+ characters), and the `[sim] ephemeral` simulators whose name contains one of those (shut down first), whatever their age. Keep lists and `[sim] protected` still win. `dd_roots_extra` are shared with other projects, so only the age rule applies there. `end-night` removes no worktrees, so it does not do this part.
+Every derived-data line says why it goes (`stale 14h`, `worktree gone: agent-x`). Folders are never removed through a symlink, and nothing outside the configured roots is touched. When `cleanup` removes an agent worktree (on a `[git] agent_branches` glob, or named like `[git] agent_worktrees`) it also removes the `dd_root` folders whose name contains the worktree's lane slug (its name minus the glob's literal prefix), its name, its branch's last segment, or its branch minus the literal prefix of an `[git] agent_branches` glob (a glob or a list, such as `["factory/lane-*", "claude/*", "cyrus/*"]`; unset by default) (4+ characters), and the `[sim] ephemeral` simulators whose name contains one of those (shut down first), whatever their age. Keep lists and `[sim] protected` still win. `dd_roots_extra` are shared with other projects, so only the age rule applies there.
 
-End-night prints each sim's size before and after (a dry run says "would shut down and erase"). A booted simulator is left alone while any `simctl io … recordVideo` runs. The erase is macOS-only and skips cleanly elsewhere. Add `"clips"` to `[disk] low_cleanup` if `disk-guard` should also drop videos when space runs low (off by default).
-
-### `night-lint`: what it checks
-
-`factory night-lint [--night N | --file <path>] [--quiet] [--limit K]` reads the night file and never writes it. It checks the shape `night-new` renders and `tick` appends to, using `[project] item_line` and `log_line`:
-
-- **Title:** `# <name> factory: night N`, first line.
-- **Header bullets:** `Date` and `Theme` (one line), `Branch target`, `The human`, `Rules`, `Previous night`.
-- **Sections, in order:** `## Backlog`, `## With the user`, `## Needs the phone`, `## Log`.
-- **Backlog lines** (per `item_line`): an `[ ]` or `[x]` mark; an ID (a plain-English slug when `[loop] item_ids = "slug"`, the default); a sha (7–40 hex) right after the ID on `[x]` lines; then tags (`[...]` groups, or the words `IDEATE`, `TASTE`, `"no test"`). Indented lines continue the item.
-- **Log lines** (per `log_line`): `hh:mm · <id> · <sha or status word> · <note>`. The note may itself contain ` · `. The ID is a backlog ID, a free slug (`plan`, `phone`, `kit`, `morning`, `lesson`, `end-night`) or `TF <n>`. Two exceptions: one `FINAL (night N) · <summary>` line, and a line that is exactly `STOP`.
-
-**Errors** (exit 1) are what breaks the tools or the ledger: no title line or the wrong night number; a required section missing, repeated or out of order; a backlog line `tick` cannot parse (no ID); a done item without a sha; a duplicate backlog ID. **Warnings** (printed, exit 0) are everything else: a missing header bullet, an extra `##` section, a non-slug ID, a broken tag, a log line in the wrong shape, an unknown log ID, a second `FINAL` line, prose in the Backlog. Nights written before these rules existed warn a lot; that is expected, and nothing rewrites them.
-
-`tick` runs `night-lint --quiet --limit 12` after every write and prints the findings on stderr; its own exit code and stdout do not change. `end-night` runs it as step 8 (after appending its log line), lists the result, and exits 3 on errors, like a dirty worktree. Exit 2 is a bad argument or a missing file.
+A booted simulator is left alone while any `simctl io … recordVideo` runs. Add `"clips"` to `[disk] low_cleanup` if `cleanup --if-below` should also drop videos when space runs low (off by default); the default `low_cleanup` is frames, tmp, sims, derived-data and worktrees.
 
 ## Development
 

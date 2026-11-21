@@ -1,7 +1,7 @@
 # Reading a proof
 
 A proof dir (`factory proof`) holds `<scenario>.mp4`, `contact.png`, `rest-start.png`, `rest-end.png`, `steps.log`,
-`verdict.json`, and `flags.png` when anything was flagged. A matrix dir (`factory proof-matrix`) holds one such dir per
+`verdict.json`, and `flags.png` when anything was flagged. A matrix dir (`factory proof --cells <matrix>`) holds one such dir per
 cell plus `matrix.md` and `matrix-contact.png`. Review in this order and stop at the first FAIL: it already blocks.
 
 ## 1. The verdict line and verdict.json
@@ -30,7 +30,7 @@ detector guessed, so check the first seconds by eye.
 overrides in the project's budgets file (`[proof.ios] budgets`). **FAIL** blocks the item. **WARN** is a finding to look
 at in `flags.png`, not a pass to ignore: a WARN on a motion item's key transition deserves a frame-by-frame look and a
 line in the Log; a WARN hold on a fresh simulator's first launch is usually the cold start. Thresholds change only
-against a labelled corpus (`factory proof-calibrate <manifest>`), never to make one clip pass.
+against a labelled corpus (your own clips, each re-judged with `factory proof-verdict`), never to make one clip pass.
 
 ## 2. flags.png (open it first)
 

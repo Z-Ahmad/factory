@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # desc: list or remove build caches, frame dumps, proof videos, scratch files, old archives, spare simulators and merged agent worktrees
-# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|clips|archives|tmp]... [--frames-age <days>] [--include-night <name>] [--night N] [--dd-all]
+# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|clips|archives|tmp]... [--frames-age <days>] [--include-night <name>] [--night N] [--dd-all] [--if-below <GB> [--floor <GB>]]
 # Dry-run by default: prints what it WOULD remove with sizes and a total. --apply deletes.
+# --if-below <GB>: do nothing unless the free space on / is under that many GB (this is what disk-guard did). Below it,
+#                 with no --only, the [disk] low_cleanup categories run (default frames, tmp, sims, derived-data,
+#                 worktrees) with --frames-age 0, and the free space is printed again. --floor <GB> (with --apply):
+#                 exit 2 and say stop when it is still under that after the sweep.
 # Categories (every path, pattern and count comes from factory.toml; [section] key in brackets):
 #   derived-data  <[disk] dd_root>/dd-* not in the keep list ([disk] dd_keep, plus names found by grepping the
 #                 [disk] dd_keep_derive files with the [disk] dd_keep_patterns), and <[disk] tmp_dir>/<tmp glob starting
@@ -16,9 +20,15 @@
 #                 use (a running proof, xcodebuild, simctl recordVideo or other process names its UDID, or it booted or
 #                 launched an app less than [sim] idle_minutes ago, default 30: lib/sims.mjs), so a low-disk cleanup
 #                 never deletes a simulator mid-proof. macOS only.
-#   worktrees     <[git] worktrees_dir>/<[git] agent_worktrees> whose commits are all patch-equivalent on some
-#                 origin/<[git] push_branch prefix>* branch and whose untracked files are only symlinks. Names matching
-#                 [git] protected_worktrees are never touched unless --include-night <name>. Removing one also removes the
+#   worktrees     every worktree (wherever it lives) on a branch matching one of the [git] agent_branches globs, or named
+#                 like [git] agent_worktrees under <[git] worktrees_dir>, once its work is in: its PR is MERGED
+#                 (`gh pr list --state merged --head <branch>`, in the [git] github repo; the worktree must not hold
+#                 commits newer than the PR's head), its branch is contained in a [[targets]] base (e.g. origin/main), or
+#                 its commits are all patch-equivalent on some origin/<[git] push_branch prefix>* branch. Never removed:
+#                 a locked worktree, one with uncommitted changes (untracked symlinks are fine), one touched in the last
+#                 2 hours (HEAD log), the main checkout, the one you run from, the [dev] cwd worktree, and names matching
+#                 [git] protected_worktrees (unless --include-night <name>). Unpushed commits whose newest is older than
+#                 7 days print "FLAG ... not removed": a worktree nobody pushed and nobody merged is the human's call. Removing one also removes the
 #                 <[disk] dd_root>/dd-* folders (keep list still wins) whose name contains its lane slug (name minus the
 #                 glob's literal prefix), its name, its branch's last segment, or its branch minus the literal prefix of
 #                 [git] agent_branches (4+ chars), and the [sim] ephemeral
@@ -43,12 +53,14 @@ set -euo pipefail
 shopt -s extglob   # so [sim] ephemeral can say box-test-+([0-9])
 
 FRAMES_AGE="${FK_DISK_FRAMES_AGE_DAYS:-2}"
-APPLY=0 ONLY="" INCLUDE_NIGHT="" NIGHT="" DD_ALL=0
+APPLY=0 ONLY="" INCLUDE_NIGHT="" NIGHT="" DD_ALL=0 IF_BELOW="" FLOOR="" FRAMES_SET=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=1; shift ;;
     --only) ONLY="$ONLY ${2:?}"; shift 2 ;;
-    --frames-age) FRAMES_AGE="${2:?}"; [[ "$FRAMES_AGE" =~ ^[0-9]+$ ]] || { echo "--frames-age wants days (integer)" >&2; exit 1; }; shift 2 ;;
+    --if-below) IF_BELOW="${2:?}"; [[ "$IF_BELOW" =~ ^[0-9]+$ ]] || { echo "--if-below wants GB (integer)" >&2; exit 1; }; shift 2 ;;
+    --floor) FLOOR="${2:?}"; [[ "$FLOOR" =~ ^[0-9]+$ ]] || { echo "--floor wants GB (integer)" >&2; exit 1; }; shift 2 ;;
+    --frames-age) FRAMES_SET=1; FRAMES_AGE="${2:?}"; [[ "$FRAMES_AGE" =~ ^[0-9]+$ ]] || { echo "--frames-age wants days (integer)" >&2; exit 1; }; shift 2 ;;
     --include-night) INCLUDE_NIGHT="${2:?}"; shift 2 ;;
     --dd-all) DD_ALL=1; shift ;;
     --night) NIGHT="${2:?}"; [[ "$NIGHT" =~ ^[0-9]+$ ]] || { echo "--night wants a night number" >&2; exit 1; }; shift 2 ;;
@@ -56,12 +68,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+HERE="$(git rev-parse --show-toplevel 2>/dev/null || true)"; [[ -z "$HERE" ]] || HERE="$(cd "$HERE" && pwd -P)"
 MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
 cd "$MAIN"
 DD_ROOT="${FK_DISK_DD_ROOT:-}"
 TMP_DIR="${FK_DISK_TMP_DIR:-/tmp}"
 CLIPS_MODE="${FK_DISK_CLIPS:-delete}"
 [[ "$CLIPS_MODE" == delete || "$CLIPS_MODE" == keep ]] || { echo "[disk] clips must be \"delete\" or \"keep\" (got: $CLIPS_MODE)" >&2; exit 1; }
+
+if [[ -n "$IF_BELOW" ]]; then
+  FREE_GB="$(fk_free_gb /)"
+  echo "factory-cleanup: ${FREE_GB} GB free on / (min ${IF_BELOW}${FLOOR:+, floor $FLOOR})"
+  if (( FREE_GB >= IF_BELOW )); then exit 0; fi
+  if [[ -z "$ONLY" ]]; then
+    LOW_CLEANUP="${FK_DISK_LOW_CLEANUP:-frames
+tmp
+sims
+derived-data
+worktrees}"
+    while IFS= read -r c; do if [[ -n "$c" ]]; then ONLY="$ONLY $c"; fi; done <<< "$LOW_CLEANUP"
+  fi
+  if [[ "$FRAMES_SET" == 0 ]]; then FRAMES_AGE=0; fi
+fi
 
 TOTAL_KB=0
 SWEPT=$'\n'   # paths the tmp category already listed, so one named in two places is counted once
@@ -258,8 +286,11 @@ wt_linked() {
     if [[ -n "$pre" && "$name" == "$pre"* ]]; then ids="$ids${name#"$pre"}"$'\n'; fi
   done <<< "${FK_GIT_AGENT_WORKTREES:-}"
   # [git] agent_branches: the same for the branch (e.g. "factory/lane-*" makes factory/lane-ui-fix give ui-fix)
-  g="${FK_GIT_AGENT_BRANCHES:-}"; pre="${g%%[*?[]*}"
-  if [[ -n "$pre" && -n "$branch" && "$branch" == "$pre"* ]]; then ids="$ids${branch#"$pre"}"$'\n'; fi
+  while IFS= read -r g; do
+    [[ -n "$g" ]] || continue
+    pre="${g%%[*?[]*}"
+    if [[ -n "$pre" && -n "$branch" && "$branch" == "$pre"* ]]; then ids="$ids${branch#"$pre"}"$'\n'; fi
+  done <<< "${FK_GIT_AGENT_BRANCHES:-}"
   fk_is_darwin || return 0
   [[ "${KEEP_BUILT:-0}" == 1 ]] || build_keep
   while IFS= read -r id; do
@@ -292,18 +323,67 @@ wt_linked() {
 }
 
 # ---- 3. worktrees ----
+# wt_idle_min <path>: minutes since the worktree's HEAD log last changed (checkout, commit, rebase), or 999999 when unknown.
+# (Not the index: `git status` itself rewrites it.)
+wt_idle_min() {
+  local gd t now newest=0
+  gd="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || { echo 999999; return 0; }
+  for t in "$gd/logs/HEAD"; do
+    [[ -e "$t" ]] || continue
+    now="$("${STAT_M[@]}" "$t" 2>/dev/null || echo 0)"
+    (( now > newest )) && newest="$now"
+  done
+  if (( newest == 0 )); then echo 999999; else echo $(( ($(date +%s) - newest) / 60 )); fi
+}
+# wt_merged <path> <head> <branch>: prints why the work is in (exit 0), or exits 1, printing a note when there is one to give.
+wt_merged() {
+  local head="$2" branch="$3" base up pr out
+  while IFS= read -r base; do
+    [[ -n "$base" ]] || continue
+    if git merge-base --is-ancestor "$head" "$base" 2>/dev/null; then echo "contained in $base"; return 0; fi
+  done <<< "$TARGET_BASES"
+  for up in $UPSTREAMS; do
+    if [[ -z "$(git cherry "$up" "$head" 2>/dev/null | grep '^+' || true)" ]]; then echo "upstream: $up"; return 0; fi
+  done
+  if [[ -n "$branch" ]] && command -v gh >/dev/null 2>&1; then
+    out="$(gh pr list ${FK_GIT_GITHUB:+-R "$FK_GIT_GITHUB"} --state merged --head "$branch" --json number,headRefOid --limit 1 \
+      --jq '.[0] | select(. != null) | "\(.number) \(.headRefOid)"' 2>/dev/null || true)"
+    if [[ -n "$out" ]]; then
+      pr="${out%% *}"
+      # new commits on the branch after the PR merged are not in it: keep the worktree
+      if [[ "$out" == *" "* ]] && git cat-file -e "${out#* }^{commit}" 2>/dev/null && ! git merge-base --is-ancestor "$head" "${out#* }" 2>/dev/null; then
+        echo "PR #$pr merged, but the branch has newer commits"; return 1
+      fi
+      echo "PR #$pr merged"; return 0
+    fi
+  fi
+  return 1
+}
 if want worktrees; then
   header "worktrees"
   git fetch origin --quiet 2>/dev/null || true
   # origin/<push_branch up to {name}>*: the branches a night pushes to
   UP_PREFIX="${FK_GIT_PUSH_BRANCH:-factory/{name}}"; UP_PREFIX="${UP_PREFIX%%\{name\}*}"
   UPSTREAMS="$(git for-each-ref --format='%(refname:short)' "refs/remotes/origin/$UP_PREFIX" || true)"
+  # the branches the work lands on: every [[targets]] base
+  TARGET_BASES="" tn="${FK_TARGETS_COUNT:-0}"
+  for ((ti = 0; ti < tn; ti++)); do v="FK_TARGETS_${ti}_BASE"; TARGET_BASES="$TARGET_BASES${!v:-}"$'\n'; done
+  LOCKED="$(fk_locked_worktrees "$MAIN")"
+  DEV_TOP=""
+  if [[ -n "${FK_DEV_CWD:-}" ]]; then
+    dc="$FK_DEV_CWD"; [[ "$dc" == /* ]] || dc="$MAIN/$dc"
+    DEV_TOP="$(git -C "$dc" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -z "$DEV_TOP" ]] || DEV_TOP="$(cd "$DEV_TOP" && pwd -P)"
+  fi
   WT_ROOT="$MAIN/${FK_GIT_WORKTREES_DIR:?}/"
+  NOW="$(date +%s)"
   while IFS=$'\t' read -r path head branch; do
-    [[ "$path" == "$WT_ROOT"* ]] || continue
+    [[ -d "$path" ]] || continue
+    rpath="$(cd "$path" && pwd -P)"
+    [[ "$rpath" != "$MAIN" ]] || continue
     name="${path##*/}"
     # proof-compare's base checkout: it goes with its build
-    if [[ "$name" == compare-* ]]; then
+    if [[ "$path" == "$WT_ROOT"* && "$name" == compare-* ]]; then
       cdd="${DD_ROOT:+$DD_ROOT/dd-$name}"
       if [[ -z "$cdd" ]] || { [[ -d "$cdd" ]] && [[ "$DD_SEEN" != *$'\n'"$cdd"$'\n'* ]]; }; then continue; fi
       if [[ -n "$(cd "$path" && git status --porcelain 2>/dev/null || true)" ]]; then echo "  KEPT  $name (its build is gone, but it has changes)"; continue; fi
@@ -314,39 +394,56 @@ if want worktrees; then
       fi
       continue
     fi
+    # an agent's worktree: on an [git] agent_branches branch, or named like [git] agent_worktrees under worktrees_dir
+    agent=0
+    if [[ -n "$branch" ]] && glob_in "$branch" "${FK_GIT_AGENT_BRANCHES:-}"; then agent=1; fi
+    if [[ "$path" == "$WT_ROOT"* ]] && glob_in "$name" "${FK_GIT_AGENT_WORKTREES:-}"; then agent=1; fi
     if glob_in "$name" "${FK_GIT_PROTECTED_WORKTREES:-}"; then
-      [[ "$name" == "$INCLUDE_NIGHT" ]] || { echo "  SKIP  $name (active factory worktree; --include-night $name to allow)"; continue; }
-    elif ! glob_in "$name" "${FK_GIT_AGENT_WORKTREES:-}"; then
+      [[ "$name" == "$INCLUDE_NIGHT" ]] || { [[ "$agent" == 1 || "$path" == "$WT_ROOT"* ]] && echo "  SKIP  $name (active factory worktree; --include-night $name to allow)"; continue; }
+    elif [[ "$agent" == 0 ]]; then
       continue
     fi
-    # (a) every commit patch-equivalent on some upstream branch
-    merged=""
-    for up in $UPSTREAMS; do
-      if [[ -z "$(git cherry "$up" "$head" 2>/dev/null | grep '^+' || true)" ]]; then merged="$up"; break; fi
-    done
-    # (b) only symlinks untracked, and nothing modified
+    if [[ -n "$HERE" && "$rpath" == "$HERE" ]]; then echo "  SKIP  $name (the worktree you run from)"; continue; fi
+    if [[ -n "$DEV_TOP" && "$rpath" == "$DEV_TOP" ]]; then echo "  SKIP  $name (the [dev] cwd worktree)"; continue; fi
+    if path_in "$path" "$LOCKED"; then echo "  KEPT  $name (locked)"; continue; fi
+    # uncommitted changes: only untracked symlinks are allowed
     reason=""
-    [[ -n "$merged" ]] || reason="commits not all upstream on any origin/${UP_PREFIX}*"
-    if [[ -z "$reason" ]]; then
-      dirty="$(cd "$path" && git status --porcelain 2>/dev/null || true)"
-      while IFS= read -r l; do
-        [[ -z "$l" ]] && continue
-        if [[ "$l" == "?? "* ]]; then
-          f="${l#\?\? }"; f="${f%/}"
-          [[ -L "$path/$f" ]] || { reason="untracked non-symlink: $f"; break; }
-        else
-          reason="modified tracked files: $l"; break
-        fi
-      done <<< "$dirty"
-    fi
+    dirty="$(cd "$path" && git status --porcelain 2>/dev/null || true)"
+    while IFS= read -r l; do
+      [[ -z "$l" ]] && continue
+      if [[ "$l" == "?? "* ]]; then
+        f="${l#\?\? }"; f="${f%/}"
+        [[ -L "$path/$f" ]] || { reason="untracked non-symlink: $f"; break; }
+      else
+        reason="modified tracked files: $l"; break
+      fi
+    done <<< "$dirty"
     if [[ -n "$reason" ]]; then echo "  KEPT  $name ($reason)"; continue; fi
-    echo "  REMOVE $name  (branch ${branch:-detached}, upstream: $merged)"
-    wt_linked "$name" "$branch"
-    if [[ "$APPLY" == 1 ]]; then
-      git worktree remove --force "$path"
-      if [[ -n "$branch" ]]; then git branch -D "$branch" >/dev/null 2>&1 || true; fi
+    idle="$(wt_idle_min "$path")"
+    if (( idle < 120 )); then echo "  KEPT  $name (in use: git touched it ${idle} min ago)"; continue; fi
+    WT_NOTE=""
+    if merged="$(wt_merged "$path" "$head" "$branch")"; then WT_NOTE=""; else WT_NOTE="$merged"; merged=""; fi
+    if [[ -n "$merged" ]]; then
+      echo "  REMOVE $name  (branch ${branch:-detached}, $merged)"
+      wt_linked "$name" "$branch"
+      if [[ "$APPLY" == 1 ]]; then
+        git worktree remove --force "$path"
+        if [[ -n "$branch" ]]; then git branch -D "$branch" >/dev/null 2>&1 || true; fi
+      fi
+      continue
+    fi
+    # not merged: commits no remote branch has
+    unpushed="$(git rev-list --count "$head" --not --remotes 2>/dev/null || echo 0)"
+    if [[ "$unpushed" -gt 0 ]]; then
+      newest="$(git log -1 --format=%ct "$head" --not --remotes 2>/dev/null || echo "$NOW")"
+      days=$(( (NOW - newest) / 86400 ))
+      if (( days >= 7 )); then echo "  FLAG  $name ($unpushed unpushed commit$([[ "$unpushed" == 1 ]] || echo s), newest ${days} days old; not removed)"
+      else echo "  KEPT  $name (${WT_NOTE:-not merged}; $unpushed unpushed commit$([[ "$unpushed" == 1 ]] || echo s))"; fi
+    else
+      echo "  KEPT  $name (${WT_NOTE:-not merged: no merged PR, not in a target branch})"
     fi
   done < <(fk_worktrees "$MAIN")
+  if [[ "$APPLY" == 1 ]]; then git worktree prune 2>/dev/null || true; fi
 fi
 
 # ---- 4. frame dumps ----
@@ -469,3 +566,8 @@ fi
 
 echo
 echo "total $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable): $(fk_human "$TOTAL_KB") (derived-data, frames, clips, tmp, archives; sims and worktrees listed above)"
+if [[ -n "$IF_BELOW" && "$APPLY" == 1 ]]; then
+  FREE_GB="$(fk_free_gb /)"
+  echo "factory-cleanup: ${FREE_GB} GB free after cleanup"
+  if [[ -n "$FLOOR" ]] && (( FREE_GB < FLOOR )); then echo "factory-cleanup: BELOW FLOOR (${FLOOR} GB), stop" >&2; exit 2; fi
+fi

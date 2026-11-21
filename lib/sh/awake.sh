@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Keep the Mac awake for the night: one `caffeinate -dimsu` per project, its PID in <state_dir>/caffeinate.pid.
-# Source it after common.sh. preflight starts it ([preflight] keep_awake, default true); end-night --apply stops it.
+# Source it after common.sh. doctor starts it ([preflight] keep_awake, default true); it ends when the timer runs out.
 # A MacBook still sleeps when its lid is closed, whatever caffeinate says.
 
 fk_awake_pidfile() { printf '%s/caffeinate.pid' "${FK_PROJECT_STATE_DIR:?}"; }

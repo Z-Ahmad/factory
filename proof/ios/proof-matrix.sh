@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: factory proof-matrix --scenario <s> --out <dir> [--matrix <name>] [--udid <shooter sim>]
+# usage: factory proof --cells <matrix> --scenario <s> --out <dir> [--udid <shooter sim>]
 #                             [--build] [--rebuild] [--dd <deriveddata>] [--keep-sims] [--plan] [--no-slot]
 #                             [--cells <a,b>] [--rerun-failed <previous out>] [any other `factory proof` args, passed through]
 # Runs one scenario across the cells every UI proof owes (both finishes, a system/app theme mismatch, a second screen size),
@@ -40,7 +40,7 @@
 # build, from which commit). --plan prints the cells and stops (no simulator is touched).
 # Needs ffmpeg, node and (for the label band) swift. Simulators only: never a physical device.
 set -euo pipefail
-. "${FK_KIT_DIR:?run this through bin/factory (factory proof-matrix ...)}/lib/sh/common.sh"
+. "${FK_KIT_DIR:?run this through bin/factory (factory proof --cells <matrix> ...)}/lib/sh/common.sh"
 . "$FK_KIT_DIR/lib/darwin.sh"
 . "$FK_KIT_DIR/proof/ios/common.sh"
 fk_require_darwin
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     *) PASS_ARGS+=("$1"); shift ;;
   esac
 done
-[[ -n "$SCENARIO" && ( -n "$OUT" || "$PLAN" == 1 ) ]] || { echo "usage: factory proof-matrix --scenario <s> --out <dir> [--matrix <name>] [--build --dd <dd>] [--keep-sims] [proof args]; see the header of $0" >&2; exit 1; }
+[[ -n "$SCENARIO" && ( -n "$OUT" || "$PLAN" == 1 ) ]] || { echo "usage: factory proof --cells <matrix> --scenario <s> --out <dir> [--build --dd <dd>] [--keep-sims] [proof args]; see the header of $0" >&2; exit 1; }
 [[ -n "$UDID" ]] || { echo "no shooter simulator: pass --udid or set [sim] shooter_udid" >&2; exit 1; }
 
 # The cells of the chosen matrix, one per line: name, sim, system, app, deviceTypes, orientation ("-" = none), tab separated.

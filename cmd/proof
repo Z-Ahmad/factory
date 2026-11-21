@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 # desc: record a DEBUG scenario on an iOS simulator and judge it: mp4, contact sheet, rest frames, step log, verdict
 # usage: factory proof <scenario> --out <dir> [--udid <sim>] [--seconds N] [--build] [--dd <dir>] [more: see proof/ios/sim-proof-core.sh]
+#        factory proof --cells <matrix> --scenario <s> --out <dir> [--build --dd <dir>] [--keep-sims] [--plan] [proof args]
 # Every project value comes from [proof.ios] in factory.toml. macOS with Xcode only (elsewhere: "skipped: needs Xcode", exit 0).
+# --cells <matrix> runs the scenario across the cells of [proof.matrix.<matrix>] (finishes, theme mismatch, second size):
+# matrix.md and a stitched contact sheet; see the header of proof/ios/proof-matrix.sh. A --cells value that names no
+# matrix is the old "--cells a,b" (only those cells of the default matrix). --matrix <name> says the same as --cells <name>.
 set -euo pipefail
-exec "${FK_KIT_DIR:?run this through bin/factory}/proof/ios/sim-proof-core.sh" "$@"
+KIT="${FK_KIT_DIR:?run this through bin/factory}"
+MATRIX="${FK_PROOF_MATRIX:-}"
+ARGS=("$@")
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+  case "${ARGS[i]}" in
+    --matrix) MATRIX=1 ;;
+    --cells)
+      MATRIX=1
+      v="${ARGS[i + 1]:-}"
+      if [[ -n "$v" ]] && node "$KIT/cmd/config.mjs" get "proof.matrix.$v" >/dev/null 2>&1; then
+        ARGS[i]="--matrix"
+      fi ;;
+  esac
+done
+if [[ -n "$MATRIX" ]]; then exec "$KIT/proof/ios/proof-matrix.sh" ${ARGS[@]+"${ARGS[@]}"}; fi
+exec "$KIT/proof/ios/sim-proof-core.sh" "$@"

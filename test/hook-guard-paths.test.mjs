@@ -32,7 +32,6 @@ ref  = "v0.1.0"
 name = "example-game"
 main_checkout = "/tmp/example"
 state_dir = "/tmp/example-factory"
-night_file = "{state_dir}/night-{n}.md"
 
 [git]
 worktrees_dir = ".worktrees"

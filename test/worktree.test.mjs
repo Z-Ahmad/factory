@@ -469,7 +469,7 @@ test('fk_dirt hides copied files and derived outputs along with the cache symlin
     assert.equal(r.stdout, '', r.stdout);
   }));
 
-// ---- preflight ----
+// ---- doctor ----
 
 async function preflightProject({ restore = 'echo seeded >> {seedlog}; echo All matches.', up = () => 'true', timeout = 2, treeOpts = {} } = {}) {
   const a = await freePort();
@@ -488,7 +488,7 @@ restore = "${restore.replaceAll('{seedlog}', p('seed.log'))}"
   });
   const kids = [];
   const groups = [];
-  const run = (args = [], env = {}) => factory(['preflight', ...args], { env: { ...t.env, FK_DEV_POLL_S: '1', ...env }, cwd: t.main });
+  const run = (args = [], env = {}) => factory(['doctor', ...args], { env: { ...t.env, FK_DEV_POLL_S: '1', ...env }, cwd: t.main });
   const done = () => {
     for (const k of kids) k.kill('SIGKILL');
     for (const g of groups) { try { process.kill(-g, 'SIGKILL'); } catch { /* already gone */ } }
@@ -506,54 +506,54 @@ async function withPreflight(opts, fn) {
   }
 }
 
-test('preflight: all good prints one line and exits 0', () =>
+test('doctor: all good prints one line and exits 0', () =>
   withPreflight({}, async (t) => {
     t.kids.push(await startServer(t.root, t.port));
     const r = t.run();
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.stdout, 'factory-preflight: ok - disk 67 GB free; dev up (no-op); seed ok (All matches.)\n');
+    assert.equal(r.stdout, 'factory-doctor: ok - disk 67 GB free; dev up (no-op); seed ok (All matches.)\n');
     assert.equal(r.stderr, '');
     assert.equal(readFileSync(t.seedLog, 'utf8'), 'seeded\n'); // once, not twice
   }));
 
-test('preflight: starts the stack when it is down, and says so', () =>
+test('doctor: starts the stack when it is down, and says so', () =>
   withPreflight({ up: (p, port) => `echo $$ > ${p('dev.pid')}; exec node ${p('server.mjs')} ${port}`, timeout: 30 }, async (t) => {
     writeServer(t.root);
     const r = t.run();
     if (existsSync(t.p('dev.pid'))) t.groups.push(Number(readFileSync(t.p('dev.pid'), 'utf8')));
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /^factory-preflight: ok - disk 67 GB free; dev started; seed ok/);
+    assert.match(r.stdout, /^factory-doctor: ok - disk 67 GB free; dev started; seed ok/);
     assert.equal(await isUp(t.port), true);
   }));
 
-test('preflight: disk below the floor stops at disk-guard with its exit code, and starts nothing', () =>
+test('doctor: disk below the floor stops at disk-guard with its exit code, and starts nothing', () =>
   withPreflight({}, async (t) => {
     const r = t.run([], { DF_GB: '12' });
     assert.equal(r.status, 2);
-    assert.match(r.stdout, /^factory-preflight: FAILED at disk-guard \(exit 2\)\n$/);
+    assert.match(r.stdout, /^factory-doctor: FAILED at disk \(exit 2\)\n$/);
     assert.match(r.stderr, /BELOW FLOOR/);
     assert.equal(existsSync(t.seedLog), false);
   }));
 
-test('preflight: a stack that does not come up fails at dev-up (exit 2), before the seed', () =>
+test('doctor: a stack that does not come up fails at dev-up (exit 2), before the seed', () =>
   withPreflight({}, (t) => {
     const r = t.run();
     assert.equal(r.status, 2);
-    assert.equal(r.stdout, 'factory-preflight: FAILED at dev-up (exit 2)\n');
+    assert.equal(r.stdout, 'factory-doctor: FAILED at dev-up (exit 2)\n');
     assert.match(r.stderr, /did not come up/);
     assert.equal(existsSync(t.seedLog), false);
   }));
 
-test('preflight: a failing seed restore fails at seed with that exit code', () =>
+test('doctor: a failing seed restore fails at seed with that exit code', () =>
   withPreflight({ restore: 'echo it broke; exit 7' }, async (t) => {
     t.kids.push(await startServer(t.root, t.port));
     const r = t.run();
     assert.equal(r.status, 7);
-    assert.equal(r.stdout, 'factory-preflight: FAILED at seed (exit 7)\n');
+    assert.equal(r.stdout, 'factory-doctor: FAILED at seed (exit 7)\n');
     assert.match(r.stderr, /it broke/);
   }));
 
-test('preflight touches no git state and takes no arguments', () =>
+test('doctor touches no git state and takes no arguments', () =>
   withPreflight({}, async (t) => {
     t.kids.push(await startServer(t.root, t.port));
     const before = t.git(t.main, 'for-each-ref');
@@ -564,19 +564,19 @@ test('preflight touches no git state and takes no arguments', () =>
     assert.equal(t.run(['--now']).status, 1);
   }));
 
-test('preflight: prunes stale derived data first, leaves a build in use, and says how much it freed', () =>
+test('doctor: prunes stale derived data first, leaves a build in use, and says how much it freed', () =>
   withPreflight({ treeOpts: { diskOverrides: { dd_auto: true } } }, async (t) => {
     mkdirSync(t.p('cache', 'dd-busy'));
     writeFileSync(t.p('cache', 'dd-busy', 'obj.o'), 'x'); // written just now: in use
     t.kids.push(await startServer(t.root, t.port));
     const r = t.run();
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /^factory-preflight: ok - dd pruned 2 \(\S+ freed\); disk 67 GB free; dev up \(no-op\); seed ok/);
+    assert.match(r.stdout, /^factory-doctor: ok - dd pruned 2 \(\S+ freed\); disk 67 GB free; dev up \(no-op\); seed ok/);
     assert.equal(r.stdout.split('\n').filter(Boolean).length, 1);
     assert.deepEqual(t.names('cache'), ['dd-app', 'dd-busy', 'dd-literal', 'dd-scripted', 'dd-test-Foo', 'dd-test-kit', 'notes']);
   }));
 
-test('preflight: dd_auto = false leaves derived data alone and adds nothing to the line', () =>
+test('doctor: dd_auto = false leaves derived data alone and adds nothing to the line', () =>
   withPreflight({}, async (t) => {
     t.kids.push(await startServer(t.root, t.port));
     const r = t.run();

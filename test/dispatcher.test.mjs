@@ -124,3 +124,38 @@ test('command names cannot escape cmd/', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /bad command name/);
 });
+
+test('old command names still run, name their replacement on stderr, and the help lists only the new ones', () => {
+  const t = project();
+  try {
+    addCommand(t.kit, 'doctor', 'echo "doctor ran: $*"');
+    mkdirSync(join(t.kit, 'lib', 'dev'), { recursive: true });
+    addCommand(t.kit, 'dev', 'echo "dev $*"');
+    const pre = factory(['preflight', 'x'], { kit: t.kit, cwd: t.proj });
+    assert.equal(pre.status, 0, pre.stderr);
+    assert.equal(pre.stdout, 'doctor ran: x\n');
+    assert.match(pre.stderr, /'preflight' is now 'factory doctor'/);
+    for (const [old, args] of [['dev-up', 'up --no-seed'], ['dev-status', 'status'], ['dev-restart', 'restart --dry-run'], ['read-api', 'read-api up']]) {
+      const r = factory([old, ...args.split(' ').slice(1)], { kit: t.kit, cwd: t.proj });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /is now 'factory dev /);
+    }
+    const up = factory(['dev-up', '--no-seed'], { kit: t.kit, cwd: t.proj });
+    assert.equal(up.stdout, 'dev up --no-seed\n');
+    const ra = factory(['read-api', 'down'], { kit: t.kit, cwd: t.proj });
+    assert.equal(ra.stdout, 'dev read-api down\n');
+    const help = factory(['help'], { kit: t.kit, cwd: t.proj });
+    assert.doesNotMatch(help.stdout, /^ {2}(dev-up|dev-status|dev-restart|preflight|proof-matrix|tick|end-night|stats) /m);
+    assert.match(help.stdout, /^ {2}dev +\S/m);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('the removed night-file commands are gone', () => {
+  for (const name of ['tick', 'night-new', 'night-lint', 'end-night', 'stats', 'proof-calibrate', 'wip-save', 'disk-guard']) {
+    const r = factory([name]);
+    assert.equal(r.status, 2, name);
+    assert.match(r.stderr, /unknown command/);
+  }
+});

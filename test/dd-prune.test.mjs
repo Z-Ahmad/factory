@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { factory } from './helpers.mjs';
-import { tree } from './fixture-tree.mjs';
+import { idleWorktree, tree } from './fixture-tree.mjs';
 
 // Stale derived-data pruning: the age rule, keep lists, extra roots, symlink safety, worktree-linked cleanup.
 const withTree = (fn, opts) => {
@@ -191,6 +191,7 @@ test('[git] agent_branches: the branch minus its literal prefix is the slug buil
   withTree(
     (t) => {
       t.git(t.p('main', '.worktrees', 'agent-merged'), 'branch', '-m', 'nightly/lane-sweeper');
+      idleWorktree(t.p('main', '.worktrees', 'agent-merged')); // the rename wrote its HEAD log
       build(t, t.p('cache', 'dd-sweeper-unit'), 0);
       build(t, t.p('cache', 'dd-other-lane'), 0);
       const r = cleanup(t, ['--only', 'worktrees', '--apply']);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { KIT, factory, fixture, scratch } from './helpers.mjs';
+import { KIT, cleanEnv, factory, fixture, scratch } from './helpers.mjs';
 
 // A scratch project: factory.toml (from the synthetic valid.toml, so no real project values) plus the file the
 // password is read from. FK_UNAME=Darwin lets the plan modes run anywhere: they touch no simulator.
@@ -240,7 +240,7 @@ test('proof-matrix: a cell with a bad sim kind or system is refused', () => {
 
 test('the proof commands are listed by help, with their descriptions', () => {
   const r = factory(['help']);
-  for (const name of ['proof', 'proof-matrix', 'proof-verdict', 'proof-calibrate', 'clip-frames']) assert.match(r.stdout, new RegExp(`^ {2}${name} +\\S`, 'm'), name);
+  for (const name of ['proof', 'proof-verdict', 'clip-frames']) assert.match(r.stdout, new RegExp(`^ {2}${name} +\\S`, 'm'), name);
 });
 
 test('proof-verdict and clip-frames run through the dispatcher', () => {
@@ -294,7 +294,7 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
     stub('ps', 'exit 0');
     stub('vm_stat', 'exit 1');
     stub('sysctl', 'case "$2" in vm.loadavg) echo "{ 1.00 1.00 1.00 }" ;; hw.ncpu) echo 8 ;; *) exit 1 ;; esac');
-    const git = (...a) => execFileSync('git', ['-C', t.dir, ...a], { env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+    const git = (...a) => execFileSync('git', ['-C', t.dir, ...a], { env: { ...cleanEnv(), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
     mkdirSync(join(t.dir, 'src'));
     writeFileSync(join(t.dir, 'src', 'a.swift'), 'a');
     git('init', '-q');

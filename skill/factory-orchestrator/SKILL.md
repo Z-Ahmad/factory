@@ -1,12 +1,11 @@
 ---
 name: factory-orchestrator
-description: Load when running or setting up an overnight factory night; a /loop prompt pointing at a night file (night-N.md), or a project with a factory.toml whose backlog agents work through unattended. The orchestrator loop: one firing = one backlog item; preflight, brief workers, machine-verdict proofs, review, gate, ship, tick, end the night.
+description: Load when running or setting up unattended factory work; a /loop prompt naming a backlog, or a project with a factory.toml whose backlog agents work through unattended. The orchestrator loop: one firing = one backlog item; doctor, brief workers, machine-verdict proofs, review, gate, ship, clean up.
 ---
 
 # Factory orchestrator
 
-You are the **orchestrator**. One `/loop` firing = **one backlog item**. You plan, brief, review, and own git, the night
-file and the tracker. **Workers (subagents) write the code and record the proofs; they never commit.** You don't read
+You are the **orchestrator**. One `/loop` firing = **one backlog item**. You plan, brief, review, and own git and the tracker. **Workers (subagents) write the code and record the proofs; they never commit.** You don't read
 source files: you read verdicts, frames, `git diff --stat` and the diffs of core files.
 
 `factory` below means the project's launcher (e.g. `scripts/factory`), which runs the pinned kit. Every project value
@@ -18,9 +17,8 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
 2. **The rules file:** `factory config get loop.rules` (a path from the repo root). Read it whole, once. It holds the
    project's hard gates, the guardrails paragraph for every implementer brief, binding lessons, branch targets and the
    test recipe. Precedence: the repo's AGENTS.md / CLAUDE.md > the rules file > this skill.
-3. **The night file** named by the `/loop` prompt (`factory config get project.night_file`, `{n}` = the night). Its
-   header gives the night, date, theme, branch target and the human's availability. It holds no rules: only Backlog,
-   "With the user", "Needs the phone" and the Log. If it doesn't exist, `factory night-new <n> --from <n-1>` (§11).
+3. **The backlog** the `/loop` prompt names (a tracker query or a file the human keeps). It holds the items in order and
+   their tags; it holds no rules. Progress is recorded in the tracker and the PRs, not in a file of your own.
 4. **Loop settings:** `factory config get loop`. Missing keys take these defaults:
 
    | key | default | means |
@@ -28,13 +26,12 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    | `models` | implement/shoot `sonnet`, ideate/rescue `opus`, banned `[]` | §12 |
    | `rounds` / `taste_rounds` | 1 / 2 | review rounds per item (TASTE items get the second) |
    | `stuck` | `ask` | what to do when the rescue pass fails too (§7) |
-   | `stop_after_blocked` | 3 | consecutive blocked items that end the night |
+   | `stop_after_blocked` | 3 | consecutive blocked items that end the session |
    | `wake_s` / `usage_limit_wake_s` | 60 / 1800 | `ScheduleWakeup` delays (§9) |
    | `wrap_context_k` | 400 | an agent past this many thousand tokens of context wraps up and hands back a patch (§9) |
    | `implementer_words` / `shooter_words` | 150 / 80 | report limits in the briefs |
    | `linear` | none | tracker issue prefix and the state to move shipped issues to |
    | `allow_merge` | false | never merge a PR unless this is true or the human says so; `never_merge_into` (e.g. `["main"]`) keeps those bases the human's even then (only in the `[git] github` repository when set) |
-   | `item_ids` | `slug` | item IDs are plain-English slugs (`lifetime-globe`); `tick` refuses codes like `G3` (`any` turns it off) |
 
 5. Also read once: `factory config get tests` (unit + gate + retry_once), `targets`, `git.push_branch`,
    `git.commit_trailer`, `sim.shooter_udid`, and the matrices (`factory config get proof.matrix`). The disk keys
@@ -44,57 +41,58 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    |---|---|---|
    | `disk.dd_stale_hours` | 6 | derived data with no file written for this long is stale; a build in use never is |
    | `disk.dd_roots_extra` / `dd_extra_keep` | `[]` / Xcode's shared caches (`ModuleCache.noindex` …) | extra roots (e.g. `~/Library/Developer/Xcode/DerivedData`) pruned by the same age rule |
-   | `disk.dd_auto` | `true` | `preflight` prunes stale derived data every firing (`dd pruned N (X freed)` in its line) and `end-night --apply` does too; `false` = manual `factory cleanup` only |
-   | `disk.clips` | `delete` | end-night deletes the night's proof `*.mp4` (`keep` leaves them); verdicts, flags, contact sheets and rest frames always stay (§10) |
+   | `disk.dd_auto` | `true` | `doctor` prunes stale derived data every firing (`dd pruned N (X freed)` in its line); `false` = manual `factory cleanup` only |
+   | `disk.clips` | `delete` | `cleanup` deletes proof `*.mp4` (`keep` leaves them); verdicts, flags, contact sheets and rest frames always stay (§10) |
    | `disk.tmp_dirs` / `tmp_dirs_globs` | `$TMPDIR` / `*.ktrace *.trace instruments* XcodeDistPipeline.*` | loose traces and upload scratch older than 1 h, swept by `cleanup --only tmp` |
-   | `sim.erase_above_gb` | 6 | end-night `--apply` erases (never deletes) `sim.shooter_udid` and `sim.erase_at_end_night` sims whose data is bigger |
 6. **The hook:** check `.claude/settings.json` runs `factory hook-guard` as a `PreToolUse` hook. If it doesn't, tell the
    human; you can't add it yourself (a settings edit is self-modification, and the classifier refuses it).
-7. Read the design ethos / product docs the rules file names, once. Read the last line of the previous night's Log.
+7. Read the design ethos / product docs the rules file names, once.
 
 ## 1. Stop conditions: check first, every firing
 
-- A line `STOP` in the night file, or no unchecked, unblocked item you can run → **End of night** (§10).
-- `stop_after_blocked` items blocked in a row → End of night, and say what looks systemic.
-- An item tagged `[needs-user]` with no answer in the Log or "With the user" → skip it; it doesn't count as blocked.
-- `factory preflight` exits 2 (disk below the floor even after cleanup) → log it, End of night.
-- `factory preflight` exits 4 (Xcode can't build for the simulator, e.g. an App Store update that needs
-  `sudo xcodebuild -runFirstLaunch`) → log it, PushNotification the human with the fix it printed, End of night. Agents
+- The human says stop, or no open, unblocked item you can run → **End of session** (§10).
+- `stop_after_blocked` items blocked in a row → End of session, and say what looks systemic.
+- An item tagged `[needs-user]` with no answer yet → skip it; it doesn't count as blocked.
+- `factory doctor` exits 2 (disk below the floor even after cleanup) → say so, End of session.
+- `factory doctor` exits 4 (Xcode can't build for the simulator, e.g. an App Store update that needs
+  `sudo xcodebuild -runFirstLaunch`) → PushNotification the human with the fix it printed, End of session. Agents
   can't work around it; don't let them try.
 - Usage limit → §9. The human says pause → park work as a patch (§7) and stop the wakeups.
 
-## 2. Preflight: every firing
+## 2. Doctor: every firing
 
-1. `factory preflight` prints one line: stale-derived-data prune → disk-guard → git → xcode → keep-awake → dev-up → seed restore.
-   Non-zero names the failing step: disk 2 → stop; git 5 → run the printed fix, find what set core.bare, rerun; xcode 4 →
-   stop and notify the human (§1); dev-up 1/2 → stderr, retry `factory dev-up` once, then stop and log; a port that is up but never answers → `factory dev-restart` (yours alone; the hook denies subagents); seed 3 → stop. "App Store auto-update on" in the line →
-   tell the human once (it is how Xcode breaks overnight). keep-awake holds a `caffeinate` for the night (`preflight.keep_awake`);
-   a closed MacBook lid still sleeps the Mac.
+1. `factory doctor` prints one line: stale-derived-data prune → disk (a sweep under `disk.min_gb`) → git → xcode →
+   keep-awake → the dev-stack worktree and tools → dev up → seed restore. Non-zero names the failing step: disk 2 → stop;
+   git 5 → run the printed fix, find what set core.bare, rerun; xcode 4 → stop and notify the human (§1); dev-tools 7 →
+   the dev command needs a tool its worktree lacks (`npm install` there, rerun); dev-up 1/2 → stderr, retry
+   `factory dev up` once, then stop; a port that is up but never answers → `factory dev restart` (yours alone; the hook
+   denies subagents); seed 3 → stop. Flags in the line (`dev worktree on <branch>: branch gone on origin`, `N commits
+   behind`) mean the dev stack serves a dead or stale checkout: fix it (`restack`, or update that worktree) before
+   trusting any proof. "App Store auto-update on" → tell the human once (it is how Xcode breaks overnight).
+   keep-awake holds a `caffeinate` (`preflight.keep_awake`); a closed MacBook lid still sleeps the Mac.
    Never start or kill the dev stack any other way (the hook denies it).
-2. **Worktree.** First firing: `factory worktree night-<n>` (prints the push command), then enter it with
-   `EnterWorktree` **before any subagent starts**. Subagents are locked to the worktree you are in when they start or
-   resume; never switch worktrees while one runs. One worktree with running agents at a time. `factory worktree` makes
-   the npm workspace links and derived build outputs match the worktree's own branch, so workers never borrow the
-   main checkout's.
-3. `git fetch origin && git merge --ff-only origin/<push branch>`. The tree must be clean apart from the cache
-   symlinks (`git status --porcelain`); a dirty tree you didn't make → stop and log it.
+2. **Worktree.** Per item: `factory worktree <name>` (prints the push command), then enter it with `EnterWorktree`
+   **before any subagent starts**. Subagents are locked to the worktree you are in when they start or resume; never
+   switch worktrees while one runs. One worktree with running agents at a time. `factory worktree` makes the npm
+   workspace links and derived build outputs match the worktree's own branch, so workers never borrow the main checkout's.
+3. `git fetch origin`, cut from the target. The tree must be clean apart from the cache symlinks
+   (`git status --porcelain`); a dirty tree you didn't make → stop and say so.
 
 ## 3. Pick the item
 
-The first unchecked, unblocked Backlog line, in order. Tags the human may write: `[needs-user]`, `IDEATE`, `TASTE`,
-`no test` (add no test work beyond the gate), `[blocked: why]` (written by `factory tick --blocked`).
+The first open, unblocked item, in order. Tags the human may write: `[needs-user]`, `IDEATE`, `TASTE`, `no test` (add no
+test work beyond the gate), `[blocked: why]`.
 
 **Name items so the human can read them cold.** An item's ID is a plain-English slug of two or more words that says
-what it is (`lifetime-globe`, `footer-flash`), never a code (`G3`, `F1`, `H-web`): the human steps away mid-night and
-comes back to the Log. `factory tick` refuses a code under `item_ids = "slug"`, and `night-new` warns about carried ones.
-In anything the human reads (chat, Log notes, PR bodies, notifications), say what changed in plain words, not just the slug.
+what it is (`lifetime-globe`, `footer-flash`), never a code (`G3`, `F1`, `H-web`): the human steps away mid-session and
+comes back to the tracker. In anything the human reads (chat, comments, PR bodies, notifications), say what changed in plain words, not just the slug.
 
 **IDEATE / TASTE items are decided before anything is built.** Brief the `ideate` model with the ideate template
 (references/briefs.md) for **2–3 options**, each built as a throwaway DEBUG variant or mock and shot with the **same
-scenario and cell**, frames side by side, plus a recommendation, in `<state_dir>/night-<n>/<id>-ideation.md`.
+scenario and cell**, frames side by side, plus a recommendation, in `<state_dir>/ideation/<id>-ideation.md`.
 - Human live → one `AskUserQuestion` (options = the concepts, frame paths in each description). Build once, after the pick.
-- Human away → if the item says "take the recommendation", do it and say so in the Log; otherwise add the question to
-  "With the user", tag the item `[needs-user]`, and move to the next item.
+- Human away → if the item says "take the recommendation", do it and say so in the Log; otherwise put the question to the
+  human in the tracker, tag the item `[needs-user]`, and move to the next item.
 
 ## 4. Brief the workers
 
@@ -113,9 +111,11 @@ Templates with slots: **references/briefs.md**. Fill every slot; a missing slot 
 
 **Only tier M and V items get a shooter** (tier L: tests plus the gate; the human checks on a device). The tier picks
 the matrix (the rules file's table). The shooter runs `factory proof <scenario> --out <dir> --udid <sim>` or
-`factory proof-matrix --scenario <s> --matrix <name> --out <dir>` (or the project wrappers the rules file names).
-Exit **0** PASS, **4** FAIL, **1** tooling error.
-- **A FAIL verdict blocks the item.** Round limits never override it, and "good, with a known flicker" doesn't ship. A tooling error is not a pass: fix the tool or the scenario, or block the item. Re-judge a clip with no simulator: `factory proof-verdict <clip.mp4>`. A hold FAIL at a high load → `proof-compare`.
+`factory proof --cells <matrix> --scenario <s> --out <dir>` (or the project wrappers the rules file names).
+Exit **0** PASS, **4** FAIL, **1** a tooling error.
+- **A FAIL verdict blocks the item.** Round limits never override it, and "good, with a known flicker" doesn't ship.
+- A tooling error is not a pass: fix the tool or the scenario, or block the item.
+- Re-judge a clip with no simulator: `factory proof-verdict <clip.mp4>`. A hold FAIL at a high load → `proof-compare`.
 
 ## 6. Review
 
@@ -124,7 +124,7 @@ Order, every round (detail: **references/review.md**):
 2. **`flags.png` first** when it exists: every WARN and FAIL, worst first, region outlined.
 3. `contact.png` / `matrix-contact.png`, then key frames you grab yourself with `factory clip-frames` (never `ffmpeg -ss`).
 4. `git diff --stat`, then the diffs of the core files.
-5. `factory dev-status`: every port still up (workers must not touch the stack).
+5. `factory dev status`: every port still up (workers must not touch the stack).
 Judge against the rules file's gates and guardrails. **Trust pixels, not reports**: an agent's "clean" means nothing
 until you have seen the frames. Fixes go back by `SendMessage` to the same implementer (it keeps its context), within
 `rounds` (`taste_rounds` for TASTE), until it nears `loop.wrap_context_k` (§9); re-prove after every round.
@@ -133,11 +133,10 @@ until you have seen the frames. Fixes go back by `SendMessage` to the same imple
 
 Still failing after its rounds → a `models.rescue` second pass (say why in the Log) → still failing → `loop.stuck`:
 - `ask` (default): ask the human before reverting; they may want a fresh max-effort pass instead.
-- Human away, or `stuck = "revert"`: save the diff as `<state_dir>/night-<n>/<id>.patch`, restore the tree
-  non-destructively (references/classifier.md), `factory tick --night <n> --item <id> --sha blocked --blocked "<why>" --log
-  "<what was tried>"`, move on.
+- Human away, or `stuck = "revert"`: save the diff as `<state_dir>/patches/<id>.patch`, restore the tree
+  non-destructively (references/classifier.md), mark the item blocked in the tracker with why and what was tried, move on.
 Never ship a known visual flaw. Before spending a second rescue on an item that was blocked before, show the human what
-the earlier night measured.
+the earlier attempt measured.
 
 ## 8. Gate and ship
 
@@ -146,12 +145,11 @@ the earlier night measured.
 2. `git add <explicit paths>` only: the cache symlinks show as untracked, so never `git add -A` or `git add .`.
 3. Commit: imperative subject, the body says why, then `git.commit_trailer` and any session line the harness asks for.
 4. `git push origin HEAD:<push branch>`. Never a `git.never_push` branch, never a force push (the hook denies both).
-5. First commit of the night: open **one** draft PR from the push branch to the night's target `pr_base`, with the
-   Backlog as its checklist. Pass `--pr <n>` to every tick after.
-6. `factory tick --night <n> --item <id> --sha <sha> --pr <pr> --log "<what · proof dir · what the human should check>"`.
-7. **Tracker** (`loop.linear`): one comment on the item's issue (what shipped, the shots dir, what needs the device).
+5. Open the item's PR to its target `pr_base`; the body says what shipped, where the proof evidence is and what the
+   human should check. A PR stacked on a parent that merges is retargeted later by `factory restack` (§10).
+6. **Tracker** (`loop.linear`): one comment on the item's issue (what shipped, the shots dir, what needs the device).
    If behaviour diverged from the issue, rewrite its body the same turn. Move it to `on_ship`. Don't skip this step.
-8. Never merge unless `allow_merge` is true or the human asks (the hook denies `gh pr merge`), and never into a `never_merge_into` base.
+7. Never merge unless `allow_merge` is true or the human asks (the hook denies `gh pr merge`), and never into a `never_merge_into` base.
 
 ## 9. Pace and usage
 
@@ -159,56 +157,49 @@ the earlier night measured.
 - **No heartbeat turns.** A firing with nothing to do ends with the wakeup or the stop, not a "still waiting" message.
 - A worker or you hit a usage or session limit (a 429, "session limit") → one Log line **with the reset time** the error
   gives, `ScheduleWakeup` for just after it (else `usage_limit_wake_s`), then resume the same item: an agent that shares
-  your worktree by `SendMessage`; an isolated one is never resumed: `factory wip-save` its worktree, then a fresh agent
-  starts from that patch.
+  your worktree by `SendMessage`; an isolated one is never resumed: save its uncommitted work as a patch
+  (`git -C <worktree> diff --binary`), then a fresh agent starts from that patch.
 - Spend on proofs, not on more agents: review, not parallelism, is the bottleneck.
 
 **Context is the budget.** Every tool call resends an agent's whole context, so a 600k-token agent costs several times a
 fresh one per call, and one long agent can spend the account's limit for every lane:
-- A `models.implement` / `models.rescue` agent does the design rounds, then hands back a patch (`<state_dir>/night-<n>/
+- A `models.implement` / `models.rescue` agent does the design rounds, then hands back a patch (`<state_dir>/patches/
   <id>.patch`). The rest (remaining proofs, re-checks, merges) goes to a fresh `models.shoot` agent started from that
   patch, or you run the commands yourself.
 - Never two high-effort `implement` / `rescue` agents at once. An agent past `loop.wrap_context_k` thousand tokens
-  (default 400; `factory tick` prints a `WRAP:` line for each) wraps up: it finishes the step, saves its patch, reports.
+  (default 400) wraps up: it finishes the step, saves its patch, reports.
 
-## 10. End of night
+## 10. End of session
 
 1. Nothing mid-flight: no running subagents; every shipped item committed and pushed. Never leave uncommitted work in
-   the night's worktree: ship it, or save it as `<state_dir>/night-<n>/<id>.patch` and say so.
-2. A final summary line in the Log: what shipped with SHAs, what's blocked and why, the device checks for the human.
-3. `factory end-night --night <n>` (**dry run first**), read it, then `factory end-night --night <n> --apply`.
-   **Exit 3** = a blank secret, a dirty worktree or night-file lint errors: put that first in the message to the human.
-   What `--apply` frees, so you never do it by hand:
-   - **The night's proof videos.** Every `*.mp4` under `<shots_dir>` goes (`disk.clips`; `keep` stops it). The evidence
-     stays: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages, logs. So a PR link or a Log note
-     must point at those, never at a clip, and re-judging a clip after end-night is not possible; do it before.
-   - **Bloated simulators.** The shooter sim and `sim.erase_at_end_night` are erased (not deleted) when their data is
-     over `sim.erase_above_gb`; a booted one is skipped while a `recordVideo` runs. Size before and after is in the output.
+   a worktree: ship it, or save it as `<state_dir>/patches/<id>.patch` and say so.
+2. `factory restack` (dry run, then `--apply`): any open PR whose base branch merged or was deleted is retargeted onto
+   the target, gets the target merged in and is pushed (plain push, never forced). A PR in a GitHub stack is left to GitHub.
+   A conflict it reports is a human's.
+3. `factory cleanup` (**dry run first**), read it, then `--apply`. It frees, so you never do it by hand:
+   - **Agent worktrees** on a `git.agent_branches` pattern whose PR merged (or whose branch is in a target), with their
+     `disk.dd_root` builds and `sim.ephemeral` sims. A locked, dirty, protected or just-touched worktree stays; a `FLAG`
+     line (unpushed commits older than a week) is the human's call, never removed.
+   - **Proof videos.** Every `*.mp4` under `<shots_dir>` goes (`disk.clips`; `keep` stops it). The evidence
+     stays: `verdict.json`, `flags.png`, contact sheets, rest/settled frames, montages, logs. So a PR link must point at
+     those, never at a clip, and re-judging a clip afterwards is not possible; do it before.
    - **Stale derived data** (no write for `disk.dd_stale_hours`) in `disk.dd_root` and `dd_roots_extra`; builds in use stay.
-     `factory cleanup` also drops the `disk.dd_root` builds and `sim.ephemeral` sims named for an agent worktree it removes.
-   - **Scratch** in `/tmp` and `$TMPDIR` (Instruments traces, TestFlight upload dirs) older than an hour.
-   - **The keep-awake `caffeinate`** preflight started (the Mac may sleep again).
-   Never `rm` videos, traces or app containers yourself before this step; if the disk is low mid-night,
-   `factory cleanup` (dry run, then `--apply`) is the same sweep.
-4. Read the `night file:` line of the report. `factory night-lint --night <n>` lists the findings: errors (exit 3) are a
-   missing section or title, a done item without a sha, a duplicate ID; fix those in the file by hand. Warnings (wrong
-   log shape, non-slug ID, extra section) are for the next night's author. `tick` already prints them after every write.
-5. Optional: `factory stats --night <n>` for the night's numbers.
-6. `ScheduleWakeup(stop: true)`, then one PushNotification line: what shipped, what needs the device.
+   - **Scratch** in `/tmp` and `$TMPDIR` (Instruments traces, TestFlight upload dirs) older than an hour, and
+     throwaway simulators nothing uses.
+   Never `rm` videos, traces or app containers yourself; if the disk is low mid-session, `factory cleanup --if-below
+   <GB> --apply` is the same sweep (`doctor` runs it for you under `disk.min_gb`).
+4. `ScheduleWakeup(stop: true)`, then one PushNotification line: what shipped, what needs the device.
 
 ## 11. The human
 
 The human's attention is the scarce resource; spend it in batches.
 - **Taste calls arrive as picks**: 2–4 options with side-by-side frames, one sitting, one question at a time.
-- **Device checks** go under "Needs the phone" with exact steps (what to install, where to tap, what to judge). Ask
+- **Device checks** go in the tracker with exact steps (what to install, where to tap, what to judge). Ask
   before every install on their device (`phone.ask_before_install`); never install, relaunch or switch branches on it
   while they are testing. Device reports: **references/phone-triage.md** before chasing a bug.
-- **"With the user"** holds what only they can do (decisions in flight, disk choices, releases). Don't do those items;
-  log when they say they're done.
+- **Questions only they can answer** (decisions in flight, disk choices, releases) go to them in the tracker. Don't do
+  those items; carry on when they say they're done.
 - Releases (`release.*`) only when the human asks; always pass the build number explicitly.
-- A new night: `factory night-new <n> --from <n-1> --theme "<theme>"`. It carries the open items, "With the user" and
-  "Needs the phone", and refuses to overwrite. The human orders the Backlog. Write Log lines as `hh:mm · <id> · <sha or
-  status word> · <note>` (`factory tick` does); `factory night-lint` checks the file's shape and never rewrites it.
 
 **Device builds** (`[phone]`): export the branch with `phone.export` into a `mktemp -d` copy (isolation blocks git on
 other worktrees), symlink each `phone.link_from_main` from the main checkout, delete each `phone.wipe` path, run
@@ -218,9 +209,9 @@ other worktrees), symlink each `phone.link_from_main` from the main checkout, de
 
 | Role | Key | Does |
 |---|---|---|
-| Orchestrator | this session | plans, briefs, reviews pixels, owns git / night file / tracker; no implementation |
+| Orchestrator | this session | plans, briefs, reviews pixels, owns git / tracker; no implementation |
 | Implementer | `implement` | writes the code in the worktree; reports in ≤ `implementer_words` |
-| Shooter | `shoot` | records proofs with `factory proof` / `proof-matrix`; reports paths + ≤ `shooter_words` |
+| Shooter | `shoot` | records proofs with `factory proof` (single or `--cells`); reports paths + ≤ `shooter_words` |
 | Ideation | `ideate` | 2–3 options + a recommendation before a TASTE build |
 | Rescue | `rescue` | the second pass on a stuck item, and gnarly bugs (layout loops, transitions) |
 
@@ -238,11 +229,10 @@ hook; show the human the diff or the command and ask.
 
 | When | Command |
 |---|---|
-| every firing | `factory preflight` · `factory dev-status` (review) · `factory disk-guard` |
+| every firing | `factory doctor` · `factory dev status` (review) |
 | worktrees | `factory worktree <name> [--base <ref>]` |
-| proofs | `factory proof` · `proof-matrix` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` · `proof-calibrate` |
-| builds, stopped agents | `factory run --job <type> -- <cmd>` for every build, test or proof (it queues for a weighted lease and waits inside; hook-guard denies a raw build; `factory run --status` shows leases and gates) · `factory sims idle --shutdown` · `proof-matrix --rerun-failed <prev out>` re-runs only the failed cells · `factory wip-save <worktree> --base <ref> --out <patch>` |
-| a second API | `factory read-api up` / `down` (stops only its own process) |
-| bookkeeping | `factory tick` · `factory night-new` · `factory night-lint` · `factory end-night` · `factory stats` |
-| upkeep | `factory cleanup [--only <category>] [--apply]` |
+| proofs | `factory proof` · `proof --cells <matrix>` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` |
+| builds, stopped agents | `factory run --job <type> -- <cmd>` for every build, test or proof (it queues for a weighted lease and waits inside; hook-guard denies a raw build; `factory run --status` shows leases and gates) · `factory sims idle --shutdown` · `proof --cells <matrix> --rerun-failed <prev out>` re-runs only the failed cells |
+| the dev stack | `factory dev up\|status\|restart\|read-api` (`read-api up` / `down` stops only its own process) |
+| upkeep | `factory cleanup [--only <category>] [--if-below <GB>] [--apply]` · `factory restack [--apply]` |
 | setup | `factory install-skill [--uninstall]` · `factory hook-guard` (PreToolUse) · `factory config get <key>` |

@@ -1,14 +1,14 @@
-// A synthetic project tree for the cleanup and disk-guard tests. Everything lives under one scratch
+// A synthetic project tree for the cleanup and doctor tests. Everything lives under one scratch
 // directory: a state dir with frame dumps, a build-cache dir, a scratch tmp dir, a git checkout with
 // worktrees and archives, and fake `xcrun` and `df` programs first on PATH.
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { scratch } from './helpers.mjs';
+import { cleanEnv, scratch } from './helpers.mjs';
 
 const LONG_AGO = new Date('2001-01-01T00:00:00Z');
 const GIT_ENV = {
-  ...process.env,
+  ...cleanEnv(),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 't',
@@ -31,6 +31,14 @@ const SIMS = [
 ];
 
 const old = (p) => utimesSync(p, LONG_AGO, LONG_AGO);
+
+/** Makes a worktree look idle: its HEAD log last changed long ago. */
+export function idleWorktree(path) {
+  const gd = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: path, env: GIT_ENV, stdio: 'pipe' }).toString().trim();
+  for (const f of ['logs/HEAD']) if (existsSync(join(gd, f))) old(join(gd, f));
+}
+/** `git` with the test identity and no global config, and every GIT_* variable of the runner stripped. */
+export const testGit = git;
 
 /**
  * Builds the tree and returns paths plus helpers.
@@ -102,6 +110,8 @@ export function tree({ simsExtra = [], preflightExtra = '', diskOverrides = {}, 
   writeFileSync(join(wt, 'agent-ahead', 'more.txt'), 'more');
   git(join(wt, 'agent-ahead'), 'add', 'more.txt');
   git(join(wt, 'agent-ahead'), 'commit', '-q', '-m', 'ahead');
+  // cleanup leaves a worktree git touched in the last 2 hours alone (an agent may be starting in it): these are old
+  for (const n of ['agent-merged', 'agent-symlink', 'agent-dirty', 'agent-ahead', 'night-1', 'phone', 'other']) idleWorktree(join(wt, n));
 
   // archives: 10, 9 in the checkout; 8, 7 in one worktree; 6 in another
   const arch = (dir, n) => {
@@ -148,6 +158,18 @@ echo "fake 1000 1000 $((gb * 1048576)) 1% /"
 exit 1
 `,
   );
+  // fake gh: `pr list ... --head <branch>` answers "<number> <sha>" for each line "<branch> <number> <sha>" of gh.merged
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env bash
+echo "$*" >> '${p('gh.log')}'
+head=""; prev=""
+for a in "$@"; do [[ "$prev" == --head ]] && head="$a"; prev="$a"; done
+[[ -f '${p('gh.merged')}' ]] && awk -v b="$head" '$1 == b { print $2 " " $3; exit }' '${p('gh.merged')}'
+exit 0
+`,
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
   chmodSync(join(bin, 'xcrun'), 0o755);
   chmodSync(join(bin, 'df'), 0o755);
   chmodSync(join(bin, 'pgrep'), 0o755);
@@ -169,7 +191,6 @@ ref  = "v0.0.0"
 name          = "fixture"
 main_checkout = "${main}"
 state_dir     = "${p('state')}"
-night_file    = "{state_dir}/night-{n}.md"
 shots_dir     = "{state_dir}/night-{n}/shots"
 
 [git]
@@ -188,8 +209,7 @@ default = true
 [disk]
 min_gb           = ${disk.min_gb}
 floor_gb         = ${disk.floor_gb}
-low_cleanup      = ${q(disk.low_cleanup)}
-frames_age_days  = ${disk.frames_age_days}
+${disk.low_cleanup ? `low_cleanup      = ${q(disk.low_cleanup)}\n` : ''}frames_age_days  = ${disk.frames_age_days}
 dd_auto          = ${disk.dd_auto}
 dd_root          = "${p('cache')}"
 dd_keep          = ["app", "test-kit", "test-*"]
@@ -221,11 +241,12 @@ ${extraToml(p)}`;
     mkdirSync(p('coresim', udid, 'data'), { recursive: true });
     writeFileSync(p('coresim', udid, 'data', 'blob'), Buffer.alloc(kb * 1024, 1));
   };
+  const ghMerged = (...lines) => writeFileSync(p('gh.merged'), lines.join('\n') + '\n');
   const pgrepSays = (text) => writeFileSync(p('pgrep.out'), text);
   /** Sets a dir's mtime (and its direct children's) `hours` ago. */
   const ago = (path, hours) => {
     const d = new Date(Date.now() - hours * 3600e3);
     utimesSync(path, d, d);
   };
-  return { ...s, ago, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, simData, pgrepSays, git: gitOut };
+  return { ...s, ago, ghMerged, root, p, main, wt, env, names, xcrunCalls, clean, tmpNames, simData, pgrepSays, git: gitOut };
 }

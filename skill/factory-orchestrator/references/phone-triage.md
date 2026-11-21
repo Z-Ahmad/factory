@@ -13,8 +13,8 @@ the human ten seconds to check and save a night of rescue passes.
 | "Keyboard never appears / stays up" (simulator or UI test) | Reset that simulator's keyboard preferences (`com.apple.keyboard.preferences`, e.g. `xcrun simctl spawn <udid> defaults delete com.apple.keyboard.preferences`) and reboot it | Stale hardware-keyboard prefs fake keyboard failures. A fresh simulator never has them; `[sim] reset_keyboard_prefs` records the intent, but no kit command resets them yet |
 | "Feels slower than last build" on a cable install | Was it a Debug build? | Debug builds are slower than Release. Judge feel on a release / beta build |
 | "It worked yesterday" after a cable install | Which build is on the phone (commit, build number)? Was the derived data wiped first? | Stale incremental device builds install old code. Wipe the device build dir (`[phone] wipe`) before every install |
-| "Map / images / previews blank" | Is the project's API token present? (end-night checks `[never_touch] secret_nonempty`) | A blanked token looks like a rendering bug. Only the human restores it |
+| "Map / images / previews blank" | Is the project's API token present? (`[never_touch] secret_nonempty` names the secrets that must not be blank) | A blanked token looks like a rendering bug. Only the human restores it |
 | "Taps do nothing" on a simulator | Did one known-good tap land first? | Simulator taps can silently no-op when no simulator window shows that device. Prefer DEBUG scenarios to taps |
 
-Log each answer in the night file's Log, and move a confirmed environment cause to the project's rules file if it will
+Log each answer in the tracker, and move a confirmed environment cause to the project's rules file if it will
 come up again.

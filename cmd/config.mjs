@@ -326,6 +326,8 @@ const int = (o) => leaf('int', o);
 const num = (o) => leaf('number', o);
 const bool = (o) => leaf('bool', o);
 const strs = (o) => leaf('string[]', o);
+// a string or a list of strings (a list read as lines in bash; one string is a list of one)
+const strOrStrs = (o) => leaf('string|string[]', o);
 const ints = (o) => leaf('int[]', o);
 const table = (keys, o = {}) => ({ t: 'table', keys, ...o });
 const strMap = () => ({ t: 'table', values: str() });
@@ -338,10 +340,7 @@ export const SCHEMA = table({
       name: str(REQ),
       main_checkout: str(REQ),
       state_dir: str(REQ),
-      night_file: str(REQ),
       shots_dir: str(),
-      item_line: str(),
-      log_line: str(),
     },
     REQ,
   ),
@@ -352,11 +351,11 @@ export const SCHEMA = table({
       worktree_branch: str(REQ),
       push_branch: str(REQ),
       agent_worktrees: str(),
-      // glob for agent branches (e.g. "factory/lane-*"): cleanup strips its literal prefix to get the lane slug its
-      // derived data and simulators are named for
-      agent_branches: str(),
+      // glob, or a list of globs (e.g. ["factory/lane-*", "claude/*", "cyrus/*"]), for agent branches: cleanup removes a
+      // worktree on one once its PR merged, and strips the glob's literal prefix to get the lane slug its derived
+      // data and simulators are named for
+      agent_branches: strOrStrs(),
       protected_worktrees: strs(),
-      phone_worktree: str(),
       never_push: strs(),
       commit_trailer: str(),
     },
@@ -427,7 +426,7 @@ export const SCHEMA = table({
     dd_keep_patterns: strs(),
     // Stale-build pruning: a derived-data dir with nothing modified for dd_stale_hours (default 6) is stale.
     // dd_roots_extra: more roots whose child dirs are pruned the same way (e.g. "~/Library/Developer/Xcode/DerivedData");
-    // dd_extra_keep: globs never pruned there. dd_auto (default true): preflight and end-night prune stale dirs themselves.
+    // dd_extra_keep: globs never pruned there. dd_auto (default true): doctor prunes stale dirs itself.
     dd_stale_hours: int(),
     dd_roots_extra: strs(),
     dd_extra_keep: strs(),
@@ -449,16 +448,12 @@ export const SCHEMA = table({
     protected: strs(),
     ephemeral: strs(),
     sweep: strs(),
-    // end-night --apply erases (never deletes) shooter_udid and every sim named in erase_at_end_night
-    // (names, UDIDs or globs) whose data dir is larger than erase_above_gb (default 6).
-    erase_above_gb: num(),
-    erase_at_end_night: strs(),
     // the simulator runtime every simulator the kit creates uses (proof-matrix fresh cells; default: the shooter's), e.g.
     // "com.apple.CoreSimulator.SimRuntime.iOS-26-5" or "iOS-26-5"; `config validate` checks it is installed
     runtime: str(),
     reset_keyboard_prefs: bool(),
-    // `factory sims idle`: a booted simulator nothing has used for idle_minutes (default 30) is idle; set, tick,
-    // preflight and end-night --apply shut idle ones down. keep_booted: names, UDIDs or globs never shut down.
+    // `factory sims idle`: a booted simulator nothing has used for idle_minutes (default 30) is idle; set,
+    // doctor shuts idle ones down. keep_booted: names, UDIDs or globs never shut down.
     idle_minutes: int(),
     keep_booted: strs(),
   }),
@@ -546,28 +541,9 @@ export const SCHEMA = table({
     // read by the orchestrator and the project's rules to pick how much proof an item needs; the kit only checks it.
     tier: strMap(),
   }),
-  // `factory stats`: where the agent transcripts live and how a night's numbers are read.
-  //   transcripts   directories holding <session>.jsonl (and <session>/subagents/*.jsonl); a * may stand in a path segment
-  //   nights        the windows file (night -> start, end, PRs, notes); read, never written, by the command
-  //   out           where nights-stats.json and .csv go
-  //   idle_gap_s    two transcript entries closer than this are one stretch of active time (default 600)
-  //   areas         name -> comma-separated globs; a PR file counts toward the first area that matches (rest: "other")
-  //   build_pattern a regex over night-file log lines; capture group 1 is a build number (counted once per night)
-  //   prices        [stats.prices] model -> "input,output,cache_read,cache_write[,cache_write_1h]" in dollars per
-  //                 million tokens (cache_write is the 5-minute rate); no cost is reported for a model with no entry,
-  //                 and the kit ships no prices
-  stats: table({
-    transcripts: strs(),
-    nights: str(),
-    out: str(),
-    idle_gap_s: int(),
-    areas: strMap(),
-    build_pattern: str(),
-    prices: strMap(),
-  }),
-  // `factory preflight`. xcode: check Xcode can build for the simulator (default: on when [proof.ios] is set);
+  // `factory doctor`. xcode: check Xcode can build for the simulator (default: on when [proof.ios] is set);
   // xcode_probe: an extra command that must print an "iOS Simulator" row, rerun only when Xcode or CoreSimulator changes;
-  // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12), stopped by end-night.
+  // keep_awake (default true, macOS): one `caffeinate -dimsu` for keep_awake_hours (default 12).
   preflight: table({ xcode: bool(), xcode_probe: str(), keep_awake: bool(), keep_awake_hours: int() }),
   // `factory run` (and the deprecated `factory slot` aliases): capacity = the sum of job weights that may run at once
   // (default 4); weights = job type -> weight, merged over the defaults (build/test/release/device/archive 2;
@@ -592,9 +568,6 @@ export const SCHEMA = table({
   // hook-guard: build_scripts = globs of npm/pnpm/yarn/bun script names that build or test (e.g. "ios:test*"); rule 7
   // denies them outside `factory run`. Default none: a script not listed (a status report, a lint) always passes.
   hook: table({ build_scripts: strs() }),
-  // `factory wip-save`: names or paths never copied from the worktree into the saved patch (default xcuserdata .build
-  // DerivedData node_modules .DS_Store; setting it replaces the list)
-  wip: table({ exclude: strs() }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),
@@ -610,9 +583,6 @@ export const SCHEMA = table({
   // the repo root: hard gates, the implementer-brief guardrails, binding lessons, branch targets.
   loop: table({
     rules: str(),
-    // "slug" (default): item IDs are plain-English kebab slugs (lifetime-globe), checked by tick and night-new;
-    // "any": no check (projects with letter-number codes like G3).
-    item_ids: str(),
     models: table({
       implement: str(),
       shoot: str(),
@@ -676,6 +646,10 @@ function checkNode(spec, value, path, report) {
     case 'bool':
       if (!isScalarOk(spec.t, value))
         report(here, `expected ${spec.t}, got ${typeName(value)} (${preview(value)})`);
+      return;
+    case 'string|string[]':
+      if (typeof value === 'string') return;
+      checkNode({ ...spec, t: 'string[]' }, value, path, report);
       return;
     case 'string[]':
     case 'int[]': {
