@@ -1,117 +1,27 @@
 #!/usr/bin/env bash
-# desc: the builder-slot gate: wait until few enough other builds, proofs and booted simulators run, and the load and memory are low
-# usage: factory slot wait --dd <name> [--udid <sim>] [--timeout <s>] [--ignore-leftovers]
-#        factory slot status [--dd <name>] [--udid <sim>] [--ignore-leftovers]
-# Two builds at once is the most a Mac takes before proofs lie (a hold that is only the load). Counted, never remembered:
-#   builders  other running `xcodebuild ... -derivedDataPath <dir>` and `factory proof` runs (sim-proof-core.sh --dd <dir>),
-#             one per derived-data folder; <name> (yours: dd-foo, foo or a path) is not counted.
-#   leftovers booted simulators no other running proof is using (a stopped agent's, an idle shooter, a [sim] protected
-#             one: protection keeps a simulator from deletion, not from loading the Mac), never --udid (yours).
-#             Each one counts as a builder: an idle booted simulator still loads the Mac. --ignore-leftovers skips the
-#             count (the hook guard uses it when it cannot tell which simulator is the caller's own).
-#   load      the 1-minute load average, at most [slot] max_load (default 2 x the CPU count).
-#   memory    with [slot] max_swap_gb, swap in use at most that (sysctl vm.swapusage); with [slot] min_free_pct, the
-#             memory free percentage memory_pressure reports at least that (sysctl kern.memorystatus_level).
-#   sims      with [slot] max_booted_sims, fewer booted simulators than that besides yours (so yours, booted or about
-#             to boot, makes at most that many).
-# A slot is free when builders + leftovers < [slot] builders (default 2, you included) and every other limit holds.
-# Each limit that holds the slot names its [slot] key in the reason. `wait` polls every [slot] poll_s (default 15) and
-# prints a line whenever the reason changes, then "slot: go (...)"; exit 0, or 2 after --timeout seconds ([slot]
-# timeout_s, default 3600) with the last reason.
-# `status` prints one line and exits 0 when a slot is free, 1 when not. Read-only: it never stops anything.
+# desc: deprecated: use `factory run` (slot status = run --status; slot wait = run --wait --job build)
+# usage: factory slot status            -> factory run --status
+#        factory slot wait [--timeout <s>] -> factory run --wait --job build [--timeout <s>]
+# Kept for scripts written before v0.22.0. --dd, --udid and --ignore-leftovers are accepted and ignored: `factory run`
+# weighs jobs against [slot] capacity and no longer counts derived-data folders or booted simulators. Inside a
+# `factory run` lease, `slot wait` says go at once.
 set -euo pipefail
-. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
-. "$FK_KIT_DIR/lib/darwin.sh"
+: "${FK_KIT_DIR:?run this through bin/factory}"
 
 SUB="${1:-}"; shift || true
-MINE="" MY_UDID="" TIMEOUT="${FK_SLOT_TIMEOUT_S:-3600}" LEFTOVERS=1
+TIMEOUT=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dd) MINE="${2:?}"; shift 2 ;;
-    --udid) MY_UDID="${2:?}"; shift 2 ;;
-    --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-    --ignore-leftovers) LEFTOVERS=0; shift ;;
+    --dd|--udid) shift 2 ;;
+    --ignore-leftovers) shift ;;
+    --timeout) TIMEOUT=(--timeout "${2:?}"); shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 case "$SUB" in
-  wait) [[ -n "$MINE" ]] || { echo "usage: factory slot wait --dd <name> [--udid <sim>] [--timeout <s>] [--ignore-leftovers]" >&2; exit 1; } ;;
-  status) ;;
-  *) echo "usage: factory slot wait --dd <name> [--udid <sim>] [--timeout <s>] | factory slot status [--dd <name>] [--udid <sim>]" >&2; exit 1 ;;
+  status) echo "factory slot is deprecated: use factory run --status" >&2
+          exec node "$FK_KIT_DIR/cmd/run.mjs" --status ;;
+  wait)   echo "factory slot is deprecated: run the job itself with factory run --job <type> -- <cmd>" >&2
+          exec node "$FK_KIT_DIR/cmd/run.mjs" --wait --job build ${TIMEOUT[@]+"${TIMEOUT[@]}"} ;;
+  *) echo "usage: factory slot status | factory slot wait [--timeout <s>]  (deprecated: use factory run)" >&2; exit 1 ;;
 esac
-[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { echo "--timeout wants seconds" >&2; exit 1; }
-MAX="${FK_SLOT_BUILDERS:-2}" MAX_LOAD="$(fk_max_load)" POLL="${FK_SLOT_POLL_S:-15}"
-MAX_SWAP="${FK_SLOT_MAX_SWAP_GB:-}" MIN_FREE="${FK_SLOT_MIN_FREE_PCT:-}" MAX_SIMS="${FK_SLOT_MAX_BOOTED_SIMS:-}"
-dd_name() { local n="${1%/}"; n="${n##*/}"; printf '%s' "${n#dd-}"; }
-MINE="$(dd_name "$MINE")"
-
-# over <a> <b>: exit 0 when the number a > b.
-over() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a > b) }'; }
-
-# snapshot: sets FREE (0/1), REASON, and HELD (the [slot] keys holding the slot, for `wait` to print a line on change).
-snapshot() {
-  local pid cmd dd builders="" n_b=0 proofs=0 seen=" " line name udid leftovers="" n_l=0 booted=() load swap mem
-  while read -r pid cmd; do
-    dd=""
-    if [[ "$cmd" =~ (^|/)xcodebuild[[:space:]].*-derivedDataPath[[:space:]]+([^[:space:]]+) ]]; then dd="${BASH_REMATCH[2]}"
-    elif [[ "$cmd" =~ sim-proof-core\.sh[[:space:]].*--dd[[:space:]]+([^[:space:]]+) ]]; then
-      dd="${BASH_REMATCH[1]}"
-      # a proof keeps one simulator booted; yours is already left out by --udid
-      [[ -n "$MINE" && "$(dd_name "$dd")" == "$MINE" ]] || proofs=$((proofs + 1))
-    else continue; fi
-    dd="$(dd_name "$dd")"
-    [[ -n "$MINE" && "$dd" == "$MINE" ]] && continue
-    [[ "$seen" == *" $dd "* ]] && continue
-    seen="$seen$dd "; n_b=$((n_b + 1)); builders="${builders:+$builders, }dd-$dd (pid $pid)"
-  done < <(ps -axo pid=,command= 2>/dev/null || true)
-  if fk_is_darwin && command -v xcrun >/dev/null 2>&1; then
-    while IFS= read -r line; do
-      [[ "$line" =~ ^[[:space:]]+(.+)[[:space:]]+\(([0-9A-F-]{36})\)[[:space:]]+\(Booted\) ]] || continue
-      name="${BASH_REMATCH[1]}" udid="${BASH_REMATCH[2]}"
-      [[ "$udid" == "$MY_UDID" ]] && continue
-      booted+=("$name")
-    done < <(xcrun simctl list devices booted 2>/dev/null || true)
-  fi
-  # a running proof keeps one simulator booted; the rest were left behind
-  if [[ "$LEFTOVERS" == 1 ]]; then n_l=$(( ${#booted[@]} - proofs )); (( n_l > 0 )) || n_l=0; fi
-  if (( n_l > 0 )); then leftovers="$(printf '%s, ' "${booted[@]:0:$n_l}")"; leftovers="${leftovers%, }"; fi
-  load="$(fk_load1)"
-  FREE=1 HELD=""
-  REASON="$n_b other builder$([[ $n_b == 1 ]] || echo s)${builders:+: $builders}"
-  if (( n_l > 0 )); then REASON="$REASON; $n_l booted simulator$([[ $n_l == 1 ]] || echo s) no proof is using: $leftovers"; fi
-  if (( n_b + n_l >= MAX )); then FREE=0; HELD="$HELD builders"; REASON="$REASON ([slot] builders = $MAX)"; fi
-  REASON="$REASON; load ${load:-?}"
-  if [[ -n "$MAX_LOAD" && -n "$load" ]] && over "$load" "$MAX_LOAD"; then
-    FREE=0; HELD="$HELD max_load"; REASON="$REASON > $MAX_LOAD ([slot] max_load)"
-  fi
-  if [[ -n "$MAX_SWAP" ]]; then
-    swap="$(fk_swap_used_gb)"
-    REASON="$REASON; swap ${swap:-?} GB"
-    if [[ -n "$swap" ]] && over "$swap" "$MAX_SWAP"; then FREE=0; HELD="$HELD max_swap_gb"; REASON="$REASON > $MAX_SWAP ([slot] max_swap_gb)"; fi
-  fi
-  if [[ -n "$MIN_FREE" ]]; then
-    mem="$(fk_mem_free_pct)"
-    REASON="$REASON; memory ${mem:-?}% free"
-    if [[ -n "$mem" ]] && over "$MIN_FREE" "$mem"; then FREE=0; HELD="$HELD min_free_pct"; REASON="$REASON < $MIN_FREE% ([slot] min_free_pct)"; fi
-  fi
-  if [[ -n "$MAX_SIMS" ]] && (( ${#booted[@]} >= MAX_SIMS )); then
-    FREE=0; HELD="$HELD max_booted_sims"
-    REASON="$REASON; ${#booted[@]} other booted simulator$([[ ${#booted[@]} == 1 ]] || echo s) ([slot] max_booted_sims = $MAX_SIMS)"
-  fi
-}
-
-if [[ "$SUB" == status ]]; then
-  snapshot
-  if [[ "$FREE" == 1 ]]; then echo "slot: free ($REASON)"; exit 0; else echo "slot: busy ($REASON)"; exit 1; fi
-fi
-
-START=$SECONDS LAST=""
-while :; do
-  snapshot
-  if [[ "$FREE" == 1 ]]; then echo "slot: go ($REASON)"; exit 0; fi
-  # the builders and what holds the slot, not the figures, so a load that moves by a point does not print a new line
-  KEY="${REASON%%; load*}|$HELD"
-  if [[ "$KEY" != "$LAST" ]]; then echo "slot: waiting ($REASON)"; LAST="$KEY"; fi
-  if (( SECONDS - START >= TIMEOUT )); then echo "slot: gave up after ${TIMEOUT}s ($REASON)"; exit 2; fi
-  sleep "$POLL"
-done

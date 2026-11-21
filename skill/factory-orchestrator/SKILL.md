@@ -232,7 +232,7 @@ hook; show the human the diff or the command and ask.
 | every firing | `factory doctor` · `factory dev status` (review) |
 | worktrees | `factory worktree <name> [--base <ref>]` |
 | proofs | `factory proof` · `proof --cells <matrix>` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` |
-| builds, stopped agents | `factory slot wait --dd <name>` before every build or proof (`factory proof` waits itself; hook-guard denies a build while busy) · `factory sims idle --shutdown` · `proof --cells <matrix> --rerun-failed <prev out>` re-runs only the failed cells |
+| builds, stopped agents | `factory run --job <type> -- <cmd>` for every build, test or proof (it queues for a weighted lease and waits inside; hook-guard denies a raw build; `factory run --status` shows leases and gates) · `factory sims idle --shutdown` · `proof --cells <matrix> --rerun-failed <prev out>` re-runs only the failed cells |
 | the dev stack | `factory dev up\|status\|restart\|read-api` (`read-api up` / `down` stops only its own process) |
 | upkeep | `factory cleanup [--only <category>] [--if-below <GB>] [--apply]` · `factory restack [--apply]` |
 | setup | `factory install-skill [--uninstall]` · `factory hook-guard` (PreToolUse) · `factory config get <key>` |

@@ -12,7 +12,9 @@ function project(edit = (s) => s) {
   const dir = realpathSync(s.dir);
   mkdirSync(join(dir, 'tools'));
   writeFileSync(join(dir, 'tools', 'accounts.mjs'), "const OTHER = 'no';\nconst SECRET = 'pw-123';\n");
-  writeFileSync(join(dir, 'factory.toml'), edit(readFileSync(fixture('valid.toml'), 'utf8')));
+  // state (the run leases and swap samples) stays in the scratch dir, never in the fixture's ~/example-factory
+  const text = readFileSync(fixture('valid.toml'), 'utf8').replace('"~/example-factory"', JSON.stringify(join(dir, 'state')));
+  writeFileSync(join(dir, 'factory.toml'), edit(text));
   const run = (cmd, args, env = {}) => factory([cmd, ...args], { cwd: dir, env: { FACTORY_TOML: join(dir, 'factory.toml'), FK_UNAME: 'Darwin', ...env } });
   return { ...s, dir, run };
 }
@@ -276,7 +278,7 @@ test('fk_proof_dd: the default is per worktree, and every dd gets a .metadata_ne
   }
 });
 
-test('proof: waits for a slot before the build and the boot, runs [proof.ios] before, skips a no-op build, shuts down a sim it booted', () => {
+test('proof: waits for room (factory run --wait) before the build and the boot, runs [proof.ios] before, skips a no-op build, shuts down a sim it booted', () => {
   const t = project((s) => s
     .replace('build         = "scripts/build.sh {dd}"', 'build         = "echo built >> builds.log"')
     .replace('fail_markers  = ["LAYOUT-LOOP"]\n', 'fail_markers  = ["LAYOUT-LOOP"]\nsources       = ["src"]\nbefore        = "echo seeded >> before.log"\n'));
@@ -290,6 +292,7 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
     stub('ffmpeg', 'exit 0');
     stub('ffprobe', 'exit 0');
     stub('ps', 'exit 0');
+    stub('vm_stat', 'exit 1');
     stub('sysctl', 'case "$2" in vm.loadavg) echo "{ 1.00 1.00 1.00 }" ;; hw.ncpu) echo 8 ;; *) exit 1 ;; esac');
     const git = (...a) => execFileSync('git', ['-C', t.dir, ...a], { env: { ...cleanEnv(), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
     mkdirSync(join(t.dir, 'src'));
@@ -304,7 +307,7 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
     let r = proof('o1');
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /no video written/);
-    assert.equal(r.stdout.match(/^slot: go /gm)?.length, 2, r.stdout);
+    assert.equal(r.stdout.match(/^run: go /gm)?.length, 2, r.stdout);
     assert.equal(readFileSync(join(t.dir, 'builds.log'), 'utf8'), 'built\n');
     assert.equal(readFileSync(join(t.dir, 'before.log'), 'utf8'), 'seeded\n');
     const calls = readFileSync(join(t.dir, 'xcrun.log'), 'utf8').trim().split('\n');
@@ -313,7 +316,7 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
     // the same tree again: no build, one slot wait (the boot)
     r = proof('o2');
     assert.match(r.stdout, /^build skipped: .*Example\.app is already a build of [0-9a-f]+ with nothing uncommitted under src/m);
-    assert.equal(r.stdout.match(/^slot: go /gm)?.length, 1, r.stdout);
+    assert.equal(r.stdout.match(/^run: go /gm)?.length, 1, r.stdout);
     assert.equal(readFileSync(join(t.dir, 'builds.log'), 'utf8'), 'built\n');
     // --keep-booted leaves it up
     writeFileSync(join(t.dir, 'xcrun.log'), '');

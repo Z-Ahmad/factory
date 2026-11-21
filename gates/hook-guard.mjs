@@ -19,12 +19,14 @@
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
 //   6. Bash: `factory dev restart` (or `dev-restart`) from a subagent (the hook input carries agent_id), unless
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
-//   7. A build or test while `factory slot status` says busy (with [slot] or [proof.ios] set): Bash running xcodebuild
-//      (an action that builds; -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or an
-//      npm/pnpm/yarn ios:test* script; and the XcodeBuildMCP build_* and test_* tools. The simulator named in the call
-//      (-destination id=<UDID>, --udid <UDID>) is the caller's own and not counted; with none named, booted simulators
-//      are not counted as leftovers (they may be the caller's), but load, memory and [slot] max_booted_sims still are.
-//      The denial says what holds the slot and which [slot] key. `factory slot` failing to answer allows the call.
+//   7. A build or test outside `factory run` (with [slot] or [proof.ios] set): Bash running xcodebuild (also through
+//      xcrun; an action that builds: -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or
+//      an npm/pnpm/yarn/bun script named by a [hook] build_scripts glob (default none, so a read-only script such as
+//      a status report always passes). The denial names the `factory run --job <type> -- <cmd>` to use instead, which
+//      queues for a weighted lease. Inside `factory run` such a build is allowed, unless its --job weighs 0 (unit, tsc),
+//      which takes no lease. The rest of the wrapped command is checked by the other rules as usual. The XcodeBuildMCP
+//      build_* and test_* tools cannot be wrapped: they are denied while `factory run --check --job build` says a build
+//      would wait (a check that fails to answer allows the call).
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
@@ -364,7 +366,8 @@ const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 const XCB_QUERIES = new Set(['-list', '-showBuildSettings', '-showdestinations', '-showsdks', '-version', '-help', '-usage', '-checkFirstLaunchStatus', '-runFirstLaunch', '-showTestPlans', '-resolvePackageDependencies', '-downloadPlatform', '-downloadAllPlatforms', '-license']);
 const BUILD_SCRIPTS = new Set(['build.sh', 'test.sh']);
 const BUILD_TOOL = /^mcp__.*[Xx]code[Bb]uild[^_]*__(?:build|test)[a-z_]*$/;
-const UDID_IN = /(?:\bid=|--udid[= ]|-udid[= ])([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})/;
+// default job weights, as cmd/run.mjs has them ([slot.weights] overrides)
+const DEFAULT_WEIGHTS = { build: 2, test: 2, release: 2, device: 2, archive: 2, proof: 1, vite: 1, playwright: 1, rules: 1, install: 1, unit: 0, tsc: 0 };
 const SCRIPT_RUNNERS = new Set([...SHELLS, 'source', '.', 'node', 'python', 'python3', 'ruby', 'perl', 'tsx', 'deno', 'bun']);
 
 const NPM_FAMILY = new Set(['npm', 'pnpm', 'yarn', 'bun']);
@@ -645,25 +648,45 @@ function checkWrites(c, redirs, ctx) {
   }
 }
 
-/** The build this command starts ("xcodebuild", "scripts/build.sh", "npm run ios:test"), or null. */
-function buildOf(c) {
-  if (c.name === 'xcodebuild') return c.args.some((a) => XCB_QUERIES.has(a)) ? null : 'xcodebuild';
-  if (BUILD_SCRIPTS.has(c.name)) return c.raw;
+/** The build this command starts: { what ("xcodebuild", "scripts/build.sh", "npm run ios:test"), job }, or null. */
+function buildOf(c, ctx) {
+  const xcb = (args) => (args.some((a) => XCB_QUERIES.has(a)) ? null : { what: 'xcodebuild', job: args.includes('test') || args.includes('test-without-building') ? 'test' : 'build' });
+  if (c.name === 'xcodebuild') return xcb(c.args);
+  if (c.name === 'xcrun' && c.args[0] === 'xcodebuild') return xcb(c.args.slice(1));
+  const script = (s) => ({ what: s, job: basename(s) === 'test.sh' ? 'test' : 'build' });
+  if (BUILD_SCRIPTS.has(c.name)) return script(c.raw);
   if (SHELLS.has(c.name)) {
-    const script = c.args.find((a) => !a.startsWith('-'));
-    if (script && BUILD_SCRIPTS.has(basename(script)) && !c.args.some((a) => /^-[a-zA-Z]*c/.test(a))) return script;
+    const s = c.args.find((a) => !a.startsWith('-'));
+    if (s && BUILD_SCRIPTS.has(basename(s)) && !c.args.some((a) => /^-[a-zA-Z]*c/.test(a))) return script(s);
   }
   if (NPM_FAMILY.has(c.name)) {
     const i = c.args[0] === 'run' || c.args[0] === 'run-script' ? 1 : 0;
-    if (/^ios:test/.test(c.args[i] ?? '')) return `${c.name} run ${c.args[i]}`;
+    const name = c.args[i] ?? '';
+    // only the scripts the project lists as builds ([hook] build_scripts); a script named like a test is a test job
+    if (name && anyGlob(ctx.buildScripts ?? [], name)) return { what: `${c.name} run ${name}`, job: /test/i.test(name) ? 'test' : 'build' };
   }
   return null;
 }
 
-function checkSlot(what, udid, ctx) {
+const shq = (w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
+
+function checkBuild(c, build, ctx, state) {
   if (!ctx.slotGate) return;
-  const r = ctx.slotStatus(udid);
-  if (r?.busy) deny(`${what} would start a build while the builder slot is busy: ${r.line} Wait for \`factory slot wait --dd <your derived data>${udid ? ` --udid ${udid}` : ''}\` to say go, then run it again (the limits are factory.toml [slot]).`);
+  if (state.runJob == null) {
+    const cmd = [c.raw, ...c.args].map(shq).join(' ');
+    deny(`\`${build.what}\` must run through \`factory run\`, which queues it for a weighted lease so heavy jobs never oversubscribe the Mac: \`factory run --job ${build.job} -- ${cmd}\` (it waits inside, prints how long, and frees the lease when the build exits; limits in factory.toml [slot]).`);
+  }
+  if (ctx.weights[state.runJob] === 0)
+    deny(`\`${build.what}\` under \`factory run --job ${state.runJob}\` takes no lease (${state.runJob} weighs 0): use --job ${build.job}`);
+}
+
+/** The --job and the wrapped command of `factory run … -- <cmd…>`, or null. */
+function runOf(c) {
+  if (c.args[0] !== 'run') return null;
+  const k = c.args.indexOf('--');
+  if (k === -1) return null;
+  const j = c.args.indexOf('--job');
+  return { job: j !== -1 && j < k ? (c.args[j + 1] ?? '') : '', inner: c.args.slice(k + 1) };
 }
 
 function analyze(src, ctx, state, depth) {
@@ -682,6 +705,17 @@ function analyze(src, ctx, state, depth) {
       // `factory dev up`, the shim, `factory dev read-api up`: the sanctioned routes; a restart only from the main session.
       if ((c.args[0] === 'dev-restart' || (c.args[0] === 'dev' && c.args[1] === 'restart')) && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
         deny(`\`factory dev restart\` is the orchestrator's: a subagent may not restart the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service instead`);
+      // `factory run --job <t> -- <cmd…>`: the wrapped command is checked too, as running inside a lease
+      const run = runOf(c);
+      if (run?.inner.length && depth < 4) {
+        const outer = state.runJob;
+        state.runJob = run.job;
+        try {
+          analyze(run.inner.map(shq).join(' '), ctx, state, depth + 1);
+        } finally {
+          state.runJob = outer;
+        }
+      }
       continue;
     }
     if (depth < 4) {
@@ -690,11 +724,8 @@ function analyze(src, ctx, state, depth) {
         if (k !== -1 && c.args[k + 1] != null) analyze(c.args[k + 1], ctx, state, depth + 1);
       } else if (c.name === 'eval') analyze(c.args.join(' '), ctx, state, depth + 1);
     }
-    const build = buildOf(c);
-    if (build && !state.slotChecked) {
-      state.slotChecked = true;
-      checkSlot(`\`${build}\``, UDID_IN.exec(src)?.[1]?.toUpperCase() ?? null, ctx);
-    }
+    const build = buildOf(c, ctx);
+    if (build) checkBuild(c, build, ctx, state);
     if (c.name === 'git') checkGit(c, ctx);
     else if (c.name === 'gh') checkGh(c, ctx);
     checkDevStart(c, ctx);
@@ -720,20 +751,22 @@ export function guardConfig(data, tomlPath) {
     neverMergeInto: globs(data.loop?.never_merge_into),
     resolveBase: ghPrBase,
     slotGate: Boolean(data.slot || data.proof?.ios),
-    slotStatus: (udid) => slotStatus(tomlPath, udid),
+    weights: { ...DEFAULT_WEIGHTS, ...(data.slot?.weights ?? {}) },
+    buildScripts: globs(data.hook?.build_scripts),
+    runCheck: (job) => runCheck(tomlPath, job),
   };
 }
 
-/** `factory slot status` for the hook: { busy, line }, or null when it could not answer (the call is then allowed). */
-export function slotStatus(tomlPath, udid) {
+/** `factory run --check --job <job>` for the hook: { busy, line }, or null when it could not answer (the call is then allowed). */
+export function runCheck(tomlPath, job) {
   const kit = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const r = spawnSync(join(kit, 'bin', 'factory'), ['slot', 'status', ...(udid ? ['--udid', udid] : ['--ignore-leftovers'])], {
+  const r = spawnSync(join(kit, 'bin', 'factory'), ['run', '--check', '--job', job], {
     encoding: 'utf8',
     timeout: 20000,
-    env: { ...process.env, FACTORY_TOML: tomlPath },
+    env: { ...process.env, FACTORY_TOML: tomlPath, FK_RUN_SWAP_PROBE_S: '0' },
   });
   if (r.status === 0) return { busy: false, line: r.stdout.trim() };
-  if (r.status === 1 && r.stdout.startsWith('slot: busy')) return { busy: true, line: r.stdout.trim() };
+  if (r.status === 1 && r.stdout.startsWith('run: ')) return { busy: true, line: r.stdout.trim() };
   return null;
 }
 
@@ -794,9 +827,13 @@ export function evaluate(payload, cfg) {
       const p = input.file_path ?? input.notebook_path ?? input.path;
       if (typeof p === 'string' && p) ctx.checkTouch(p, 'editing');
     } else if (BUILD_TOOL.test(tool ?? '')) {
-      checkSlot(tool.replace(/^mcp__.*__/, 'XcodeBuildMCP '), UDID_IN.exec(JSON.stringify(input))?.[1]?.toUpperCase() ?? null, ctx);
+      if (ctx.slotGate) {
+        const job = /__test/.test(tool) ? 'test' : 'build';
+        const r = ctx.runCheck(job);
+        if (r?.busy) deny(`${tool.replace(/^mcp__.*__/, 'XcodeBuildMCP ')} would start a build the Mac has no room for: ${r.line} Run the build through \`factory run --job ${job} -- <xcodebuild …>\` instead, which queues for it (the limits are factory.toml [slot]).`);
+      }
     } else if (tool === 'Bash' && typeof input.command === 'string') {
-      const state = { lsofPort: null, dynamicKill: false, slotChecked: false };
+      const state = { lsofPort: null, dynamicKill: false, runJob: null };
       analyze(input.command, ctx, state, 0);
       if (state.lsofPort && state.dynamicKill)
         deny(`agents may not stop the dev stack (dev.agents_may_start = false): killing whatever listens on :${state.lsofPort} is blocked`);

@@ -172,6 +172,25 @@ test('a placeholder that needs an unset config key is an error', () => {
   assert.ok(r.errors.some((e) => /\{trip\} needs seed\.trip/.test(e.message)));
 });
 
+test('[slot] capacity, [slot.weights], max_swapouts_per_min and orphan_minutes, and [proof.tier], validate', () => {
+  const text = `${validText}\n[slot]\ncapacity = 6\nmax_swapouts_per_min = 2000\norphan_minutes = 30\nmin_free_pct = 15\n\n[slot.weights]\nbuild = 3\nlint = 1\n\n[proof.tier]\nmotion = "default"\nvisual = "quick"\nlogic = "none"\n`;
+  const r = load(text);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.resolved.slot.weights, { build: 3, lint: 1 });
+  assert.deepEqual(r.resolved.proof.tier, { motion: 'default', visual: 'quick', logic: 'none' });
+  assert.deepEqual(load(`${validText}\n[hook]\nbuild_scripts = ["ios:test*", "ios:native"]\n`).errors, []);
+  assert.equal(load(`${validText}\n[hook]\nbuild_scripts = "ios:*"\n`).errors[0].path, 'hook.build_scripts');
+  const bad = load(`${validText}\n[slot.weights]\nbuild = "two"\n\n[proof.tier]\nmotion = 1\n`);
+  assert.deepEqual(bad.errors.map((e) => e.path).sort(), ['proof.tier.motion', 'slot.weights.build']);
+});
+
+test('[slot] max_swap_gb and max_booted_sims are named as removed, pointing at what replaced them', () => {
+  const r = load(`${validText}\n[slot]\nmax_swap_gb = 8\nmax_booted_sims = 3\n`);
+  assert.equal(r.errors.length, 2);
+  assert.match(r.errors[0].message, /'max_swap_gb' was removed: .*min_free_pct/);
+  assert.match(r.errors[1].message, /'max_booted_sims' was removed: .*capacity/);
+});
+
 test('[worktree] node_modules must be "overlay" or "link"', () => {
   const r = load(validText.replace('node_modules   = "overlay"', 'node_modules   = "symlink"'));
   assert.equal(r.errors.length, 1);

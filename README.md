@@ -165,7 +165,8 @@ scripts/factory install-skill          # links skill/factory-orchestrator into ~
 | `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only). `--orientation landscape` turns the simulator first and back after (see [orientation](#proof-orientation-builder-slots-and-same-load-compares)); `verdict.json` records the load at the start and end of the clip |
 | `factory proof --cells <matrix> --scenario <s>` | ✓ | Runs one scenario across the cells of `[proof.matrix.<matrix>]` (cells in `[proof.cell.*]`: themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails. A `--cells` value that names no matrix is the old `--cells a,b` (only those cells of the default matrix); `proof-matrix` still works as an alias |
 | `factory proof-compare --scenario <s> --base <ref>` | ✓ | Base and patch side by side at the same load: builds the base once in its own worktree, alternates base and patch runs on one simulator, writes `compare.md` and a `COMPARE` line with median holds and loads. `--base-dd` for a prebuilt base, `--slot` to gate each run |
-| `factory slot wait --dd <name>` | ✓ | The builder-slot gate: blocks until fewer than `[slot] builders` (default 2) other builds, proofs and leftover booted simulators run, the load is under `[slot] max_load` (default 2 × CPUs) and the memory limits hold, and prints why it waits, naming the `[slot]` key. `slot status` for one line |
+| `factory run --job <type> -- <cmd…>` | ✓ | Runs a heavy job (a build, a test run, a proof, a vite build, an emulator suite) under a **weighted reservation**: queued first come, first served, admitted when its weight fits `[slot] capacity` and the memory and load gates hold, so the Mac is never oversubscribed and the caller never polls. Runs the command in its own process group, stops that group on exit, on a signal or when `--owner-pid` dies, and frees the lease. `--status`, `--reap`, `--check`. See [`factory run`](#factory-run-weighted-leases-for-heavy-jobs) |
+| `factory slot status\|wait` | ✓ | Deprecated aliases: `slot status` is `run --status`, `slot wait` is `run --wait --job build` (blocks until a build would start, without a lease). Each prints a deprecation line |
 | `factory sims idle [--shutdown]` | ✓ | Lists the booted simulators nothing uses (no running process names the UDID, no app launched and no boot within `[sim] idle_minutes`); `--shutdown` shuts them down (never erases or deletes). `doctor` runs it when `[sim] idle_minutes` is set |
 | `factory proof-verdict <clip.mp4>` | ✓ | Scores any recording for flash, hold, bounce and the app's fail markers. No simulator needed |
 | `factory clip-frames <clip.mp4> …` | ✓ | Grabs frames or contact sheets from a simulator recording without seeking (seeking those files returns stale frames) |
@@ -192,7 +193,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
-| `[slot]` | no | The builder-slot gate's limits |
+| `[slot]` | no | `factory run`'s capacity, job weights and gates |
 | `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch) |
 
 `{placeholders}` refer to other values: `{state_dir}` and `{main_checkout}` are filled from the file itself, and `~` expands to your home folder. Run-time placeholders such as `{n}` (night number) and `{name}` are filled by the command that uses them. Commands receive every value as an environment variable: `proof.ios.seconds` becomes `FK_PROOF_IOS_SECONDS`, and lists are newline-separated.
@@ -208,7 +209,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 
 The proof commands check the build they install, too: without `--build`, `factory proof` (single or matrix) prints an `app:` line (when it was built and from which commit; matrix.md starts with it) and warn when the installed app is older than the source. `[proof.ios] sources` (git pathspecs, default the whole tree) says which changes count; `[proof.ios] stale_app = "refuse"` makes a stale app exit 3 instead of warning.
 
-### Proof orientation, builder slots and same-load compares
+### Proof orientation, the slot and same-load compares
 
 | Key | Default | What it does |
 |---|---|---|
@@ -216,17 +217,49 @@ The proof commands check the build they install, too: without `--build`, `factor
 | `[proof.ios] orientation_build` | unset | The `--build` command when `orientation_cmd` will turn the simulator (`{dd}` filled in), e.g. a `build-for-testing` that also builds the UI-test runner the turn needs. Without it `--build` uses `build`, and a turn that needs the runner fails. |
 | `[proof.ios] orientation_env` | unset | An environment variable the app reads at launch, set to the orientation (`env_prefix` is prepended, as for `flag_env`). Either key, or both, may be set. |
 | `[proof.cell.<c>] orientation` | unset | The cell runs with `--orientation <o>`; `proof --cells <matrix> --orientation <o>` is the default for cells without one. matrix.md shows it next to the device. |
-| `[slot] builders` | `2` | How many builds and proofs may run at once, the caller included. A booted simulator no running proof uses (a stopped agent's, an idle shooter) counts as one, `[sim] protected` ones too: protection keeps a simulator from deletion, not from loading the Mac. |
-| `[slot] max_load` | 2 × CPUs | The highest 1-minute load average a slot opens at, and the load above which a proof's `verdict.json` says `"unreliable": true`. `config validate` warns above 4 × the CPUs, where it never trips. |
-| `[slot] max_swap_gb` | unset | The most swap in use (`sysctl vm.swapusage`) a slot opens at. macOS gives swap back slowly, so pair it with `min_free_pct`, which recovers as soon as memory does. |
-| `[slot] min_free_pct` | unset | The least free memory a slot opens at: the "System-wide memory free percentage" `memory_pressure` reports (`sysctl kern.memorystatus_level`). |
-| `[slot] max_booted_sims` | unset | The most booted simulators, the caller's included. |
+| `[slot] max_load` | 2 × CPUs | The load above which a proof's `verdict.json` says `"unreliable": true`, and one of `factory run`'s gates (see [`factory run`](#factory-run-weighted-leases-for-heavy-jobs)). `config validate` warns above 4 × the CPUs, where it never trips. |
 | `[slot] boot_settle_s` | `120` | After a cold boot or a build, how long a proof waits for the 1-minute load to come back under `max_load` before the counted clip. A cold-booted simulator then gets one unrecorded launch, and `--orientation` turns it after the settle. A settle that runs out is said (`settle: timed out`), the clip records anyway and may come out load-unreliable; `verdict.json`'s `load.settle` has `waited_s` and `timed_out`. |
-| `[slot] poll_s` / `timeout_s` | `15` / `3600` | How often `slot wait` looks, and when it gives up (exit 2). |
 
-The gate runs everywhere a build or a boot starts: `factory proof` waits before its build and before it boots the simulator (`--no-slot` skips both), a matrix proof before its build and before each cell, and hook-guard denies a build or test (Bash `xcodebuild`, a `build.sh` or `test.sh`, an `ios:test*` script; the XcodeBuildMCP `build_*` and `test_*` tools) while `slot status` says busy, naming the `[slot]` key that holds it. A project adds the XcodeBuildMCP tools to its hook matcher (`"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__XcodeBuildMCP__build_.*|mcp__XcodeBuildMCP__test_.*"`). When the call names no simulator, the hook can't tell which booted one is the caller's, so it skips the leftover count; load, memory and `max_booted_sims` still apply.
+The slot is checked everywhere a build or a boot starts: `factory proof` waits (`factory run --wait`) before its build and before it boots the simulator (`--no-slot` skips both, and so does running the proof inside `factory run`), and `proof --cells` before its build and before each cell.
 
 Proofs stop loading the Mac once they are done: a simulator `factory proof` booted is shut down when it ends (`--keep-booted` keeps it), a matrix proof boots the shooter only for a shooter cell and shuts it down again, and `factory sims idle --shutdown` shuts down every booted simulator nothing uses (see `[sim] idle_minutes`). `--build` skips a build that would change nothing (the app's stamp is from HEAD, or from a commit with no change under `[proof.ios] sources`, with the same build command and nothing uncommitted under the sources; `--rebuild` builds anyway). `[proof.ios] before` (e.g. the seed restore) runs before each proof installs the app, once per matrix. `proof --cells a,b` runs some cells of the default matrix; `--rerun-failed <previous out>` keeps the cells that passed there and runs the rest.
+
+### `factory run`: weighted leases for heavy jobs
+
+Heavy work goes through one command, so a night of agents never builds four apps at once on an 8-core Mac, nobody sits in a polling loop, and nothing a job starts outlives it:
+
+```
+factory run --job build --owner "$BRANCH" --dd dd-feature -- xcodebuild -scheme App -derivedDataPath dd-feature build
+factory run --job proof --owner-pid $$ -- factory proof scrub --udid "$SIM"
+factory run --status
+```
+
+- **Weights.** Each job type weighs something out of `[slot] capacity` (default 4): `build`, `test`, `release`, `device`, `archive` (xcodebuild-class) 2; `proof` (boot plus record), `vite` (a production build), `playwright`, `rules` (an emulator suite), `install` (npm install) 1; `unit` and `tsc` 0, which take no lease and never wait. `[slot.weights]` changes a weight or adds a type. An unknown `--job` is refused; a weight past the capacity counts as the capacity.
+- **Queue.** Reservations live in `<state_dir>/slot/leases.json`, changed only under `/usr/bin/lockf` (`flock` elsewhere, a lock folder as a last resort). A job joins the queue and waits **inside the command** until it is first in line and its weight fits: first come, first served, so a small job never jumps a big one that came first. Once admitted it prints how many minutes it waited.
+- **Gates.** Admission also needs, each time: `sysctl kern.memorystatus_vm_pressure_level` = 1 (normal); fewer than `[slot] max_swapouts_per_min` swap-outs over the last minute (the `vm_stat` "Swapouts" counter, sampled into `<state_dir>/slot/swapouts.json`; a first run with no recent sample measures for 3 s); free memory (`kern.memorystatus_level`) at least `[slot] min_free_pct`; the 1-minute load at most `[slot] max_load`. Swap in use is never a gate. A reading the system does not give (off macOS) holds nothing. While it waits, a line names what holds it and its `[slot]` key, printed again only when that changes.
+- **Leases.** Each records the job, weight, the runner's pid, the command's process group, the owner (`--owner`, default the branch and folder), `--dd`, `--sim`, the start time and the command.
+- **Process group.** The command runs in its own process group. When it exits, whatever it left running in that group is stopped (TERM, then KILL after 3 s) before the lease is freed. SIGINT, SIGTERM or SIGHUP to `factory run`, or the death of `--owner-pid` (a numeric `--owner` counts as one), stop the whole group too. Exit: the command's own status (128 + n for a signal); 75 when the wait passed `--timeout` / `[slot] timeout_s`.
+- **Nesting.** The command gets `FK_RUN_LEASE` and `FK_SLOT_HELD=1`: a `factory run` inside it takes no second reservation, and a proof inside it skips its own slot waits.
+- **Reaper.** `factory run --reap`, also run at every admission: removes leases whose `factory run` is gone and kills the process group it left, but only when every process in it started after the lease did (a reused number is left alone); kills `simctl io … recordVideo` processes whose parent is pid 1, and kit test runs (node running a kit checkout's `test/*.test.mjs`), older than `[slot] orphan_minutes`. It prints each thing it kills and never touches a process it can't attribute to a lease or one of those two patterns.
+- **Status.** `factory run --status` lists the leases (job, weight, owner, age, process group, command), the queue, the gate readings, and whether a build would start now (exit 0) or wait (exit 1). `--check --job <t>` is the one-line form; `--wait --job <t>` blocks until a `<t>` would start without taking a lease (what `slot wait` now does).
+
+**Hook.** With `[slot]` or `[proof.ios]` set, hook-guard denies a raw build or test outside `factory run`: Bash `xcodebuild` (also through `xcrun`; `-list`, `-showBuildSettings` and other queries pass), a `build.sh` or `test.sh`, an npm/pnpm/yarn/bun script that `[hook] build_scripts` lists. The denial gives the `factory run --job <type> -- <cmd>` to run instead. Wrapped, it passes, unless the `--job` weighs 0; the wrapped command is still checked by the other rules. The XcodeBuildMCP `build_*` and `test_*` tools can't be wrapped, so they are denied while `factory run --check --job build` says a build would wait. A project adds those tools to its hook matcher (`"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__XcodeBuildMCP__build_.*|mcp__XcodeBuildMCP__test_.*"`).
+
+| Key | Default | What it does |
+|---|---|---|
+| `[slot] capacity` | `4` | The sum of job weights that may run at once: two xcodebuild-class jobs, or one and two proofs. |
+| `[slot.weights]` | see above | Job type → weight (an int), merged over the defaults, e.g. `build = 3` or `lint = 1` (a new type). |
+| `[slot] max_load` | 2 × CPUs | The highest 1-minute load a job is admitted at. |
+| `[slot] min_free_pct` | `15` | The least free memory a job is admitted at: memory_pressure's "System-wide memory free percentage" (`sysctl kern.memorystatus_level`). `0` turns it off. |
+| `[slot] max_swapouts_per_min` | `1000` | The most pages swapped out over the last minute a job is admitted at. Unlike swap in use, which macOS keeps long after the pressure that wrote it ends, the rate falls as soon as the pressure does. |
+| `[slot] orphan_minutes` | `60` | The age past which the reaper kills an orphaned recording or a kit test run. |
+| `[slot] poll_s` / `timeout_s` | `5` / `3600` | How often a queued job looks again, and when it gives up (exit 75; `0` waits for ever). `--timeout` overrides it. |
+| `[hook] build_scripts` | `[]` | Globs of npm/pnpm/yarn/bun script names that build or test, e.g. `["ios:test*", "ios:native", "ios:testflight*"]`; hook-guard denies them outside `factory run` (a name containing `test` suggests `--job test`, else `--job build`). A script not listed, such as a read-only status report, always passes. |
+| `[slot] builders` | — | No longer read: `capacity` replaced it. `max_booted_sims` and `max_swap_gb` were removed; `config validate` names them. |
+
+### `[proof.tier]`
+
+An optional table of tier name → matrix name (strings), for projects whose rules pick how much proof an item needs, e.g. `motion = "default"`, `visual = "quick"`, `logic = "none"`. The kit validates it and passes it on as `FK_PROOF_TIER_<NAME>`; what a tier means is the project's.
 
 ### App-reported ground truth: `HITCH` and settle
 

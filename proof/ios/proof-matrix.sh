@@ -17,8 +17,8 @@
 # shooter cell runs and shut down again on exit when this run booted it. One build serves every cell: --build builds once
 # into --dd ([proof.ios] build), then every cell installs that app; the build is skipped when the app is already a build
 # of this tree (see `factory proof`; --rebuild builds anyway).
-# The builder slot (`factory slot wait`) before the build and before each cell, so a cell never boots or records while
-# two others build or the Mac is short of load or memory ([slot]); --no-slot skips it. [proof.ios] before (e.g. the seed
+# The slot (`factory run --wait`) before the build and before each cell, so a cell never boots or records while the
+# [slot] capacity is taken or the memory or load gates hold; --no-slot skips it, and so does running inside `factory run`. [proof.ios] before (e.g. the seed
 # restore) runs once, before the first cell.
 # --cells a,b runs only those cells of the matrix. --rerun-failed <previous out> keeps every cell whose
 # <previous out>/<cell>/verdict.json is a PASS (copied into --out when it is another dir; "kept" in matrix.md) and runs
@@ -129,10 +129,11 @@ EPHEMERAL_PREFIX="$(printf '%s\n' "${FK_SIM_EPHEMERAL:-fk-proof-*}" | head -n 1)
 EPHEMERAL_PREFIX="${EPHEMERAL_PREFIX%\*}"
 
 DD="$(fk_proof_dd "$DD_ARG")"
-# slot_wait <what>: the builder-slot gate (factory slot), unless --no-slot or the caller holds the slot.
+# slot_wait <job> <what>: wait until a <job> would start (`factory run --wait`), unless --no-slot or the caller holds a
+# lease (FK_SLOT_HELD, set by `factory run`).
 slot_wait() {
   [[ "$SLOT" == 1 ]] || return 0
-  "$FK_KIT_DIR/cmd/slot" wait --dd "$DD" --udid "$UDID" || { echo "no builder slot for $1 (factory slot; --no-slot skips the gate)" >&2; exit 1; }
+  node "$FK_KIT_DIR/cmd/run.mjs" --wait --job "$1" || { echo "no room for $2 (factory run --wait; --no-slot skips the gate)" >&2; exit 1; }
 }
 APP="$(fk_proof_app "$DD")"
 BUILT=0 BUILD_TPL=""
@@ -144,7 +145,7 @@ if [[ "$BUILD" == 1 ]]; then
   if [[ "$REBUILD" == 0 && -d "$APP" ]] && SKIP="$(node "$FK_KIT_DIR/proof/ios/app-fresh.mjs" --app "$APP" --dd "$DD" --root "$FK_ROOT" --up-to-date --build-cmd "$BUILD_TPL")"; then
     echo "$SKIP"
   else
-    slot_wait "the build"
+    slot_wait build "the build"
     ( cd "$FK_ROOT" && bash -c "$(fk_fill "$BUILD_TPL" dd "$(printf '%q' "$DD")")" )
     BUILT=1
   fi
@@ -192,7 +193,7 @@ while IFS=$'\t' read -r c k _; do
   [[ "$k" == shooter ]] && ! kept "$c" && NEED_SHOOTER=1
 done <<<"$CELLS"
 if [[ "$NEED_SHOOTER" == 1 ]]; then
-  slot_wait "the shooter"
+  slot_wait proof "the shooter"
   xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)' || SHOOTER_BOOTED=1
   xcrun simctl boot "$UDID" 2>/dev/null || true
   xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1
@@ -319,7 +320,7 @@ while IFS=$'\t' read -r CELL SIMKIND SYSTEM APPEARANCE TYPES ORIENT; do
     PICK="$(pick_device_type "$TYPES")"
     if [[ -z "$PICK" ]]; then echo "no device type among: $TYPES (xcrun simctl list devicetypes)" >&2; [[ "$KEEP" == 1 ]] || CELL_RC=1; else DEVICE_TYPE="${PICK%%$'\t'*}"; fi
   fi
-  [[ "$KEEP" == 1 || "$CELL_RC" != 0 ]] || slot_wait "cell $CELL"
+  [[ "$KEEP" == 1 || "$CELL_RC" != 0 ]] || slot_wait proof "cell $CELL"
   if [[ "$SIMKIND" == fresh && "$KEEP" == 0 ]]; then
     # the sim is deleted right after its cell: turning it back to portrait is wasted time
     if [[ ${#ORIENT_ARGS[@]} -gt 0 ]]; then ORIENT_ARGS+=(--no-turn-back); fi
