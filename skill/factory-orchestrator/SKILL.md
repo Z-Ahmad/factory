@@ -99,23 +99,23 @@ scenario and cell**, frames side by side, plus a recommendation, in `<state_dir>
 ## 4. Brief the workers
 
 Templates with slots: **references/briefs.md**. Fill every slot; a missing slot is a bug in the brief.
-- **Implementer** (`models.implement`, foreground): the item text verbatim; the rules file's guardrails paragraph,
-  pasted whole; the hard gates; the unit-test line (`tests.unit`); the reference when the feature exists elsewhere (required
+- **Every brief names a proof tier** (`{tier}`: M motion, V visual, L logic, from the rules file's table, each mapped
+  to a `factory.toml` matrix or to "no simulator"), chosen from the item and its files. Review can raise it, never lower it.
+- **Implementer** (`models.implement`, foreground): the item text verbatim; the tier; the rules file's guardrails paragraph, pasted whole; the hard gates; the unit-test line (`tests.unit`); the reference when the feature exists elsewhere (required
   slot: what it does, and which approved-look constants carry over, by file); the worktree path; ≤ `implementer_words`.
-- **Shooter** (`models.shoot`): the item's Prove line, the scenario(s), the matrix to run, the out dir
+- **Shooter** (`models.shoot`; tier M and V only): the item's Prove line, the scenario(s), the matrix to run, the out dir
   (`<shots_dir>/<id>-<label>`), its own simulator UDID; ≤ `shooter_words`, paths first.
-- One simulator per agent, named by UDID on every call. The shooter sim (`sim.shooter_udid`) serves one agent at a time;
-  parallel agents create one matching `sim.ephemeral` and delete it after. Never use a `sim.protected` one otherwise.
-- A new DEBUG scenario, when the item needs one, is part of the item.
+- **At most 2 iOS agents at once** (builders or provers); the rest queue. One simulator per agent, named by UDID on every call. The shooter
+  sim (`sim.shooter_udid`) serves one agent at a time; parallel agents create one matching `sim.ephemeral` and delete it
+  after. Never use a `sim.protected` one otherwise. A new DEBUG scenario the item needs is part of the item.
 
 ## 5. Prove
 
-The shooter runs `factory proof <scenario> --out <dir> --udid <sim>` or
+**Only tier M and V items get a shooter** (tier L: tests plus the gate; the human checks on a device). The tier picks
+the matrix (the rules file's table). The shooter runs `factory proof <scenario> --out <dir> --udid <sim>` or
 `factory proof-matrix --scenario <s> --matrix <name> --out <dir>` (or the project wrappers the rules file names).
-Which matrix for which item: the rules file. Exit **0** PASS, **4** FAIL, **1** a tooling error.
-- **A FAIL verdict blocks the item.** Round limits never override it, and "good, with a known flicker" doesn't ship.
-- A tooling error is not a pass: fix the tool or the scenario, or block the item.
-- Re-judge a clip with no simulator: `factory proof-verdict <clip.mp4>`. A hold FAIL at a high load → `proof-compare`.
+Exit **0** PASS, **4** FAIL, **1** tooling error.
+- **A FAIL verdict blocks the item.** Round limits never override it, and "good, with a known flicker" doesn't ship. A tooling error is not a pass: fix the tool or the scenario, or block the item. Re-judge a clip with no simulator: `factory proof-verdict <clip.mp4>`. A hold FAIL at a high load → `proof-compare`.
 
 ## 6. Review
 

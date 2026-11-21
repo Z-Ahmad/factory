@@ -14,6 +14,7 @@ Worker rules:
 - Scratch goes in `mktemp -d` and is deleted when you're done: frame strips, profiler traces (they run to GBs), build
   copies. No loose /tmp/<name> folders. Delete any simulator you create.
 - Every xcodebuild, test run or proof goes through `factory run --job <build|test|proof> --dd {dd} -- <cmd>` (a weighted lease; it waits inside, never poll).
+  The orchestrator runs at most 2 iOS agents at once (builders or provers); never start a third.
 - Never start or stop the shared dev stack. If you need your own server, run it on a separate port and kill only the
   processes you started (`factory read-api up|down` when the project has one).
 - Never edit the files factory.toml lists under [never_touch], never run its never_run_in_worktree scripts here, and
@@ -41,7 +42,10 @@ Reference (what the feature does elsewhere, and which approved-look constants ca
 Guardrails (the project's own, from {rules_file}; they bind):
 {guardrails_paragraph}
 
-Hard gates (a failing proof blocks the item, whatever the round count):
+Proof tier: {tier} (M motion, V visual or L logic; the rules file's table says what each owes). Tier L: no simulator, no
+proof; unit and UI tests plus the gate. Say in your report if the files you touched suggest a higher tier.
+
+Hard gates (a failing proof blocks the item, whatever the round count; they bind tier M and V proofs):
 {hard_gates}
 
 Tests: {tests.unit}. Add tests for logic; geometry as pure functions. If the item says "no test", add none.
@@ -58,11 +62,13 @@ the patch and hand the remaining proofs and re-checks to a fresh shooter started
 
 ## Shooter
 
+Started only for tier M and V items. A tier L item has no shooter brief.
+
 ```
 You are proving backlog item {id} for {project}, night {n}. Model: {models.shoot}. You own simulator {udid}.
 
-Prove line (verbatim from the item): {prove_line}
-Run:
+Proof tier: {tier}. Prove line (verbatim from the item): {prove_line}
+Run (the matrix is the one the project's `factory.toml` maps {tier} to):
   factory proof-matrix --scenario {scenario} --matrix {matrix} --out {shots_dir}/{id}-{label} [--build --dd {dd}] [{flags}]
   and/or factory proof {scenario} --out {shots_dir}/{id}-{label} --udid {udid} [{flags}]
 Which matrix: the rules file's table. A FAIL (exit 4) is a result, not an error: report it, don't rerun until it passes.
@@ -113,7 +119,8 @@ leave them clearly marked for the implementer. Return at most {words} words.
 | `{words}` | `loop.implementer_words` / `loop.shooter_words` (ideation: the implementer limit) |
 | `{guardrails_paragraph}`, `{hard_gates}`, `{rules_file}` | the rules file (`loop.rules`) |
 | `{tests.unit}`, `{tests.gate}` | `factory config get tests` |
-| `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the rules file's matrix table; the item; `proof.ios.dd` |
+| `{tier}` | the item and the files it touches, via the rules file's tier table (M, V or L); review can raise it, never lower it |
+| `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the matrix `{tier}` maps to (the rules file's table); the item; `proof.ios.dd` |
 | `{base_ref}` | the item's base: the night branch's merge base, or the commit before the patch |
 | `{wrap_context_k}`, `{patch_path}` | `loop.wrap_context_k` (default 400); `<state_dir>/night-<n>/<id>.patch` |
 | `{reference_source}` | the item, plus the rules file's rule on what carries over between platforms (an exact port only for a look the human approved) |
