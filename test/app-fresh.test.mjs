@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { KIT, run, scratch } from './helpers.mjs';
+import { KIT, cleanEnv, run, scratch } from './helpers.mjs';
 
 // proof/ios/app-fresh.mjs: which build a proof installs, and whether the source moved on since.
-const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+const GIT_ENV = { ...cleanEnv(), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 const ago = (p, hours) => { const d = new Date(Date.now() - hours * 3600e3); utimesSync(p, d, d); };
 
 function project() {
@@ -27,7 +27,7 @@ function project() {
   for (const f of ['App', 'Info.plist']) writeFileSync(join(app, f), 'bin');
   const fresh = (args = [], env = {}) =>
     run(process.execPath, [join(KIT, 'proof', 'ios', 'app-fresh.mjs'), '--app', app, '--dd', dd, '--root', root, ...args], {
-      env: { ...process.env, ...env },
+      env: { ...cleanEnv(), ...env },
       encoding: 'utf8',
     });
   const appAge = (hours) => { for (const f of ['App', 'Info.plist']) ago(join(app, f), hours); };

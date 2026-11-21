@@ -6,7 +6,7 @@ ref  = "v0.1.0"
 name          = "example-app"
 main_checkout = "/tmp/example"
 state_dir     = "/tmp/example-state"
-night_file    = "{state_dri}/night-{n}.md"
+shots_dir     = "{state_dri}/shots"
 
 [git]
 worktrees_dir   = ".worktrees"

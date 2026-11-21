@@ -9,6 +9,9 @@ export const KIT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const FIXTURES = join(KIT, 'test', 'fixtures');
 export const fixture = (name) => join(FIXTURES, name);
 
+/** process.env without any GIT_* variable (a hook's GIT_DIR must never reach a test's scratch repository). */
+export const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+
 /** Run a program; returns { status, stdout, stderr }. */
 export function run(cmd, args = [], opts = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
@@ -20,7 +23,7 @@ export function factory(args, opts = {}) {
   const { kit = KIT, env = {}, ...rest } = opts;
   return run(join(kit, 'bin', 'factory'), args, {
     ...rest,
-    env: { ...process.env, FACTORY_TOML: '', ...env },
+    env: { ...cleanEnv(), FACTORY_TOML: '', ...env },
   });
 }
 

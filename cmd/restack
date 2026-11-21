@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# desc: retarget open PRs whose base branch was merged or deleted onto the target, and merge the target into them
+# usage: factory restack [--apply] [--dry-run] [--target <branch>] [--pr <n>]...
+# For each open PR whose base is not the target and whose base branch is gone from origin or was merged
+# (`gh pr list --state merged --head <base>`): `gh pr edit <n> --base <target>`, then, in a temporary worktree, merge
+# origin/<target> into the PR's head, show `git diff origin/<target>...HEAD --stat`, and push with a plain `git push`
+# (never forced: a squash-merged parent leaves the child's own commits on top, so a merge needs no rewrite).
+# A PR that is part of a GitHub stack (the stack field of the PR) is skipped: GitHub rebases those itself.
+# The target is --target, else the default [[targets]] pr_base. Dry run by default (--dry-run says so out loud); --apply acts.
+# --pr <n> limits it to those PRs. A merge that conflicts is aborted and reported, the PR left retargeted for a human.
+# Exit 0, or 1 when any PR needs a human (conflict, failed push, failed retarget), 2 on a bad argument or no gh.
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+
+APPLY=0 TARGET="" ONLY_PRS=" "
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --dry-run) APPLY=0; shift ;;
+    --target) TARGET="${2:?--target wants a branch}"; shift 2 ;;
+    --pr) ONLY_PRS="$ONLY_PRS${2:?--pr wants a number} "; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+command -v gh >/dev/null 2>&1 || { echo "factory-restack: gh is required" >&2; exit 2; }
+
+MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
+cd "$MAIN"
+if [[ -z "$TARGET" ]]; then
+  for ((i = 0; i < ${FK_TARGETS_COUNT:-0}; i++)); do
+    v="FK_TARGETS_${i}_PR_BASE"; d="FK_TARGETS_${i}_DEFAULT"
+    if [[ -z "$TARGET" || "${!d:-}" == true ]]; then TARGET="${!v:-}"; fi
+  done
+fi
+[[ -n "$TARGET" ]] || { echo "factory-restack: no target (pass --target, or mark a [[targets]] default with pr_base)" >&2; exit 2; }
+
+GH=(gh); [[ -z "${FK_GIT_GITHUB:-}" ]] || GH=(gh -R "$FK_GIT_GITHUB")
+REPO="${FK_GIT_GITHUB:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)}"
+
+if [[ "$APPLY" == 1 ]]; then echo "factory-restack: APPLY (onto $TARGET)"; else echo "factory-restack: dry run onto $TARGET (pass --apply to act)"; fi
+git fetch --prune origin --quiet 2>/dev/null || true
+
+in_stack() { # in_stack <pr>: exit 0 when the PR belongs to a GitHub stack
+  [[ "$REPO" == */* ]] || return 1
+  local out
+  out="$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){stack{id}}}}' \
+    -f o="${REPO%%/*}" -f r="${REPO#*/}" -F n="$1" --jq '.data.repository.pullRequest.stack.id // empty' 2>/dev/null || true)"
+  [[ -n "$out" ]]
+}
+
+N_DONE=0 N_STACK=0 N_HUMAN=0 N_SEEN=0
+LIST="$("${GH[@]}" pr list --state open --limit 200 --json number,headRefName,baseRefName \
+  --jq '.[] | "\(.number)\t\(.headRefName)\t\(.baseRefName)"')"
+while IFS=$'\t' read -r num head base; do
+  [[ -n "$num" && "$base" != "$TARGET" ]] || continue
+  [[ "$ONLY_PRS" == " " || "$ONLY_PRS" == *" $num "* ]] || continue
+  why=""
+  if ! git show-ref --verify --quiet "refs/remotes/origin/$base"; then why="deleted"
+  elif [[ -n "$("${GH[@]}" pr list --state merged --head "$base" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)" ]]; then why="merged"
+  fi
+  [[ -n "$why" ]] || continue
+  N_SEEN=$((N_SEEN + 1))
+  if in_stack "$num"; then
+    echo "  SKIP  #$num $head: part of a GitHub stack (base $base $why); GitHub restacks it"
+    N_STACK=$((N_STACK + 1)); continue
+  fi
+  if [[ "$APPLY" != 1 ]]; then
+    echo "  WOULD #$num $head: base $base is $why -> retarget onto $TARGET, merge origin/$TARGET into $head, push"
+    continue
+  fi
+  echo "  #$num $head: base $base is $why"
+  if ! "${GH[@]}" pr edit "$num" --base "$TARGET" >/dev/null; then echo "    FAILED to retarget; needs a human"; N_HUMAN=$((N_HUMAN + 1)); continue; fi
+  echo "    retargeted onto $TARGET"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/restack.XXXXXX")"; tmpb="restack/pr-$num"
+  cleanup_tmp() { git -C "$MAIN" worktree remove --force "$tmp/wt" >/dev/null 2>&1 || true; git -C "$MAIN" branch -D "$tmpb" >/dev/null 2>&1 || true; rm -rf "$tmp"; }
+  if ! git fetch origin --quiet "$head" 2>/dev/null || ! git worktree add -q -B "$tmpb" "$tmp/wt" "origin/$head" >/dev/null 2>&1; then
+    echo "    FAILED to check out origin/$head; needs a human"; N_HUMAN=$((N_HUMAN + 1)); cleanup_tmp; continue
+  fi
+  if ! git -C "$tmp/wt" merge --no-edit "origin/$TARGET" >/dev/null 2>&1; then
+    git -C "$tmp/wt" merge --abort >/dev/null 2>&1 || true
+    echo "    CONFLICT merging origin/$TARGET into $head; left retargeted, needs a human"; N_HUMAN=$((N_HUMAN + 1)); cleanup_tmp; continue
+  fi
+  stat="$(git -C "$tmp/wt" diff "origin/$TARGET...HEAD" --stat | tail -n 4)"
+  if [[ -z "$stat" ]]; then echo "    diff vs origin/$TARGET: empty (the work is already in $TARGET?)"; else printf '%s\n' "$stat" | sed 's/^/    /'; fi
+  if git -C "$tmp/wt" push origin "HEAD:refs/heads/$head" >/dev/null 2>&1; then echo "    pushed $head (no force)"; N_DONE=$((N_DONE + 1))
+  else echo "    FAILED to push $head (plain push; nothing forced); needs a human"; N_HUMAN=$((N_HUMAN + 1)); fi
+  cleanup_tmp
+done <<< "$LIST"
+
+echo "factory-restack: $N_SEEN PR$([[ "$N_SEEN" == 1 ]] || echo s) with a merged or deleted base; $N_DONE restacked, $N_STACK in a GitHub stack, $N_HUMAN need a human"
+[[ "$N_HUMAN" == 0 ]]

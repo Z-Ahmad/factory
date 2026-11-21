@@ -82,6 +82,9 @@ fk_worktrees() {
     END{ if (p) print p "\t" h "\t" b }'
 }
 
+# fk_locked_worktrees [repo]: the paths of locked worktrees, one per line.
+fk_locked_worktrees() { git -C "${1:-.}" worktree list --porcelain | awk '/^worktree /{p=substr($0, 10)} /^locked/{print p}'; }
+
 # fk_worktree_hidden: the paths `factory worktree` puts in a worktree and git must not count as dirt, one per
 # line: [worktree] cache_symlinks, copy_files and each derived output path.
 fk_worktree_hidden() {

@@ -29,7 +29,6 @@ ref  = "v0.0.0"
 name          = "fixture"
 main_checkout = "${main}"
 state_dir     = "${state}"
-night_file    = "{state_dir}/night-{n}.md"
 
 [git]
 worktrees_dir   = ".worktrees"
@@ -70,7 +69,7 @@ async function withProject(opts, fn) {
 test('dev-status: one line per port, exit 0 only when every wait port is up', () =>
   withProject({ dev: 'wait_ports = [{a}]\nall_ports = [{a}, {b}]' }, async (t) => {
     await t.startKid(t.ports.a);
-    let r = t.run(['dev-status']);
+    let r = t.run(['dev', 'status']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stdout, `:${t.ports.a} up\n:${t.ports.b} down\n`);
   }));
@@ -78,14 +77,14 @@ test('dev-status: one line per port, exit 0 only when every wait port is up', ()
 test('dev-status: exit 1 when a wait port is down; without all_ports it lists the wait ports', () =>
   withProject({ dev: 'wait_ports = [{a}, {b}]' }, async (t) => {
     await t.startKid(t.ports.a);
-    const r = t.run(['dev-status']);
+    const r = t.run(['dev', 'status']);
     assert.equal(r.status, 1);
     assert.equal(r.stdout, `:${t.ports.a} up\n:${t.ports.b} down\n`);
   }));
 
 test('dev-status: exit 2 when no ports are configured', () =>
   withProject({ dev: 'up = "true"' }, (t) => {
-    const r = t.run(['dev-status']);
+    const r = t.run(['dev', 'status']);
     assert.equal(r.status, 2);
     assert.match(r.stderr, /wait_ports are not set/);
   }));
@@ -95,7 +94,7 @@ test('dev-up: with the ports already up it starts nothing, and restores the seed
     { dev: 'up = "echo started >> {marker}"\nwait_ports = [{a}]', seed: 'restore = "echo seeded >> {marker}; echo All done."' },
     async (t) => {
       await t.startKid(t.ports.a);
-      const r = t.run(['dev-up']);
+      const r = t.run(['dev', 'up']);
       assert.equal(r.status, 0, r.stderr);
       assert.equal(r.stdout, `factory-dev-up: ports already up (${t.ports.a}); nothing to start\nAll done.\n`);
       assert.equal(t.read(t.marker), 'seeded\n'); // the stack command never ran
@@ -106,7 +105,7 @@ test('dev-up: with the ports already up it starts nothing, and restores the seed
 test('dev-up --no-seed leaves the seed alone', () =>
   withProject({ dev: 'wait_ports = [{a}]', seed: 'restore = "echo seeded >> {marker}"' }, async (t) => {
     await t.startKid(t.ports.a);
-    const r = t.run(['dev-up', '--no-seed']);
+    const r = t.run(['dev', 'up', '--no-seed']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(t.read(t.marker), '');
   }));
@@ -118,7 +117,7 @@ test('dev-up: with the ports down it starts [dev] up detached in [dev] cwd, wait
       seed: 'restore = "echo seeded >> {marker}"',
     },
     async (t) => {
-      const r = t.run(['dev-up']);
+      const r = t.run(['dev', 'up']);
       assert.equal(r.status, 0, r.stderr);
       const m = r.stdout.match(/^factory-dev-up: started .* \(pid (\d+)\) detached in (.*); log (.*)$/m);
       assert.ok(m, r.stdout);
@@ -137,14 +136,14 @@ test('dev-up: with the ports down it starts [dev] up detached in [dev] cwd, wait
 
 test('dev-up: a dir argument overrides [dev] cwd; a missing dir exits 1', () =>
   withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]' }, (t) => {
-    const r = t.run(['dev-up', join(t.root, 'nowhere')]);
+    const r = t.run(['dev', 'up', join(t.root, 'nowhere')]);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /no such dir .*nowhere/);
   }));
 
 test('dev-up: ports that never come up exit 2 after timeout_s', () =>
   withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]\ntimeout_s = 2' }, (t) => {
-    const r = t.run(['dev-up']);
+    const r = t.run(['dev', 'up']);
     assert.equal(r.status, 2);
     assert.match(r.stderr, /did not come up in 2s/);
   }));
@@ -152,7 +151,7 @@ test('dev-up: ports that never come up exit 2 after timeout_s', () =>
 test('dev-up: a failing seed restore exits 3 and says so', () =>
   withProject({ dev: 'wait_ports = [{a}]', seed: 'restore = "echo broken; exit 5"' }, async (t) => {
     await t.startKid(t.ports.a);
-    const r = t.run(['dev-up']);
+    const r = t.run(['dev', 'up']);
     assert.equal(r.status, 3);
     assert.match(r.stdout, /broken/);
     assert.match(r.stderr, /seed restore failed \(exit 5\)/);
@@ -160,8 +159,8 @@ test('dev-up: a failing seed restore exits 3 and says so', () =>
 
 test('dev-up: bad arguments exit 1', () =>
   withProject({ dev: 'wait_ports = [{a}]' }, (t) => {
-    assert.equal(t.run(['dev-up', '--bogus']).status, 1);
-    assert.equal(t.run(['dev-up', 'a', 'b']).status, 1);
+    assert.equal(t.run(['dev', 'up', '--bogus']).status, 1);
+    assert.equal(t.run(['dev', 'up', 'a', 'b']).status, 1);
   }));
 
 // ---- read-api ----
@@ -170,7 +169,7 @@ const READ = 'read_api = { cwd = "stack", cmd = "node {server}", port = {c} }';
 
 test('read-api up serves the command detached on its port; down stops it and frees the port', () =>
   withProject({ dev: READ }, async (t) => {
-    let r = t.run(['read-api', 'up']);
+    let r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, new RegExp(`started node .* on :${t.ports.c} detached in ${t.main}/stack; log ${t.state}/read-api.log`));
     assert.match(r.stdout, new RegExp(`up on :${t.ports.c}\\n$`));
@@ -179,29 +178,29 @@ test('read-api up serves the command detached on its port; down stops it and fre
     t.pids.push(pid);
     assert.ok(alive(pid));
 
-    r = t.run(['read-api', 'up']);
+    r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 0);
     assert.match(r.stdout, /already up on :\d+ \(pid \d+\)/);
 
-    r = t.run(['read-api', 'down']);
+    r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, new RegExp(`stopped group ${pid}; :${t.ports.c} is free`));
     assert.equal(await waitFor(async () => !(await isUp(t.ports.c))), true);
     assert.equal(alive(pid), false);
     assert.equal(existsSync(join(t.state, 'read-api.pid')), false);
 
-    r = t.run(['read-api', 'down']);
+    r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 0);
     assert.match(r.stdout, /nothing to stop/);
   }));
 
 test('read-api passes the port as PORT and kills the whole group, children included', () =>
   withProject({ dev: `read_api = { cwd = "stack", cmd = "sh -c 'node {server} & wait'", port = {c} }` }, async (t) => {
-    let r = t.run(['read-api', 'up']);
+    let r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 0, r.stderr);
     t.pids.push(Number(t.read(join(t.state, 'read-api.pid')).split(' ')[0]));
     assert.equal(await isUp(t.ports.c), true); // the grandchild is the listener
-    r = t.run(['read-api', 'down']);
+    r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(await waitFor(async () => !(await isUp(t.ports.c))), true);
   }));
@@ -209,12 +208,12 @@ test('read-api passes the port as PORT and kills the whole group, children inclu
 test('read-api refuses to start on a port something else holds, and down never kills it', () =>
   withProject({ dev: READ }, async (t) => {
     const foreign = await t.startKid(t.ports.c);
-    let r = t.run(['read-api', 'up']);
+    let r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /already in use by something this command did not start/);
     assert.equal(existsSync(join(t.state, 'read-api.pid')), false);
 
-    r = t.run(['read-api', 'down']);
+    r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /held by another process; not touching it/);
     assert.equal(alive(foreign.pid), true);
@@ -225,7 +224,7 @@ test('read-api down ignores a stale pid file that points at an unrelated process
   withProject({ dev: READ }, async (t) => {
     const other = await t.startKid(t.ports.a); // not on the read-api port
     writeFileSync(join(t.state, 'read-api.pid'), `${other.pid} Mon Jan  1 00:00:00 2001\n`);
-    const r = t.run(['read-api', 'down']);
+    const r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /nothing to stop/);
     assert.equal(alive(other.pid), true);
@@ -234,7 +233,7 @@ test('read-api down ignores a stale pid file that points at an unrelated process
 
 test('read-api down refuses when a listener on the port is not in our group', () =>
   withProject({ dev: READ }, async (t) => {
-    let r = t.run(['read-api', 'up']);
+    let r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 0, r.stderr);
     const pid = Number(t.read(join(t.state, 'read-api.pid')).split(' ')[0]);
     t.pids.push(pid);
@@ -242,7 +241,7 @@ test('read-api down refuses when a listener on the port is not in our group', ()
     const stranger = await t.startKid(t.ports.b);
     const toml = readFileSync(join(t.root, 'factory.toml'), 'utf8').replace(`port = ${t.ports.c}`, `port = ${t.ports.b}`);
     writeFileSync(join(t.root, 'factory.toml'), toml);
-    r = t.run(['read-api', 'down']);
+    r = t.run(['dev', 'read-api', 'down']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /held by pid \d+, which this command did not start/);
     assert.equal(alive(stranger.pid), true);
@@ -251,16 +250,16 @@ test('read-api down refuses when a listener on the port is not in our group', ()
 
 test('read-api: a command that dies at once exits 1; bad arguments exit 1; no config exits 1', () =>
   withProject({ dev: 'read_api = { cwd = "stack", cmd = "exit 3", port = {c} }' }, (t) => {
-    let r = t.run(['read-api', 'up']);
+    let r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /exited before :\d+ came up/);
     assert.equal(t.run(['read-api']).status, 1);
-    assert.equal(t.run(['read-api', 'sideways']).status, 1);
+    assert.equal(t.run(['dev', 'read-api', 'sideways']).status, 1);
   }));
 
 test('read-api without [dev] read_api exits 1', () =>
   withProject({ dev: 'wait_ports = [{a}]' }, (t) => {
-    const r = t.run(['read-api', 'up']);
+    const r = t.run(['dev', 'read-api', 'up']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /read_api .* is not set/);
   }));
@@ -273,7 +272,7 @@ test('the valid.toml fixture still validates with the new commands around', () =
 test('dev-restart --dry-run names the process group it would stop and touches nothing', () =>
   withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]' }, async (t) => {
     const kid = await t.startKid(t.ports.a);
-    const r = t.run(['dev-restart', '--dry-run']);
+    const r = t.run(['dev', 'restart', '--dry-run']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, new RegExp(`would stop .+ on ports ${t.ports.a}, then dev-up`));
     assert.ok(alive(kid.pid));
@@ -287,11 +286,11 @@ test('dev-restart: stops the running stack, then dev-up starts it again and seed
     },
     async (t) => {
       // the old stack, started the way dev-up starts it: its own process group
-      const first = t.run(['dev-up']);
+      const first = t.run(['dev', 'up']);
       assert.equal(first.status, 0, first.stderr);
       const old = Number(first.stdout.match(/\(pid (\d+)\)/)[1]);
       t.pids.push(old);
-      const r = t.run(['dev-restart']);
+      const r = t.run(['dev', 'restart']);
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /sent TERM to/);
       assert.match(r.stdout, /stopped; starting again/);
@@ -313,13 +312,13 @@ test('dev-restart: KILLs a group member that never listened and ignores TERM', (
       dev: 'up = "node -e \'process.on(\\"SIGTERM\\", () => {}); const end = Date.now() + 120000; while (Date.now() < end) {}\' & echo $! > {marker}; exec node {server} {a}"\ncwd = "stack"\nwait_ports = [{a}]\ntimeout_s = 30\nstop_s = 3',
     },
     async (t) => {
-      const first = t.run(['dev-up', '--no-seed']);
+      const first = t.run(['dev', 'up', '--no-seed']);
       assert.equal(first.status, 0, first.stderr);
       t.pids.push(Number(first.stdout.match(/\(pid (\d+)\)/)[1]));
       await waitFor(() => t.read(t.marker).trim() !== '', 5000);
       const stuck = Number(t.read(t.marker).trim().split('\n')[0]);
       assert.ok(alive(stuck));
-      const r = t.run(['dev-restart', '--no-seed']);
+      const r = t.run(['dev', 'restart', '--no-seed']);
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, /sent KILL to what was left of/);
       await waitFor(() => !alive(stuck), 5000);
@@ -330,7 +329,7 @@ test('dev-restart: KILLs a group member that never listened and ignores TERM', (
 
 test('dev-restart: an unknown argument exits 1', () =>
   withProject({ dev: 'wait_ports = [{a}]' }, (t) => {
-    const r = t.run(['dev-restart', '--nope']);
+    const r = t.run(['dev', 'restart', '--nope']);
     assert.equal(r.status, 1);
   }));
 
@@ -356,7 +355,7 @@ test('dev-status with probe = "http": a port that never answers is hung, exit 1'
     const web = await startHttpServer(t.ports.a);
     const hung = await startHungServer(t.ports.b);
     try {
-      const r = t.run(['dev-status']);
+      const r = t.run(['dev', 'status']);
       assert.equal(r.status, 1);
       assert.equal(r.stdout, `:${t.ports.a} up\n:${t.ports.b} hung\n`);
     } finally {
@@ -369,7 +368,7 @@ test('dev-status with the default tcp probe calls a silent port up', () =>
   withProject({ dev: 'wait_ports = [{a}]' }, async (t) => {
     const hung = await startHungServer(t.ports.a);
     try {
-      const r = t.run(['dev-status']);
+      const r = t.run(['dev', 'status']);
       assert.equal(r.status, 0, r.stderr);
       assert.equal(r.stdout, `:${t.ports.a} up\n`);
     } finally {
@@ -381,9 +380,9 @@ test('dev-up with a hung port exits 6 and names dev-restart', () =>
   withProject({ dev: 'up = "true"\ncwd = "stack"\nwait_ports = [{a}]\nprobe = "http"' }, async (t) => {
     const hung = await startHungServer(t.ports.a);
     try {
-      const r = t.run(['dev-up']);
+      const r = t.run(['dev', 'up']);
       assert.equal(r.status, 6);
-      assert.match(r.stderr, /hung.*factory dev-restart/);
+      assert.match(r.stderr, /hung.*factory dev restart/);
     } finally {
       hung.close();
     }

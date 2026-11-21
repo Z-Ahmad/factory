@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, lstatSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { factory } from './helpers.mjs';
-import { tree } from './fixture-tree.mjs';
+import { cleanEnv, factory } from './helpers.mjs';
+import { idleWorktree, tree } from './fixture-tree.mjs';
 
 const withTree = (fn, opts) => {
   const t = tree(opts);
@@ -46,9 +46,9 @@ test('dry run decides per category and deletes nothing', () =>
     for (const sim of ['box-test-abc', 'box-test-kit', 'box-factory-prot', 'Shooter Phone', 'Plain Phone'])
       assert.ok(!out.includes(`  ${sim} (`), sim);
     // worktrees
-    assert.match(out, /REMOVE agent-merged {2}\(branch agent-merged-b, upstream: origin\/nightly\/up\)/);
+    assert.match(out, /REMOVE agent-merged {2}\(branch agent-merged-b, contained in origin\/trunk\)/);
     assert.match(out, /REMOVE agent-symlink /);
-    assert.match(out, /KEPT {2}agent-ahead \(commits not all upstream on any origin\/nightly\/\*\)/);
+    assert.match(out, /KEPT {2}agent-ahead \(not merged; 1 unpushed commit\)/);
     assert.match(out, /KEPT {2}agent-dirty \(untracked non-symlink: stray\.txt\)/);
     assert.match(out, /SKIP {2}night-1 \(active factory worktree; --include-night night-1 to allow\)/);
     assert.match(out, /SKIP {2}phone /);
@@ -258,7 +258,7 @@ test('sims: a simulator a running proof (or recordVideo, or xcodebuild) names is
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /^ {2}KEPT {2}box-factory-1 \(11111111-0000-0000-0000-000000000002, Booted\): in use by factory proof \(pid 41\)$/m);
     assert.deepEqual(t.xcrunCalls(), ['simctl delete 11111111-0000-0000-0000-000000000003', 'simctl delete 11111111-0000-0000-0000-000000000004']);
-    const g = factory(['disk-guard'], { env: { ...t.env, DF_GB: '10' }, cwd: t.main });
+    const g = factory(['cleanup', '--apply', '--if-below', '40', '--floor', '20'], { env: { ...t.env, DF_GB: '10' }, cwd: t.main });
     assert.equal(g.status, 2);
     assert.ok(!t.xcrunCalls().some((c) => c.includes('000000000002')), t.xcrunCalls().join('\n'));
   }));
@@ -281,3 +281,111 @@ test('worktrees: a proof-compare base checkout goes once its dd-compare-* build 
     assert.match(r.stdout, /REMOVE compare-bbbb2222/);
     assert.deepEqual(t.names('main', '.worktrees').filter((n) => n.startsWith('compare-')), ['compare-cccc3333']);
   }));
+
+// ---- agent worktrees on [git] agent_branches (claude/*, cyrus/*), judged by their PR ----
+
+const identity = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid' };
+const sh = (cwd, args, env = {}) =>
+  execFileSync('git', args, { cwd, env: { ...cleanEnv(), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...identity, ...env }, stdio: 'pipe' }).toString().trim();
+
+/** A worktree outside the project's worktrees dir (as Claude Code and Cyrus make them) on a new branch with one commit. */
+function lane(t, branch, { commit = true, date } = {}) {
+  const dir = t.p('elsewhere', branch.replace('/', '-'));
+  sh(t.main, ['worktree', 'add', '-q', dir, '-b', branch, 'trunk']);
+  if (commit) {
+    writeFileSync(join(dir, `${branch.replace('/', '-')}.txt`), 'work');
+    sh(dir, ['add', '.']);
+    sh(dir, ['commit', '-q', '-m', `work on ${branch}`], date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : {});
+  }
+  idleWorktree(dir);
+  return { dir, head: sh(dir, ['rev-parse', 'HEAD']) };
+}
+const AGENTS = { gitExtra: 'agent_branches = ["factory/lane-*", "claude/*", "cyrus/*"]' };
+
+test('worktrees: a claude/* or cyrus/* worktree goes once its PR merged (checked with gh), anywhere on disk', () =>
+  withTree((t) => {
+    const done = lane(t, 'claude/shipped-feature');
+    const cy = lane(t, 'cyrus/ee-123');
+    const open = lane(t, 'claude/still-open');
+    const other = lane(t, 'feature/not-an-agent');
+    t.ghMerged(`claude/shipped-feature 12 ${done.head}`, `cyrus/ee-123 13 ${cy.head}`, `feature/not-an-agent 14 ${other.head}`);
+    mkdirSync(t.p('cache', 'dd-shipped-feature'));
+    let r = cleanup(t, ['--only', 'worktrees', '--only', 'derived-data']);
+    assert.equal(r.status, 0, r.stderr);
+    let out = t.clean(r.stdout);
+    assert.match(out, /REMOVE claude-shipped-feature {2}\(branch claude\/shipped-feature, PR #12 merged\)/);
+    assert.match(out, /REMOVE cyrus-ee-123 {2}\(branch cyrus\/ee-123, PR #13 merged\)/);
+    assert.match(out, /KEPT {2}claude-still-open \(not merged; 1 unpushed commit\)/);
+    assert.doesNotMatch(out, /feature-not-an-agent/); // not on an agent pattern: not ours to judge
+    assert.match(out, /dd-shipped-feature {2}\(worktree gone: claude-shipped-feature\)/); // its build cache goes with it
+    assert.ok(existsSync(done.dir) && existsSync(t.p('cache', 'dd-shipped-feature')), 'a dry run removes nothing');
+    assert.ok(readFileSync(t.p('gh.log'), 'utf8').includes('--state merged --head claude/shipped-feature'));
+
+    r = cleanup(t, ['--only', 'worktrees', '--only', 'derived-data', '--apply']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!existsSync(done.dir) && !existsSync(cy.dir) && existsSync(open.dir) && existsSync(other.dir));
+    assert.ok(!existsSync(t.p('cache', 'dd-shipped-feature')));
+    assert.equal(sh(t.main, ['branch', '--list', 'claude/shipped-feature']), '');
+    assert.match(sh(t.main, ['branch', '--list', 'claude/still-open']), /still-open/);
+  }, AGENTS));
+
+test('worktrees: a branch fully contained in the target goes without asking gh', () =>
+  withTree((t) => {
+    const fresh = lane(t, 'claude/nothing-new', { commit: false });
+    const r = cleanup(t, ['--only', 'worktrees', '--apply']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /REMOVE claude-nothing-new {2}\(branch claude\/nothing-new, contained in origin\/trunk\)/);
+    assert.ok(!existsSync(fresh.dir));
+  }, AGENTS));
+
+test('worktrees: dirty, locked, protected, newer-than-the-PR and just-touched worktrees are all kept', () =>
+  withTree((t) => {
+    const dirty = lane(t, 'claude/dirty');
+    writeFileSync(join(dirty.dir, 'stray.txt'), 'x');
+    const locked = lane(t, 'claude/locked');
+    sh(t.main, ['worktree', 'lock', '--reason', 'agent running', locked.dir]);
+    const newer = lane(t, 'claude/newer');
+    const merged = newer.head;
+    writeFileSync(join(newer.dir, 'after.txt'), 'x');
+    sh(newer.dir, ['add', '.']);
+    sh(newer.dir, ['commit', '-q', '-m', 'after the merge']);
+    idleWorktree(newer.dir);
+    const busy = lane(t, 'claude/busy');
+    sh(busy.dir, ['commit', '-q', '--allow-empty', '-m', 'just now']); // HEAD log written now: an agent may be working
+    const guarded = lane(t, 'claude/guarded');
+    t.ghMerged(...[dirty, locked, busy, guarded].map((l, i) => `${['claude/dirty', 'claude/locked', 'claude/busy', 'claude/guarded'][i]} ${20 + i} ${sh(l.dir, ['rev-parse', 'HEAD'])}`), `claude/newer 30 ${merged}`);
+    const gd = { gitExtra: 'agent_branches = ["claude/*"]\nprotected_worktrees = ["night-*", "phone", "claude-guarded"]' };
+    writeFileSync(t.p('factory.toml'), readFileSync(t.p('factory.toml'), 'utf8').replace('protected_worktrees = ["night-*", "phone"]', gd.gitExtra.split('\n')[1]));
+    const r = cleanup(t, ['--only', 'worktrees', '--apply']);
+    assert.equal(r.status, 0, r.stderr);
+    const out = t.clean(r.stdout);
+    assert.match(out, /KEPT {2}claude-dirty \(untracked non-symlink: stray\.txt\)/);
+    assert.match(out, /KEPT {2}claude-locked \(locked\)/);
+    assert.match(out, /KEPT {2}claude-newer \(PR #30 merged, but the branch has newer commits; 2 unpushed commits\)/);
+    assert.match(out, /KEPT {2}claude-busy \(in use: git touched it \d+ min ago\)/);
+    assert.match(out, /SKIP {2}claude-guarded \(active factory worktree/);
+    for (const l of [dirty, locked, newer, busy, guarded]) assert.ok(existsSync(l.dir), l.dir);
+  }, AGENTS));
+
+test('worktrees: unpushed commits older than 7 days are flagged, never removed; recent ones are just kept', () =>
+  withTree((t) => {
+    const old = lane(t, 'claude/forgotten', { date: '2026-01-02T10:00:00Z' });
+    const recent = lane(t, 'claude/recent');
+    const r = cleanup(t, ['--only', 'worktrees', '--apply']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /FLAG {2}claude-forgotten \(1 unpushed commit, newest \d+ days old; not removed\)/);
+    assert.match(r.stdout, /KEPT {2}claude-recent \(not merged; 1 unpushed commit\)/);
+    assert.ok(existsSync(old.dir) && existsSync(recent.dir));
+  }, AGENTS));
+
+test('worktrees: the worktree you run from and the [dev] cwd worktree are never removed', () =>
+  withTree((t) => {
+    const here = lane(t, 'claude/mine', { commit: false });
+    const dev = lane(t, 'claude/devstack', { commit: false });
+    writeFileSync(t.p('factory.toml'), readFileSync(t.p('factory.toml'), 'utf8') + `\n[dev]\nup = "true"\ncwd = "${dev.dir}"\n`);
+    const r = factory(['cleanup', '--only', 'worktrees', '--apply'], { env: t.env, cwd: here.dir });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /SKIP {2}claude-mine \(the worktree you run from\)/);
+    assert.match(r.stdout, /SKIP {2}claude-devstack \(the \[dev\] cwd worktree\)/);
+    assert.ok(existsSync(here.dir) && existsSync(dev.dir));
+  }, AGENTS));

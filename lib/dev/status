@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # desc: show which dev-stack ports are up, down or hung
-# usage: factory dev-status
+# usage: factory dev status
 # One line per [dev] all_ports entry (or the wait_ports when all_ports is not set): ":PORT up", ":PORT down",
-# or, with [dev] probe = "http", ":PORT hung" (it accepts connections but never answers: `factory dev-restart`).
+# or, with [dev] probe = "http", ":PORT hung" (it accepts connections but never answers: `factory dev restart`).
 # Exit 0 when every [dev] wait_ports entry is up, 1 when any is down or hung, 2 when no ports are configured but
 # [dev] up is. A project with no [dev] at all (no dev stack) prints that and exits 0.
 set -euo pipefail

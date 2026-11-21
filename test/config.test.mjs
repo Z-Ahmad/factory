@@ -127,8 +127,7 @@ test('config placeholders and ~ are expanded; runtime placeholders are kept', ()
   const { resolved: c } = load(validText);
   const state = `${homedir()}/example-factory`;
   assert.equal(c.project.state_dir, state);
-  assert.equal(c.project.night_file, `${state}/night-{n}.md`);
-  assert.equal(c.project.log_line, '{hhmm} · {id} · {sha} · {note}');
+  assert.equal(c.project.shots_dir, `${state}/night-{n}/shots`);
   assert.equal(c.git.worktree_branch, 'factory/{name}-wt');
   assert.equal(c.seed.fixture_dir, `${state}/fixtures/example-trip`);
   assert.equal(c.proof.ios.app, 'app/Build/Example.app');
@@ -229,9 +228,9 @@ test('cli: validate passes on the valid fixture', () => {
 
 const broken = [
   ['missing-required.toml', /missing-required\.toml:1: kit\.ref: missing required key 'ref'/],
-  ['wrong-type.toml', /wrong-type\.toml:22: dev\.timeout_s: expected int, got string \("600"\)/],
+  ['wrong-type.toml', /wrong-type\.toml:21: dev\.timeout_s: expected int, got string \("600"\)/],
   ['bad-syntax.toml', /bad-syntax\.toml:6: unexpected ';' after value/],
-  ['unknown-placeholder.toml', /unknown-placeholder\.toml:9: project\.night_file: unknown placeholder \{state_dri\}/],
+  ['unknown-placeholder.toml', /unknown-placeholder\.toml:9: project\.shots_dir: unknown placeholder \{state_dri\}/],
   ['bad-array-of-tables.toml', /bad-array-of-tables\.toml:10: cannot redefine array of tables 'targets'/],
 ];
 for (const [file, re] of broken) {
@@ -312,19 +311,20 @@ test('proof: [proof.ios.verdict] takes the verdict tool thresholds', () => {
   assert.match(sh, /^export FK_PROOF_IOS_BUDGETS='tools\/budgets.json'$/m);
 });
 
-test('disk and sim: clips, $TMPDIR sweeps and the simulator erase keys are in the schema', () => {
+test('disk and git: clips, $TMPDIR sweeps and agent_branches (a string or a list) are in the schema', () => {
   const add = (text, table, lines) => text.replace(`[${table}]\n`, `[${table}]\n${lines}\n`);
   let text = add(validText, 'disk', 'clips = "keep"\ntmp_dirs = ["$TMPDIR", "$TMPDIR/sub"]\ntmp_dirs_globs = ["*.ktrace"]');
-  text = add(text, 'sim', 'erase_above_gb = 0.5\nerase_at_end_night = ["Shooter *", "ABC"]');
+  text = add(text, 'git', 'agent_branches = ["factory/lane-*", "claude/*"]');
   const r = load(text);
   assert.deepEqual(r.errors, []);
   const sh = toEnvSh(r.resolved, '/tmp/example/factory.toml');
   assert.match(sh, /^export FK_DISK_CLIPS='keep'$/m);
   assert.match(sh, /^export FK_DISK_TMP_DIRS='\$TMPDIR\n\$TMPDIR\/sub'$/m);
-  assert.match(sh, /^export FK_SIM_ERASE_ABOVE_GB='0.5'$/m);
-  assert.match(sh, /^export FK_SIM_ERASE_AT_END_NIGHT='Shooter \*\nABC'$/m);
+  assert.match(sh, /^export FK_GIT_AGENT_BRANCHES='factory\/lane-\*\nclaude\/\*'$/m);
+  // a single string stays valid for agent_branches
+  assert.deepEqual(load(add(validText, 'git', 'agent_branches = "factory/lane-*"')).errors, []);
   // wrong types are caught
-  const bad = load(add(add(validText, 'disk', 'clips = true'), 'sim', 'erase_above_gb = "six"'));
+  const bad = load(add(add(validText, 'disk', 'clips = true'), 'git', 'agent_branches = 3'));
   assert.equal(bad.errors.length, 2);
 });
 

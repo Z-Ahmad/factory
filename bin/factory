@@ -56,6 +56,14 @@ case "$CMD" in help|-h|--help) usage; exit 0 ;; esac
 shift
 [[ "$CMD" =~ ^[a-z][a-z0-9-]*$ ]] || die "bad command name: $CMD" 2
 
+# Old names still work and say what replaced them (one line on stderr).
+case "$CMD" in
+  dev-up|dev-status|dev-restart) echo "factory: '$CMD' is now 'factory dev ${CMD#dev-}'; the old name will go" >&2; set -- "${CMD#dev-}" "$@"; CMD=dev ;;
+  read-api)     echo "factory: 'read-api' is now 'factory dev read-api'; the old name will go" >&2; set -- read-api "$@"; CMD=dev ;;
+  preflight)    echo "factory: 'preflight' is now 'factory doctor'; the old name will go" >&2; CMD=doctor ;;
+  proof-matrix) echo "factory: 'proof-matrix' is now 'factory proof --cells <matrix>'; the old name will go" >&2; export FK_PROOF_MATRIX=1; CMD=proof ;;
+esac
+
 TARGET=""
 for f in "$KIT/cmd/$CMD" "$KIT/cmd/$CMD.mjs" "$KIT/cmd/$CMD.sh"; do
   [[ -f "$f" ]] && { TARGET="$f"; break; }

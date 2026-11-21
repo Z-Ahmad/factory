@@ -6,7 +6,6 @@ repo = "https://example.invalid/factory.git"
 name          = "example-app"
 main_checkout = "/tmp/example"
 state_dir     = "/tmp/example-state"
-night_file    = "{state_dir}/night-{n}.md"
 
 [git]
 worktrees_dir   = ".worktrees"

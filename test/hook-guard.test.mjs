@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseToml } from '../cmd/config.mjs';
 import { evaluate, guardConfig } from '../gates/hook-guard.mjs';
-import { KIT, run, scratch } from './helpers.mjs';
+import { KIT, cleanEnv, run, scratch } from './helpers.mjs';
 
 // A synthetic project: a main checkout `proj` with a linked worktree `proj/.worktrees/wt`
 // whose secrets file is a symlink back to the main checkout (like a cache symlink).
@@ -17,7 +17,6 @@ ref  = "v0.1.0"
 name = "example-app"
 main_checkout = "/tmp/example"
 state_dir = "/tmp/example-factory"
-night_file = "{state_dir}/night-{n}.md"
 
 [git]
 worktrees_dir = ".worktrees"
@@ -191,9 +190,13 @@ const TABLE = [
   ['factory dev-restart from a subagent', () => subagentBash('scripts/factory/factory dev-restart --no-seed'), 'deny', /orchestrator's/],
   ['factory dev-restart from a subagent, restart_by = anyone', () => subagentBash('factory dev-restart'), 'allow', null, () => cfgAnyone],
   ['factory dev-up from a subagent', () => subagentBash('factory dev-up'), 'allow'],
+  ['factory dev restart from the main session', () => bash('scripts/factory/factory dev restart'), 'allow'],
+  ['factory dev restart from a subagent', () => subagentBash('scripts/factory/factory dev restart --no-seed'), 'deny', /orchestrator's/],
+  ['factory dev restart from a subagent, restart_by = anyone', () => subagentBash('factory dev restart'), 'allow', null, () => cfgAnyone],
+  ['factory dev up / status / read-api from a subagent', () => subagentBash('factory dev up; factory dev status; factory dev read-api up'), 'allow'],
 
   // ---- rule 5: the dev stack
-  ['npm run dev', () => bash('npm run dev'), 'deny', /factory dev-up/],
+  ['npm run dev', () => bash('npm run dev'), 'deny', /factory dev up/],
   ['npm run dev:local', () => bash('npm run dev:local'), 'deny'],
   ['npm run dev in the background after a cd', () => bash('cd proj && nohup npm run dev > /tmp/dev.log 2>&1 &'), 'deny'],
   ['npm run dev -w api (the read-api command)', () => bash('npm run dev -w api'), 'deny', /read-api/],
@@ -255,7 +258,7 @@ const guard = (stdin, env = {}) =>
   run(join(KIT, 'bin', 'factory'), ['hook-guard'], {
     cwd: main,
     input: stdin,
-    env: { ...process.env, FACTORY_TOML: join(main, 'factory.toml'), ...env },
+    env: { ...cleanEnv(), FACTORY_TOML: join(main, 'factory.toml'), ...env },
   });
 
 test('hook-guard CLI: a deny is exit 0 with the documented JSON on stdout', () => {

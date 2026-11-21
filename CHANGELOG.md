@@ -2,6 +2,51 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.22.0 (unreleased)
+
+### The night-file loop is gone; cleanup knows today's agent worktrees
+
+About 2,000 lines served the old night-file loop and had no use since Nov 5. Cleanup never removed today's agent
+worktrees, because it only knew `factory/lane-*` branches, so 37 worktrees and 18 GB piled up.
+
+**Removed** (with their tests, README sections and config keys):
+
+- `tick`, `night-new`, `night-lint`, `end-night`, `stats` (and `stats/`), `proof-calibrate` (and `proof/verdict/calibrate.mjs`),
+  `wip-save`, `disk-guard`, and the night-file template. `test/end-night.test.mjs`, which hung, is gone with its command.
+- Config keys: `[project] night_file`, `item_line`, `log_line`; `[loop] item_ids`; `[git] phone_worktree`;
+  `[sim] erase_above_gb`, `erase_at_end_night`; the `[stats]` and `[wip]` tables. A `factory.toml` that still sets one fails
+  `config validate` as an unknown key: delete the line.
+
+**Merged** (the old names still run and print one deprecation line on stderr):
+
+- `dev-up`, `dev-status`, `dev-restart`, `read-api` -> `factory dev up|status|restart|read-api`. hook-guard's
+  restart-is-the-orchestrator's rule covers both spellings.
+- `preflight` -> `factory doctor`. Its disk step is `cleanup --apply --if-below <min_gb> --floor <floor_gb>` (step name
+  `disk`, exit 2), and it now also flags a `[dev] cwd` worktree whose branch is gone on origin or that is behind the
+  default target, and fails with exit 7 (`dev-tools`) when the stack is down and the dev command needs a tool
+  `node_modules/.bin` and PATH lack (`npm run <script>` is followed into package.json). The line starts `factory-doctor:`.
+- `proof-matrix` -> `factory proof --cells <matrix>`. A `--cells` value that names no `[proof.matrix.*]` is still the old
+  `--cells a,b` list.
+
+**cleanup, rewritten worktree category:**
+
+- Removes a worktree anywhere on disk on a `[git] agent_branches` glob (now a string or a list, e.g.
+  `["factory/lane-*", "claude/*", "cyrus/*"]`) once its PR merged (`gh pr list --state merged --head <branch>`, and the
+  worktree holds no commit newer than the PR's head), or its branch is contained in a `[[targets]]` base, or (as before)
+  its commits are patch-equivalent on an `origin/<push_branch prefix>*` branch. The old `agent_worktrees` name glob still counts.
+- Never removes a locked worktree, a dirty one (untracked symlinks aside), a protected one, one git touched in the last
+  2 hours, the main checkout, the worktree it runs from, or the `[dev] cwd` worktree. Unpushed commits whose newest is over
+  7 days old print `FLAG ... not removed`.
+- Build caches named after a removed lane go with it (every `agent_branches` glob's literal prefix counts).
+- `--if-below <GB> [--floor <GB>]`: sweep only when free disk is under that (the [disk] `low_cleanup` categories, now
+  including `worktrees`, with `--frames-age 0`); with `--apply` and `--floor`, exit 2 when still under. A dry run stays the default.
+
+**New: `factory restack`.** For each open PR whose base branch was merged or deleted: `gh pr edit --base <target>`, merge
+`origin/<target>` into its head in a temporary worktree, show the diff stat, push with a plain `git push` (never forced).
+A PR in a GitHub stack is skipped. Dry run by default; `--apply` acts.
+
+The orchestrator skill drops the night-file loop and names `dev`, `doctor`, `cleanup` and `restack`.
+
 ## v0.21.0 (2026-11-18)
 
 ### A still page is not a flash or a hold

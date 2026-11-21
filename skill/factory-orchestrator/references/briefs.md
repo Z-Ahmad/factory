@@ -1,6 +1,6 @@
 # Brief templates
 
-Fill every `{slot}`. Values come from the night file (the item), the rules file (`factory config get loop.rules`:
+Fill every `{slot}`. Values come from the backlog (the item), the rules file (`factory config get loop.rules`:
 guardrails, gates, test recipe) and `factory.toml` (`factory config get <key>`). A slot you can't fill is a question for
 the human or a reason to block the item, never a blank. Keep briefs short: the worker reads the repo's AGENTS.md itself.
 
@@ -9,7 +9,7 @@ the human or a reason to block the item, never a blank. Keep briefs short: the w
 ```
 Worker rules:
 - Work only in {worktree}. Do not commit, push, merge or switch branches; the orchestrator ships.
-- Drive a simulator only through `factory proof` / `factory proof-matrix`, with --udid {udid}, and name that UDID on every
+- Drive a simulator only through `factory proof` (single or `--cells <matrix>`), with --udid {udid}, and name that UDID on every
   other simulator call too. Never set shared tool defaults. Never touch the human's device.
 - Scratch goes in `mktemp -d` and is deleted when you're done: frame strips, profiler traces (they run to GBs), build
   copies. No loose /tmp/<name> folders. Delete any simulator you create.
@@ -31,7 +31,7 @@ Worker rules:
 ```
 You are implementing backlog item {id} for {project}, night {n}. Model: {models.implement}.
 
-Item (verbatim from the night file):
+Item (verbatim from the backlog):
 {item_text}
 
 Reference (what the feature does elsewhere, and which approved-look constants carry over, named by file; else "none"):
@@ -63,7 +63,7 @@ You are proving backlog item {id} for {project}, night {n}. Model: {models.shoot
 
 Prove line (verbatim from the item): {prove_line}
 Run:
-  factory proof-matrix --scenario {scenario} --matrix {matrix} --out {shots_dir}/{id}-{label} [--build --dd {dd}] [{flags}]
+  factory proof --cells {matrix} --scenario {scenario} --out {shots_dir}/{id}-{label} [--build --dd {dd}] [{flags}]
   and/or factory proof {scenario} --out {shots_dir}/{id}-{label} --udid {udid} [{flags}]
 Which matrix: the rules file's table. A FAIL (exit 4) is a result, not an error: report it, don't rerun until it passes.
 Before every build or proof: factory slot wait --dd {dd} --udid {udid} (blocks while too much else runs; report its lines).
@@ -96,7 +96,7 @@ Produce 2–3 genuinely different options, not three tunings of one. For each:
 - the frames that show the difference (grab them with `factory clip-frames`, never ffmpeg -ss).
 Then a recommendation and why, in one paragraph.
 
-Write it to {state_dir}/night-{n}/{id}-ideation.md (options, frame paths, recommendation). Revert the DEBUG variants or
+Write it to {state_dir}/ideation/{id}-ideation.md (options, frame paths, recommendation). Revert the DEBUG variants or
 leave them clearly marked for the implementer. Return at most {words} words.
 
 {worker_rules}
@@ -106,7 +106,7 @@ leave them clearly marked for the implementer. Return at most {words} words.
 
 | Slot | From |
 |---|---|
-| `{id}`, `{item_text}`, `{prove_line}` | the night file's Backlog line |
+| `{id}`, `{item_text}`, `{prove_line}` | the backlog item |
 | `{project}`, `{n}`, `{state_dir}`, `{shots_dir}` | `project.name`, the night, `project.state_dir`, `project.shots_dir` |
 | `{worktree}` | the path `factory worktree` printed |
 | `{udid}` | `sim.shooter_udid`, or the ephemeral sim you created for a parallel agent |
@@ -114,6 +114,6 @@ leave them clearly marked for the implementer. Return at most {words} words.
 | `{guardrails_paragraph}`, `{hard_gates}`, `{rules_file}` | the rules file (`loop.rules`) |
 | `{tests.unit}`, `{tests.gate}` | `factory config get tests` |
 | `{matrix}`, `{scenario}`, `{flags}`, `{dd}` | the rules file's matrix table; the item; `proof.ios.dd` |
-| `{base_ref}` | the item's base: the night branch's merge base, or the commit before the patch |
-| `{wrap_context_k}`, `{patch_path}` | `loop.wrap_context_k` (default 400); `<state_dir>/night-<n>/<id>.patch` |
+| `{base_ref}` | the item's base: the item's merge base with its target, or the commit before the patch |
+| `{wrap_context_k}`, `{patch_path}` | `loop.wrap_context_k` (default 400); `<state_dir>/patches/<id>.patch` |
 | `{reference_source}` | the item, plus the rules file's rule on what carries over between platforms (an exact port only for a look the human approved) |

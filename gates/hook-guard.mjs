@@ -17,7 +17,7 @@
 //      With [git] github set, never_merge_into guards only that repository's PRs (named by -R, by a PR
 //      URL, or by the remotes of the directory the command runs in): the kit's own main is not this project's.
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
-//   6. Bash: `factory dev-restart` from a subagent (the hook input carries agent_id), unless
+//   6. Bash: `factory dev restart` (or `dev-restart`) from a subagent (the hook input carries agent_id), unless
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
 //   7. A build or test while `factory slot status` says busy (with [slot] or [proof.ios] set): Bash running xcodebuild
 //      (an action that builds; -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or an
@@ -584,8 +584,8 @@ function checkDevStart(c, ctx) {
     const t = (cmd ?? '').trim().split(/\s+/).filter(Boolean);
     return t.length > 0 && t.every((x, k) => toks[k] === x);
   };
-  const msg = 'agents may not start the dev stack (dev.agents_may_start = false): use `factory dev-up`';
-  if (startsWith(ctx.dev.read_api?.cmd)) deny('agents may not start the API by hand (dev.agents_may_start = false): use `factory read-api up`');
+  const msg = 'agents may not start the dev stack (dev.agents_may_start = false): use `factory dev up`';
+  if (startsWith(ctx.dev.read_api?.cmd)) deny('agents may not start the API by hand (dev.agents_may_start = false): use `factory dev read-api up`');
   if (startsWith(ctx.dev.up)) deny(msg);
   if (NPM_FAMILY.has(c.name)) {
     const a = [...c.args];
@@ -679,9 +679,9 @@ function analyze(src, ctx, state, depth) {
       continue;
     }
     if (c.name === 'factory') {
-      // `factory dev-up`, the shim, `factory read-api up`: the sanctioned routes; a restart only from the main session.
-      if (c.args[0] === 'dev-restart' && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
-        deny(`\`factory dev-restart\` is the orchestrator's: a subagent may not restart the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service instead`);
+      // `factory dev up`, the shim, `factory dev read-api up`: the sanctioned routes; a restart only from the main session.
+      if ((c.args[0] === 'dev-restart' || (c.args[0] === 'dev' && c.args[1] === 'restart')) && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
+        deny(`\`factory dev restart\` is the orchestrator's: a subagent may not restart the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service instead`);
       continue;
     }
     if (depth < 4) {

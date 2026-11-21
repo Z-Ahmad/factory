@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# desc: stop the dev stack and start it again (dev-up); the orchestrator's, for a wedged emulator
-# usage: factory dev-restart [--no-seed] [--dry-run]
+# desc: stop the dev stack and start it again (dev up); the orchestrator's, for a wedged emulator
+# usage: factory dev restart [--no-seed] [--dry-run]
 # Stops whatever listens on the [dev] all_ports (the wait_ports when all_ports is not set): TERM to
-# each listener's process group (dev-up starts the stack as one), then, after [dev] stop_s (default
+# each listener's process group (dev up starts the stack as one), then, after [dev] stop_s (default
 # 30) with ports still open, KILL to what still listens, and to any of those groups' processes still
-# alive (one that never listened and ignores TERM). Then runs dev-up, which starts it again
+# alive (one that never listened and ignores TERM). Then runs dev up, which starts it again
 # and restores the seed (skipped with --no-seed). --dry-run prints the process groups it would stop.
 # hook-guard lets only the main session run it: a subagent is denied unless [dev] restart_by = "anyone".
 # Exit 0 when the stack is back up, 1 on a bad argument or missing config, 4 when a port would not
-# close; otherwise dev-up's own exit (2 ports did not come up, 3 seed restore failed).
+# close; otherwise dev up's own exit (2 ports did not come up, 3 seed restore failed).
 # FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -77,4 +77,4 @@ echo "factory-dev-restart: stopped; starting again"
 
 ARGS=()
 [[ "$SEED" == 1 ]] || ARGS+=(--no-seed)
-exec "$FK_KIT_DIR/cmd/dev-up" "${ARGS[@]+"${ARGS[@]}"}"
+exec "$FK_KIT_DIR/lib/dev/up" "${ARGS[@]+"${ARGS[@]}"}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # desc: serve a second API instance on its own port, detached (up), or stop the one this command started (down)
-# usage: factory read-api up|down
+# usage: factory dev read-api up|down
 # up    runs [dev] read_api cmd in read_api cwd (relative paths are under [project] main_checkout) with
 #       PORT=<read_api port>, detached in its own process session. Output goes to <state_dir>/read-api.log
 #       and the process id to <state_dir>/read-api.pid. Waits up to 120s for the port.
@@ -16,7 +16,7 @@ set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
 
 ACTION="${1:-}"
-[[ "$ACTION" == up || "$ACTION" == down ]] || { echo "usage: factory read-api up|down" >&2; exit 1; }
+[[ "$ACTION" == up || "$ACTION" == down ]] || { echo "usage: factory dev read-api up|down" >&2; exit 1; }
 [[ $# -le 1 ]] || { echo "unexpected argument: $2" >&2; exit 1; }
 
 CMD="${FK_DEV_READ_API_CMD:-}" PORT="${FK_DEV_READ_API_PORT:-}" CWD="${FK_DEV_READ_API_CWD:-}"

@@ -9,7 +9,7 @@
 # Every other booted simulator is idle, unless a [sim] keep_booted glob (name or UDID) names it. Without --shutdown
 # nothing changes. Prints one line per booted simulator, then
 #   "sims: N booted, M in use[, J kept]; K idle shut down: <names>" (or "... K idle: <names> (--shutdown to stop them)").
-# tick, preflight and end-night --apply run `sims idle --shutdown` when [sim] idle_minutes is set. Exit 0 (1 on a bad
+# doctor runs `sims idle --shutdown` when [sim] idle_minutes is set. Exit 0 (1 on a bad
 # argument). macOS only (elsewhere: "sims: skipped: needs Xcode").
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
