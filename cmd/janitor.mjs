@@ -36,8 +36,11 @@
 // a job). Nothing ever erases or deletes a simulator.
 //
 // Scheduling: `install` writes ~/Library/LaunchAgents/com.factory-kit.janitor.<project>.plist (every --interval seconds,
-// default 300, never at load) running `<shim> janitor run --scheduled`, where the shim is --shim, else the project's
-// scripts/factory/factory or scripts/factory, else this kit. `--scheduled` applies only after `enable`; `run --apply`
+// default 300, never at load) running `<kit>/bin/factory janitor run --scheduled` (or --shim) against a copy of
+// factory.toml kept at <state_dir>/janitor/factory.toml, from that folder. macOS keeps launchd agents out of ~/Documents,
+// ~/Desktop and ~/Downloads (privacy protection), where projects usually live, so the scheduled pass never reads the
+// project folder: only the kit checkout (~/.factory-kit) and the state dir. Every pass run by hand or by a hook (not a
+// scheduled one) refreshes the copy, and re-installs the agent when the kit version or the copy's path changed. `--scheduled` applies only after `enable`; `run --apply`
 // applies regardless. It is DISABLED after install: read a few dry-run passes in the log, then enable.
 // Test hooks: FK_JANITOR_AGENTS_DIR (the LaunchAgents folder; with it set, install also works off macOS) and launchctl
 // found on PATH; FK_JANITOR_KILL (a command run as `<cmd> <SIGNAL> <pid>` instead of signalling).
@@ -363,14 +366,28 @@ const agentsDir = () => process.env.FK_JANITOR_AGENTS_DIR || join(homedir(), 'Li
 const plistPath = (cfg) => join(agentsDir(), `${label(cfg)}.plist`);
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function shimPath(cfg, given) {
-  if (given) return given;
-  for (const p of [join(cfg.mainCheckout, 'scripts', 'factory', 'factory'), join(cfg.mainCheckout, 'scripts', 'factory')]) {
-    try {
-      if (statSync(p).isFile()) return p;
-    } catch {}
+// the kit's own entry point, not the project's shim: the project folder is usually one launchd can't read
+const shimPath = (given) => given || join(KIT, 'bin', 'factory');
+const snapshotPath = (cfg) => join(cfg.dir, 'factory.toml');
+// folders macOS's privacy protection keeps from a launchd agent
+const PROTECTED_DIRS = ['Documents', 'Desktop', 'Downloads'].map((d) => join(homedir(), d));
+const isProtected = (p) => PROTECTED_DIRS.some((d) => p === d || p.startsWith(`${d}/`));
+
+/** Copy the project's factory.toml to the state dir when it changed; returns the copy's path. */
+function syncSnapshot(cfg) {
+  const snap = snapshotPath(cfg);
+  const src = process.env.FACTORY_TOML;
+  if (!src || src === snap) return snap;
+  const text = readFileSync(src, 'utf8');
+  let old = null;
+  try {
+    old = readFileSync(snap, 'utf8');
+  } catch {}
+  if (old !== text) {
+    mkdirSync(cfg.dir, { recursive: true });
+    writeFileSync(snap, text);
   }
-  return join(KIT, 'bin', 'factory');
+  return snap;
 }
 
 export function plist(cfg, { interval, shim, toml }) {
@@ -393,7 +410,7 @@ export function plist(cfg, { interval, shim, toml }) {
 ${dict({ FACTORY_TOML: toml, PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', HOME: homedir() })}
   </dict>
   <key>WorkingDirectory</key>
-  <string>${xml(cfg.mainCheckout)}</string>
+  <string>${xml(cfg.dir)}</string>
   <key>StartInterval</key>
   <integer>${interval}</integer>
   <key>RunAtLoad</key>
@@ -415,11 +432,15 @@ function install(cfg, o) {
     console.error('factory janitor install: launchd is macOS only');
     return 1;
   }
-  const toml = process.env.FACTORY_TOML;
   const file = plistPath(cfg);
   mkdirSync(dirname(file), { recursive: true });
   mkdirSync(cfg.dir, { recursive: true });
-  writeFileSync(file, plist(cfg, { interval: o.interval, shim: shimPath(cfg, o.shim), toml }));
+  const toml = syncSnapshot(cfg);
+  const shim = shimPath(o.shim);
+  for (const [what, p] of [['the kit', shim], ['the state dir', cfg.dir]]) {
+    if (isProtected(p)) console.error(`factory janitor install: warning: ${what} (${p}) is in a folder macOS keeps from launchd agents; scheduled passes will fail with "Operation not permitted"`);
+  }
+  writeFileSync(file, plist(cfg, { interval: o.interval, shim, toml }));
   launchctl('bootout', `${domain()}/${label(cfg)}`); // a copy already loaded is replaced; nothing loaded is fine
   const r = launchctl('bootstrap', domain(), file);
   if (r.error || r.status !== 0) {
@@ -429,6 +450,31 @@ function install(cfg, o) {
   console.log(`janitor: installed ${file} (every ${o.interval}s)`);
   console.log(isEnabled(cfg) ? 'janitor: enabled: scheduled passes apply' : 'janitor: DISABLED (dry run): scheduled passes only log. After reading a few in the log, run `factory janitor enable`');
   return 0;
+}
+
+/**
+ * From a pass run by hand or by a hook: keep the scheduled pass's copy of factory.toml current, and re-install the agent
+ * when what it would run changed (a new kit version, the copy's path). Keeps the installed interval. Never installs.
+ */
+function refreshAgent(cfg) {
+  try {
+    syncSnapshot(cfg);
+    const file = plistPath(cfg);
+    if (!existsSync(file)) return;
+    const text = readFileSync(file, 'utf8');
+    const interval = Number(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(text)?.[1] ?? 300);
+    const shim = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(text)?.[1];
+    // a --shim given at install is kept; the kit's own entry point follows the kit version this pass runs
+    const custom = shim && !isProtected(shim) && !shim.endsWith('/bin/factory') ? shim : null;
+    const want = plist(cfg, { interval, shim: shimPath(custom), toml: snapshotPath(cfg) });
+    if (want === text) return;
+    writeFileSync(file, want);
+    launchctl('bootout', `${domain()}/${label(cfg)}`);
+    launchctl('bootstrap', domain(), file);
+    makeLogger(cfg, 'refresh')({ what: 'agent', why: `re-installed ${file}: the kit or its config copy changed` });
+  } catch {
+    // a refresh never blocks the pass
+  }
 }
 
 function uninstall(cfg) {
@@ -494,6 +540,7 @@ export function main(argv) {
   }
   switch (sub) {
     case 'run':
+      if (!o.scheduled) refreshAgent(cfg);
       return runPass(cfg, o);
     case 'enable':
       mkdirSync(cfg.dir, { recursive: true });

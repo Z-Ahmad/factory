@@ -328,7 +328,8 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
 });
 
 test('proof: past its time limit everything it started is stopped and it exits 124 after its cleanup; 0 means none', () => {
-  const t = project();
+  // a cold boot waits for the load to settle; under a loaded test run that wait alone could pass the limit
+  const t = project((x) => `${x}\n[slot]\nboot_settle_s = 1\n`);
   try {
     const bin = join(t.dir, 'bin');
     mkdirSync(bin);
@@ -341,9 +342,9 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; "simct
     const dd = join(t.dir, 'dd');
     mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
     const started = Date.now();
-    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'o'), '--seconds', '0', '--no-slot'], { PATH: `${bin}:${process.env.PATH}`, FK_PROOF_LIMIT_MIN: '0.03' });
+    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'o'), '--seconds', '0', '--no-slot'], { PATH: `${bin}:${process.env.PATH}`, FK_PROOF_LIMIT_MIN: '0.1' }); // 6 s: room for a loaded Mac to reach the hung install
     assert.equal(r.status, 124, r.stdout + r.stderr);
-    assert.match(r.stderr, /proof scrub ran past its 0\.03 min limit/);
+    assert.match(r.stderr, /proof scrub ran past its 0\.1 min limit/);
     assert.ok(Date.now() - started < 60000, 'it did not wait out the hung install');
     const hung = Number(readFileSync(join(t.dir, 'hung.pid'), 'utf8'));
     let alive = true;
