@@ -2,6 +2,15 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.24.0
+
+### A proof stops at its time limit too
+
+A proof never ran inside a `factory run` job (it only waits for room), so v0.23's limits never reached it. Each proof
+now has its own: once it has room and any `--build` is done, it gets `[slot.run_limits] proof` minutes (default 5;
+`0` = none). Past that, everything it started is stopped, its usual cleanup runs (a sim it booted is shut down) and it
+exits 124. In a matrix the limit is per cell. `factory run --job proof` defaults to 5 minutes as well.
+
 ## v0.23.0
 
 ### `factory run` stops a job that runs past its time limit

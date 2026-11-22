@@ -552,7 +552,7 @@ export const SCHEMA = table({
   // default 15, 0 = off); max_swapouts_per_min = the most vm_stat swap-outs over the last minute (default 1000 pages);
   // orphan_minutes = the age past which the reaper kills orphaned recordings and kit test runs (default 60);
   // poll_s (5) and timeout_s (3600) for a queued run; run_limits = job type -> minutes a job may run once admitted,
-  // merged over the defaults (test 30, build 45, device 45, release 60, archive 60; others none; 0 = none); past it the
+  // merged over the defaults (test 30, build 45, device 45, release 60, archive 60, proof 5; others none; 0 = none); past it the
   // whole job is stopped (exit 124). builders is no longer read (capacity replaced it).
   slot: table({
     builders: int(),

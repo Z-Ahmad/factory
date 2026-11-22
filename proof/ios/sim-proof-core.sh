@@ -206,7 +206,16 @@ TURNED=0 BOOTED_HERE=0
 turn() {
   ( cd "$FK_ROOT" && bash -c "$(fk_fill "$ORIENT_CMD" udid "$UDID" orientation "$1" dd "$(printf '%q' "$DD")")" ) >>"$OUT/orientation.log" 2>&1
 }
+# stop_watchdog: end the time-limit watchdog (below) and its sleep.
+WATCHDOG_PID=""
+stop_watchdog() {
+  [[ -n "$WATCHDOG_PID" ]] || return 0
+  pkill -TERM -P "$WATCHDOG_PID" 2>/dev/null || true
+  kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
+  WATCHDOG_PID=""
+}
 cleanup_frames() {
+  stop_watchdog
   [[ "$KEEP_FRAMES" == 1 ]] || rm -rf "$FRAMES_DIR"
   if [[ "$TURNED" == 1 && "$TURN_BACK" == 1 ]]; then
     TURNED=0
@@ -222,6 +231,33 @@ VIDEO="$OUT/$SCENARIO.mp4"
 rm -f "$VIDEO"
 
 slot_wait proof proof
+# Time limit (kit v0.23): from here (room found, any --build done) a proof gets [slot.run_limits] proof minutes (default
+# 5; FK_PROOF_LIMIT_MIN overrides; 0 = none). Past it, everything the proof started is stopped and it exits 124 after its
+# usual cleanup (the sim it booted is shut down). A matrix applies it to each cell.
+# kill_descendants <pid> <skip>: TERM every descendant of <pid> except <skip> and its own descendants, deepest first.
+kill_descendants() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    [[ "$c" == "$2" ]] && continue
+    kill_descendants "$c" "$2"
+    kill -TERM "$c" 2>/dev/null || true
+  done
+}
+PROOF_LIMIT_MIN="${FK_PROOF_LIMIT_MIN:-$(fk_proof_json slot.run_limits.proof)}"
+PROOF_LIMIT_MIN="${PROOF_LIMIT_MIN:-5}"
+[[ "$PROOF_LIMIT_MIN" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "[slot.run_limits] proof wants minutes, got '$PROOF_LIMIT_MIN'" >&2; exit 1; }
+if awk -v m="$PROOF_LIMIT_MIN" 'BEGIN { exit !(m > 0) }'; then
+  trap 'echo "proof $SCENARIO ran past its $PROOF_LIMIT_MIN min limit ([slot.run_limits] proof): stopped" >&2; exit 124' USR1
+  MAIN_PID=$$
+  (
+    sleep "$(awk -v m="$PROOF_LIMIT_MIN" 'BEGIN { print m * 60 }')"
+    kill -USR1 "$MAIN_PID" 2>/dev/null || exit 0
+    # this subshell's own pid (macOS bash 3.2 has no $BASHPID), so it isn't stopped with the rest
+    ME="$(exec sh -c 'echo $PPID')"
+    kill_descendants "$MAIN_PID" "$ME"
+  ) &
+  WATCHDOG_PID=$!
+fi
 echo "installing on ${UDID}..."
 COLD=0
 if ! xcrun simctl list devices | grep -F "($UDID)" | grep -q '(Booted)'; then COLD=1; fi

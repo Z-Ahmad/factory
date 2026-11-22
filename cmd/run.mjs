@@ -28,7 +28,7 @@
 // wait passed --timeout ([slot] timeout_s, default 3600; 0 = no limit); 124 when the command ran past its time limit;
 // 1 on a usage error.
 // Time limit: once admitted, a job may run for its type's minutes ([slot.run_limits], merged over the defaults: test 30,
-// build 45, device 45, release 60, archive 60; other types none) or --limit <min> (0 = none). Past it the whole
+// build 45, device 45, release 60, archive 60, proof 5; other types none) or --limit <min> (0 = none). Past it the whole
 // process group is stopped, the lease freed, and it says so: a hung xcodebuild must never hold room for hours.
 //
 // The reaper (--reap, and at the start of every run) removes leases whose process is gone and kills their leftover
@@ -50,7 +50,7 @@ export const DEFAULT_WEIGHTS = {
   unit: 0, tsc: 0,
 };
 /** Minutes a job may run once admitted; a type not listed has no limit. */
-export const DEFAULT_RUN_LIMITS = { test: 30, build: 45, device: 45, release: 60, archive: 60 };
+export const DEFAULT_RUN_LIMITS = { test: 30, build: 45, device: 45, release: 60, archive: 60, proof: 5 };
 const SELF = fileURLToPath(import.meta.url);
 const say = (m) => process.stderr.write(`run: ${m}\n`);
 const die = (m, code = 1) => {

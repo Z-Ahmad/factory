@@ -327,6 +327,38 @@ case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; *recor
   }
 });
 
+test('proof: past its time limit everything it started is stopped and it exits 124 after its cleanup; 0 means none', () => {
+  const t = project();
+  try {
+    const bin = join(t.dir, 'bin');
+    mkdirSync(bin);
+    const stub = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
+    // the sim starts shut down; the install hangs, as a stuck simctl does
+    stub('xcrun', `echo "$*" >> '${join(t.dir, 'xcrun.log')}'
+case "$*" in "simctl list devices"*) echo "    Phone (ABC) (Shutdown)" ;; "simctl install"*) echo $$ > '${join(t.dir, 'hung.pid')}'; sleep 600 ;; esac`);
+    stub('ffmpeg', 'exit 0');
+    stub('ffprobe', 'exit 0');
+    const dd = join(t.dir, 'dd');
+    mkdirSync(join(dd, 'Build', 'Example.app'), { recursive: true });
+    const started = Date.now();
+    const r = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'o'), '--seconds', '0', '--no-slot'], { PATH: `${bin}:${process.env.PATH}`, FK_PROOF_LIMIT_MIN: '0.03' });
+    assert.equal(r.status, 124, r.stdout + r.stderr);
+    assert.match(r.stderr, /proof scrub ran past its 0\.03 min limit/);
+    assert.ok(Date.now() - started < 60000, 'it did not wait out the hung install');
+    const hung = Number(readFileSync(join(t.dir, 'hung.pid'), 'utf8'));
+    let alive = true;
+    try { process.kill(hung, 0); } catch { alive = false; }
+    assert.equal(alive, false, 'the hung install is gone');
+    assert.equal(readFileSync(join(t.dir, 'xcrun.log'), 'utf8').trim().split('\n').at(-1), 'simctl shutdown ABC', 'cleanup still shut the sim down');
+    // 0 = no limit: a bad value is refused before anything starts
+    const bad = t.run('proof', ['scrub', '--udid', 'ABC', '--dd', dd, '--out', join(t.dir, 'o2'), '--seconds', '0', '--no-slot'], { PATH: `${bin}:${process.env.PATH}`, FK_PROOF_LIMIT_MIN: 'soon' });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /wants minutes/);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test('proof: a cold boot settles the load, then turns, installs and launches once unrecorded; a warm sim does neither; a settle that runs out says so', () => {
   const t = project((s) => s.replace('env_prefix    = "EXAMPLE_"\n', 'env_prefix    = "EXAMPLE_"\norientation_cmd = "echo turned >> xcrun.log"\n') + '\n[slot]\nboot_settle_s = 1\n');
   try {
