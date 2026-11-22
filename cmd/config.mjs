@@ -553,7 +553,8 @@ export const SCHEMA = table({
   // orphan_minutes = the age past which the reaper kills orphaned recordings and kit test runs (default 60);
   // poll_s (5) and timeout_s (3600) for a queued run; run_limits = job type -> minutes a job may run once admitted,
   // merged over the defaults (test 30, build 45, device 45, release 60, archive 60, proof 5; others none; 0 = none); past it the
-  // whole job is stopped (exit 124). builders is no longer read (capacity replaced it).
+  // whole job is stopped (exit 124). shutdown_booted (default true) = when a job ends, shut down the simulators it booted
+  // (see `factory run`); false = leave them. builders is no longer read (capacity replaced it).
   slot: table({
     builders: int(),
     capacity: int(),
@@ -563,6 +564,7 @@ export const SCHEMA = table({
     min_free_pct: int(),
     max_swapouts_per_min: int(),
     orphan_minutes: int(),
+    shutdown_booted: bool(),
     // after a cold boot or a build, how long a proof waits for the load to come back under max_load (default 120)
     boot_settle_s: int(),
     poll_s: int(),
@@ -570,7 +572,16 @@ export const SCHEMA = table({
   }),
   // hook-guard: build_scripts = globs of npm/pnpm/yarn/bun script names that build or test (e.g. "ios:test*"); rule 7
   // denies them outside `factory run`. Default none: a script not listed (a status report, a lint) always passes.
-  hook: table({ build_scripts: strs() }),
+  // background_wait_deadline (default true): rule 8 denies a background Bash call whose until/while loop names no
+  // deadline (timeout, alarm, $SECONDS, date +%s); false turns it off.
+  hook: table({ build_scripts: strs(), background_wait_deadline: bool() }),
+  // `factory janitor`: a periodic sweep for what `factory run` cannot see. orphan_minutes (default 10) = the least age of
+  // an orphaned build or test process before the janitor stops it; swap_pct (default 80) = the share of swap in use that,
+  // like critical memory pressure, makes it shut down every booted simulator no live lease may own; tools = extra
+  // tool names it may stop when orphaned: an executable name or glob ("test-runner", "xc*"), or text with a space that
+  // the command line must contain ("npm run ios:test"); built in: xcodebuild, xctest, simctl io recordVideo, simctl spawn.
+  // Whether it acts or only logs is `factory janitor enable|disable`, not a key.
+  janitor: table({ orphan_minutes: int(), swap_pct: int(), tools: strs() }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),

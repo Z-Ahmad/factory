@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT, factory, scratch } from './helpers.mjs';
 import { alive, waitFor } from './procs.mjs';
-import { etimeSeconds, gates, swapRate } from '../cmd/run.mjs';
+import { etimeSeconds, gates, simsToShut, swapRate } from '../cmd/run.mjs';
 
 // factory run against a scratch project whose sysctl and vm_stat are fakes reading the files in <dir>/r (pressure,
 // free, load, ncpu, swapouts), so a test changes a reading by writing a file. Leases live in <dir>/state/slot.
@@ -31,6 +31,15 @@ case "$2" in
 esac`);
   stub('vm_stat', `echo "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
 echo "Swapouts:                                 $(cat '${R}/swapouts' 2>/dev/null || echo 100)."`);
+  // xcrun: the booted simulators are the lines of r/booted; `simctl shutdown` removes one and logs it to r/shutdowns
+  stub('xcrun', `B='${R}/booted'
+if [ "$1 $2 $3 $4" = "simctl list devices booted" ]; then
+  printf '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":['; first=1
+  for u in $(cat "$B" 2>/dev/null); do [ $first = 1 ] || printf ','; first=0; printf '{"udid":"%s","state":"Booted"}' "$u"; done
+  echo ']}}'
+elif [ "$1 $2" = "simctl shutdown" ]; then
+  grep -vx "$3" "$B" > "$B.n"; mv "$B.n" "$B"; echo "$3" >> '${R}/shutdowns'
+else exit 1; fi`);
   writeFileSync(p('factory.toml'), `[kit]
 repo = "https://example.invalid/factory.git"
 ref  = "v0.0.0"
@@ -59,6 +68,11 @@ ${slot}
   const set = (name, value) => writeFileSync(p('r', name), String(value));
   const run = (args, more = {}) => factory(['run', ...args], { cwd: dir, env: { ...env, ...more } });
   const kids = [];
+  const boot = (...u) => appendFileSync(p('r', 'booted'), u.map((x) => `${x}\n`).join(''));
+  const booted = () => (existsSync(p('r', 'booted')) ? readFileSync(p('r', 'booted'), 'utf8').split('\n').filter(Boolean) : []);
+  const shutdowns = () => (existsSync(p('r', 'shutdowns')) ? readFileSync(p('r', 'shutdowns'), 'utf8').split('\n').filter(Boolean) : []);
+  // a job that boots the simulators, then holds until <dir>/go-<name> exists
+  const bootAndHold = (name, ...u) => ['sh', '-c', `printf '%s\\n' ${u.join(' ')} >> '${p('r', 'booted')}'; while [ ! -f '${p(`go-${name}`)}' ]; do sleep 0.05; done`];
   // a background `factory run`; its stderr is collected in .err
   const start = (args, more = {}) => {
     const c = spawn(join(KIT, 'bin', 'factory'), ['run', ...args], { cwd: dir, env: { ...process.env, ...env, ...more }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -85,7 +99,7 @@ ${slot}
     await Promise.all(kids.map((c) => c.done));
     s.cleanup();
   };
-  return { dir, p, env, set, run, start, leases, hold, release, cleanup };
+  return { dir, p, env, set, run, start, leases, hold, release, cleanup, boot, booted, shutdowns, bootAndHold };
 }
 
 const sleeper = (args = [], opts = {}) => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)', ...args], { stdio: 'ignore', ...opts });
@@ -513,4 +527,101 @@ test('hook-guard asks factory run itself: an XcodeBuildMCP build is denied while
   } finally {
     await t.cleanup();
   }
+});
+
+// ------------------------------------------------------------ simulators a job booted
+
+test('run sims: a simulator the job booted is shut down at exit; one booted before stays', async () => {
+  const t = project();
+  try {
+    t.boot('SIM-OLD');
+    const r = t.run(['--job', 'test', '--', 'sh', '-c', `echo SIM-NEW >> '${t.p('r', 'booted')}'`]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /(?<!could not )shut down simulator SIM-NEW \(booted during test\)/, r.stderr);
+    assert.deepEqual(t.shutdowns(), ['SIM-NEW']);
+    assert.deepEqual(t.booted(), ['SIM-OLD']);
+    // a failing job cleans up too
+    const f = t.run(['--job', 'test', '--', 'sh', '-c', `echo SIM-TWO >> '${t.p('r', 'booted')}'; exit 3`]);
+    assert.equal(f.status, 3);
+    assert.deepEqual(t.shutdowns(), ['SIM-NEW', 'SIM-TWO']);
+    // a weight 0 job takes no lease and touches nothing
+    const u = t.run(['--job', 'unit', '--', 'sh', '-c', `echo SIM-U >> '${t.p('r', 'booted')}'`]);
+    assert.equal(u.status, 0);
+    assert.deepEqual(t.booted(), ['SIM-OLD', 'SIM-U']);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('run sims: shut down at the time limit and on SIGTERM too', async () => {
+  const t = project();
+  try {
+    const lim = t.start(['--job', 'build', '--limit', '0.03', '--', ...t.bootAndHold('lim', 'SIM-LIM')]);
+    assert.equal((await lim.done).code, 124, lim.err);
+    assert.deepEqual(t.shutdowns(), ['SIM-LIM']);
+    const sig = t.start(['--job', 'build', '--', ...t.bootAndHold('sig', 'SIM-SIG')]);
+    assert.ok(await waitFor(() => t.booted().includes('SIM-SIG')), sig.err);
+    sig.kill('SIGTERM');
+    assert.equal((await sig.done).code, 143);
+    assert.deepEqual(t.shutdowns(), ['SIM-LIM', 'SIM-SIG']);
+    assert.match(sig.err, /shut down simulator SIM-SIG/);
+    assert.deepEqual(t.booted(), []);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('run sims: a simulator another live lease holds is untouched, and so is one it may have booted', async () => {
+  const t = project();
+  try {
+    // A holds SIM-HELD (--sim), which is not booted yet when B is admitted
+    const a = t.start(['--job', 'build', '--owner', 'a', '--sim', 'SIM-HELD', '--', ...t.hold('a')]);
+    assert.ok(await waitFor(() => t.leases().leases.some((l) => Array.isArray(l.booted))), a.err);
+    const b = t.start(['--job', 'build', '--owner', 'b', '--', ...t.bootAndHold('b', 'SIM-HELD', 'SIM-AMBIGUOUS')]);
+    assert.ok(await waitFor(() => t.booted().includes('SIM-HELD')), b.err);
+    t.release('b');
+    assert.equal((await b.done).code, 0, b.err);
+    // SIM-HELD is A's lease sim; SIM-AMBIGUOUS appeared after A was admitted and A's list does not hold it: A may own it
+    assert.deepEqual(t.shutdowns(), []);
+    assert.deepEqual(t.booted(), ['SIM-HELD', 'SIM-AMBIGUOUS']);
+    t.release('a');
+    await a.done;
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('run sims: a simulator booted before the other lease was admitted is this job\'s, not that lease\'s', async () => {
+  const t = project();
+  try {
+    const b = t.start(['--job', 'build', '--owner', 'b', '--', ...t.hold('b')]);
+    assert.ok(await waitFor(() => t.leases().leases.some((l) => Array.isArray(l.booted))), b.err);
+    t.boot('SIM-X'); // booted during B's run, before A is admitted
+    const a = t.start(['--job', 'build', '--owner', 'a', '--', ...t.hold('a')]);
+    assert.ok(await waitFor(() => t.leases().leases.filter((l) => Array.isArray(l.booted)).length === 2), a.err);
+    t.release('b');
+    assert.equal((await b.done).code, 0, b.err);
+    assert.deepEqual(t.shutdowns(), ['SIM-X']); // A's list holds it, so A did not boot it
+    t.release('a');
+    await a.done;
+  } finally {
+    await t.cleanup();
+  }
+});
+
+test('run sims: [slot] shutdown_booted = false leaves them; simsToShut is the rule', async () => {
+  const t = project('shutdown_booted = false');
+  try {
+    const r = t.run(['--job', 'test', '--', 'sh', '-c', `echo SIM-KEEP >> '${t.p('r', 'booted')}'`]);
+    assert.equal(r.status, 0);
+    assert.deepEqual(t.shutdowns(), []);
+    assert.deepEqual(t.booted(), ['SIM-KEEP']);
+  } finally {
+    await t.cleanup();
+  }
+  const now = new Set(['OLD', 'NEW', 'HELD', 'THEIRS', 'OK']);
+  const others = [{ sim: 'HELD', booted: ['OK'] }, { booted: ['OK', 'OLD'] }];
+  assert.deepEqual(simsToShut(now, new Set(['OLD']), others), ['OK']);
+  assert.deepEqual(simsToShut(now, new Set(), [{ booted: null }]), []); // a lease with no list claims every new one
+  assert.deepEqual(simsToShut(now, new Set(['OLD']), []), ['NEW', 'HELD', 'THEIRS', 'OK']);
 });

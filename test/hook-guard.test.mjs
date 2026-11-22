@@ -390,3 +390,28 @@ test('repoSlug reads -R values and PR URLs', async () => {
   assert.equal(repoSlug('gitlab.com/o/kit'), null);
   assert.equal(repoSlug('12'), null);
 });
+
+test('rule 8: a background until/while loop needs a deadline', () => {
+  const bg = (command) => ({ tool_name: 'Bash', tool_input: { command, run_in_background: true }, cwd: main });
+  const fg = (command) => bash(command);
+  const loop = 'until curl -sf localhost:3000; do sleep 2; done';
+  const reason = evaluate(bg(loop), cfg);
+  assert.match(reason, /background wait without a deadline/);
+  assert.match(reason, /timeout 1200/);
+  assert.match(evaluate(bg('while [ ! -f /tmp/x ]; do sleep 1; done; echo ready'), cfg), /background wait/);
+  assert.match(evaluate(bg('npm run build && until test -f out.txt; do sleep 1; done'), cfg), /background wait/);
+  // a deadline in the command passes
+  assert.equal(evaluate(bg(`timeout 1200 bash -c '${loop}'`), cfg), null);
+  assert.equal(evaluate(bg('gtimeout 600 bash -c "while ! test -f x; do sleep 1; done"'), cfg), null);
+  assert.equal(evaluate(bg('end=$((SECONDS+900)); until test -f x || [ $SECONDS -gt $end ]; do sleep 1; done'), cfg), null);
+  assert.equal(evaluate(bg('start=$(date +%s); while [ $(( $(date +%s) - start )) -lt 900 ]; do sleep 1; done'), cfg), null);
+  assert.equal(evaluate(bg(`perl -e 'alarm 600; exec @ARGV' -- bash -c '${loop}'`), cfg), null);
+  // a foreground loop is the caller's to watch; a for loop is bounded; plain words are not loops
+  assert.equal(evaluate(fg(loop), cfg), null);
+  assert.equal(evaluate(bg('for i in 1 2 3 4 5; do curl -sf localhost:3000 && break; sleep 2; done'), cfg), null);
+  assert.equal(evaluate(bg('echo "wait until the build ends"'), cfg), null);
+  assert.equal(evaluate(bg('npm test'), cfg), null);
+  // [hook] background_wait_deadline = false turns it off
+  const off = guardConfig(parseToml(`${TOML}\n[hook]\nbackground_wait_deadline = false\n`).data, join(main, 'factory.toml'));
+  assert.equal(evaluate(bg(loop), off), null);
+});
