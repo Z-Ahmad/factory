@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // desc: run a heavy job under a weighted reservation: queued first come, first served, admitted when the Mac has room
-// usage: factory run --job <type> [--dd <dir>] [--sim <udid>] [--owner <id>] [--owner-pid <pid>] [--timeout <s>] -- <cmd…>
+// usage: factory run --job <type> [--dd <dir>] [--sim <udid>] [--owner <id>] [--owner-pid <pid>] [--timeout <s>] [--limit <min>] -- <cmd…>
 //        factory run --status            leases, the queue and the gate readings (exit 0 when a build would start now)
 //        factory run --reap              free dead leases and kill what they left; kill orphaned recordings and test runs
 //        factory run --check --job <t>   exit 0 when a <t> job would start now, 1 (with the reason) when not
@@ -25,7 +25,11 @@
 // running in that group. SIGINT, SIGTERM or SIGHUP, or the death of --owner-pid (or a numeric --owner), stop the whole
 // group. The command gets FK_RUN_LEASE (the lease id) and FK_SLOT_HELD=1, so a nested `factory run`, `factory slot wait`
 // or a proof's own slot wait does not queue again. Exit: the command's status (128 + n for signal n); 75 when the queue
-// wait passed --timeout ([slot] timeout_s, default 3600; 0 = no limit); 1 on a usage error.
+// wait passed --timeout ([slot] timeout_s, default 3600; 0 = no limit); 124 when the command ran past its time limit;
+// 1 on a usage error.
+// Time limit: once admitted, a job may run for its type's minutes ([slot.run_limits], merged over the defaults: test 30,
+// build 45, device 45, release 60, archive 60; other types none) or --limit <min> (0 = none). Past it the whole
+// process group is stopped, the lease freed, and it says so: a hung xcodebuild must never hold room for hours.
 //
 // The reaper (--reap, and at the start of every run) removes leases whose process is gone and kills their leftover
 // process group (only when every process in it started after the lease did); kills `simctl io … recordVideo` processes
@@ -45,6 +49,8 @@ export const DEFAULT_WEIGHTS = {
   proof: 1, vite: 1, playwright: 1, rules: 1, install: 1,
   unit: 0, tsc: 0,
 };
+/** Minutes a job may run once admitted; a type not listed has no limit. */
+export const DEFAULT_RUN_LIMITS = { test: 30, build: 45, device: 45, release: 60, archive: 60 };
 const SELF = fileURLToPath(import.meta.url);
 const say = (m) => process.stderr.write(`run: ${m}\n`);
 const die = (m, code = 1) => {
@@ -72,6 +78,7 @@ export function settings(file = process.env.FACTORY_TOML) {
     orphanMin: slot.orphan_minutes ?? 60,
     pollS: slot.poll_s ?? 5,
     timeoutS: slot.timeout_s ?? 3600,
+    runLimits: { ...DEFAULT_RUN_LIMITS, ...(slot.run_limits ?? {}) },
   };
 }
 
@@ -569,6 +576,15 @@ async function runJob(cfg, o) {
     finish(127);
   });
   if (child.pid && leased) locked(cfg, 'setpgid', { id, pgid: child.pid });
+  const limitMin = o.limit ?? cfg.runLimits[o.job] ?? 0;
+  if (limitMin > 0) {
+    setTimeout(() => {
+      if (stopping) return;
+      stopping = true;
+      say(`${o.job} ran past its ${limitMin} min limit ([slot.run_limits] ${o.job} or --limit): stopping process group ${child?.pid}`);
+      finish(124);
+    }, limitMin * 60 * 1000).unref();
+  }
   child.on('exit', (code, signal) => {
     if (stopping) return;
     stopping = true;
@@ -605,7 +621,7 @@ async function waitFree(cfg, job, timeoutS) {
 
 // ------------------------------------------------------------ CLI
 
-const USAGE = 'usage: factory run --job <type> [--dd <dir>] [--sim <udid>] [--owner <id>] [--owner-pid <pid>] [--timeout <s>] -- <cmd…>\n       factory run --status | --reap | --check --job <type> | --wait --job <type> [--timeout <s>]';
+const USAGE = 'usage: factory run --job <type> [--dd <dir>] [--sim <udid>] [--owner <id>] [--owner-pid <pid>] [--timeout <s>] [--limit <min>] -- <cmd…>\n       factory run --status | --reap | --check --job <type> | --wait --job <type> [--timeout <s>]';
 
 async function main(argv) {
   if (argv[0] === '--op') {
@@ -631,6 +647,7 @@ async function main(argv) {
     else if (a === '--owner') o.owner = val();
     else if (a === '--owner-pid') o.ownerPid = Number(val());
     else if (a === '--timeout') o.timeout = Number(val());
+    else if (a === '--limit') o.limit = Number(val());
     else if (['--status', '--reap', '--check', '--wait'].includes(a)) mode = a.slice(2);
     else if (a === '-h' || a === '--help') {
       console.log(USAGE);
@@ -640,6 +657,7 @@ async function main(argv) {
   if (o.owner && /^\d+$/.test(o.owner) && !o.ownerPid) o.ownerPid = Number(o.owner);
   if (o.ownerPid != null && !(Number.isInteger(o.ownerPid) && o.ownerPid > 0)) die('--owner-pid wants a process id');
   if (o.timeout != null && !(Number.isInteger(o.timeout) && o.timeout >= 0)) die('--timeout wants whole seconds');
+  if (o.limit != null && !(Number.isFinite(o.limit) && o.limit >= 0)) die('--limit wants minutes (0 = none)');
   const cfg = settings();
   if (o.timeout != null) cfg.timeoutS = o.timeout;
   if (mode === 'status') return status(cfg);

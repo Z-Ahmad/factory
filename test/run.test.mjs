@@ -269,6 +269,28 @@ test('run: the command runs in its own process group; what it leaves running is 
   }
 });
 
+test('run: a job past its time limit is stopped with its whole group, the lease freed, exit 124', async () => {
+  // [slot.run_limits] overrides a default; --limit overrides both (fractional minutes are allowed)
+  const t = project('[slot.run_limits]\nproof = 0.02');
+  try {
+    const r = t.run(['--job', 'proof', '--', 'sh', '-c', `sleep 300 & echo $! > '${t.p('bg.pid')}'; sleep 300`]);
+    assert.equal(r.status, 124);
+    assert.match(r.stderr, /proof ran past its 0\.02 min limit/);
+    const bg = Number(readFileSync(t.p('bg.pid'), 'utf8'));
+    assert.ok(await waitFor(() => !alive(bg)), 'what the job started is gone too');
+    assert.deepEqual(t.leases(), { leases: [], queue: [] });
+    const f = t.run(['--job', 'build', '--limit', '0.02', '--', 'sleep', '300']);
+    assert.equal(f.status, 124);
+    assert.match(f.stderr, /build ran past its 0\.02 min limit/);
+    // a job that ends in time is untouched; --limit 0 means none
+    assert.equal(t.run(['--job', 'test', '--', 'true']).status, 0);
+    assert.equal(t.run(['--job', 'proof', '--limit', '0', '--', 'sh', '-c', 'sleep 2']).status, 0);
+    assert.equal(t.run(['--job', 'test', '--limit', '-1', '--', 'true']).status, 1);
+  } finally {
+    await t.cleanup();
+  }
+});
+
 test('run: SIGTERM, SIGINT or the owner pid dying kill the whole process group and free the lease', async () => {
   const t = project();
   try {

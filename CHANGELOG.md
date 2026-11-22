@@ -2,6 +2,15 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.23.0
+
+### `factory run` stops a job that runs past its time limit
+
+A hung `xcodebuild test` held its lease for five hours: nothing in the chain had a time limit. Once admitted, a job
+now runs for at most its type's minutes: test 30, build 45, device 45, release 60, archive 60 (other types none).
+Past that, `factory run` stops the whole process group, frees the lease, says which limit it hit, and exits 124.
+Change the numbers with `[slot.run_limits]` (job type -> minutes, 0 = none), or per run with `--limit <min>`.
+
 ## v0.22.1
 
 ### `factory run` no longer waits on the load average
