@@ -166,6 +166,7 @@ scripts/factory install-skill          # links skill/factory-orchestrator into ~
 | `factory proof --cells <matrix> --scenario <s>` | ✓ | Runs one scenario across the cells of `[proof.matrix.<matrix>]` (cells in `[proof.cell.*]`: themes, a theme mismatch, a smaller screen, a first launch on a fresh simulator) from one build. Writes `matrix.md` and one labelled contact sheet. Exit 4 if any cell fails. A `--cells` value that names no matrix is the old `--cells a,b` (only those cells of the default matrix); `proof-matrix` still works as an alias |
 | `factory proof-compare --scenario <s> --base <ref>` | ✓ | Base and patch side by side at the same load: builds the base once in its own worktree, alternates base and patch runs on one simulator, writes `compare.md` and a `COMPARE` line with median holds and loads. `--base-dd` for a prebuilt base, `--slot` to gate each run |
 | `factory run --job <type> -- <cmd…>` | ✓ | Runs a heavy job (a build, a test run, a proof, a vite build, an emulator suite) under a **weighted reservation**: queued first come, first served, admitted when its weight fits `[slot] capacity` and the memory and load gates hold, so the Mac is never oversubscribed and the caller never polls. Runs the command in its own process group, stops that group on exit, on a signal or when `--owner-pid` dies, and frees the lease. `--status`, `--reap`, `--check`. See [`factory run`](#factory-run-weighted-leases-for-heavy-jobs) |
+| `factory janitor run [--apply]` | ✓ | A safe periodic sweep for what `factory run` cannot see: frees dead leases, stops orphaned `xcodebuild`/`xctest`/recording processes, shuts down idle simulators and, when memory is critical or swap is nearly full, every simulator no live lease may own. Without `--apply` it only logs what it would do. `enable`, `disable`, `status`, `install` (a launchd user agent), `uninstall`. See [`factory janitor`](#factory-janitor-a-safe-periodic-sweep) |
 | `factory slot status\|wait` | ✓ | Deprecated aliases: `slot status` is `run --status`, `slot wait` is `run --wait --job build` (blocks until a build would start, without a lease). Each prints a deprecation line |
 | `factory sims idle [--shutdown]` | ✓ | Lists the booted simulators nothing uses (no running process names the UDID, no app launched and no boot within `[sim] idle_minutes`); `--shutdown` shuts them down (never erases or deletes). `doctor` runs it when `[sim] idle_minutes` is set |
 | `factory proof-verdict <clip.mp4>` | ✓ | Scores any recording for flash, hold, bounce and the app's fail markers. No simulator needed |
@@ -224,6 +225,30 @@ The slot is checked everywhere a build or a boot starts: `factory proof` waits (
 
 Proofs stop loading the Mac once they are done: a simulator `factory proof` booted is shut down when it ends (`--keep-booted` keeps it), a matrix proof boots the shooter only for a shooter cell and shuts it down again, and `factory sims idle --shutdown` shuts down every booted simulator nothing uses (see `[sim] idle_minutes`). `--build` skips a build that would change nothing (the app's stamp is from HEAD, or from a commit with no change under `[proof.ios] sources`, with the same build command and nothing uncommitted under the sources; `--rebuild` builds anyway). `[proof.ios] before` (e.g. the seed restore) runs before each proof installs the app, once per matrix. `proof --cells a,b` runs some cells of the default matrix; `--rerun-failed <previous out>` keeps the cells that passed there and runs the rest.
 
+### `factory janitor`: a safe periodic sweep
+
+`factory run` cleans up after the jobs it runs. The janitor cleans up after everything else: a build started outside `factory run`, an agent that died, a simulator nobody shut down. One pass costs a few subprocesses (`ps`, `xcrun`, `sysctl`), no model call; a missing tool skips its step.
+
+```
+factory janitor run              # a dry run: logs what it would do, changes nothing
+factory janitor run --apply      # one real pass
+factory janitor install          # a launchd agent, every 300 s; DISABLED (dry run) until you enable it
+factory janitor status           # installed? enabled? last pass, last log lines
+factory janitor enable           # scheduled passes now apply (disable undoes it)
+factory janitor uninstall
+```
+
+Roll it out in order: `install`, read the dry-run lines in `<state_dir>/janitor/janitor.log` for a day, then `enable`. `install [--interval <s>] [--shim <path>]` writes `~/Library/LaunchAgents/com.factory-kit.janitor.<project>.plist` (`StartInterval` 300, never run at load) that runs `<shim> janitor run --scheduled` with `FACTORY_TOML` set; the shim is `--shim`, else the project's `scripts/factory/factory` or `scripts/factory`, else this kit. `install` is idempotent; `uninstall` boots it out and deletes the file. `--scheduled` applies only after `enable`; `run --apply` applies regardless. Every action, or would-be action, is one line (`time apply|dry what | why`) in `janitor.log`, rotated at 1 MB.
+
+A pass, in order:
+
+1. **Reap.** Leases whose process is gone are freed and their leftover process group killed (`factory run --reap`). A dry run lists them.
+2. **Orphaned tools.** A process is stopped only when all hold: it is a named tool (`xcodebuild`, `xctest`, `simctl io … recordVideo`, `simctl spawn`, or a `[janitor] tools` entry); it is an orphan (its parent is pid 1 or gone, or every ancestor up to such a parent is itself a named tool, like `xctest` under an orphaned `xcodebuild`; a shell, editor, Xcode, agent or node above it means someone owns it); it is older than `[janitor] orphan_minutes` (10); it is not the pid or in the process group of, nor a descendant of, any live lease; it is not an app's main binary (`….app/Contents/MacOS/…`: Xcode, Simulator, Spotify) and has no Xcode or Simulator ancestor. A recording gets SIGINT, the rest SIGTERM then SIGKILL after 3 s.
+3. **Idle simulators.** A booted simulator idle for `[sim] idle_minutes` (30; the same test as `factory sims idle`), that no live lease may own and `[sim] keep_booted` does not name, is shut down.
+4. **Memory backstop.** When `kern.memorystatus_vm_pressure_level` is 4 (critical) or swap in use is at least `[janitor] swap_pct` (80) of the total, every booted simulator no live lease may own, that no running process names, and `keep_booted` does not name, is shut down, idle or not. The readings before and after are logged.
+
+A live lease **may own** a simulator when it is the lease's `--sim`, or the simulator is not in the `booted` list the lease recorded when it was admitted (the job may have booted it). A lease with no list may own every simulator. Nothing is ever erased or deleted.
+
 ### `factory run`: weighted leases for heavy jobs
 
 Heavy work goes through one command, so a night of agents never builds four apps at once on an 8-core Mac, nobody sits in a polling loop, and nothing a job starts outlives it:
@@ -253,10 +278,15 @@ factory run --status
 | `[slot] max_load` | 2 × CPUs | The highest 1-minute load a job is admitted at. |
 | `[slot] min_free_pct` | `15` | The least free memory a job is admitted at: memory_pressure's "System-wide memory free percentage" (`sysctl kern.memorystatus_level`). `0` turns it off. |
 | `[slot] max_swapouts_per_min` | `1000` | The most pages swapped out over the last minute a job is admitted at. Unlike swap in use, which macOS keeps long after the pressure that wrote it ends, the rate falls as soon as the pressure does. |
+| `[slot] shutdown_booted` | `true` | When a `factory run` job ends (exit, failure, time limit, signal, owner death), it shuts down the simulators the job booted: booted now, not booted when it was admitted, not another live lease's (its `--sim`, or one that lease's job may have booted). `false` leaves them. |
 | `[slot] orphan_minutes` | `60` | The age past which the reaper kills an orphaned recording or a kit test run. |
 | `[slot] poll_s` / `timeout_s` | `5` / `3600` | How often a queued job looks again, and when it gives up (exit 75; `0` waits for ever). `--timeout` overrides it. |
 | `[slot.run_limits]` | test 30, build 45, device 45, release 60, archive 60, proof 5 | Minutes a job may run once admitted; past it the job is stopped (exit 124). `0` = none; `--limit` overrides one run. |
 | `[hook] build_scripts` | `[]` | Globs of npm/pnpm/yarn/bun script names that build or test, e.g. `["ios:test*", "ios:native", "ios:testflight*"]`; hook-guard denies them outside `factory run` (a name containing `test` suggests `--job test`, else `--job build`). A script not listed, such as a read-only status report, always passes. |
+| `[hook] background_wait_deadline` | `true` | hook-guard denies a Bash call with `run_in_background: true` whose command holds an `until`/`while` loop and names no deadline (`timeout`, `gtimeout`, `perl -e 'alarm …'`, `$SECONDS`, `date +%s`): a wait nobody bounds outlives the session. A `for` loop and a foreground loop pass. `false` turns it off. |
+| `[janitor] orphan_minutes` | `10` | The least age of an orphaned tool process before `factory janitor` stops it. |
+| `[janitor] swap_pct` | `80` | The share of swap in use that, like critical memory pressure, makes the janitor shut down every simulator no live lease may own. |
+| `[janitor] tools` | `[]` | Extra tool names the janitor may stop when orphaned: an executable name or glob (`"test-runner"`), or text with a space the command line must contain (`"npm run ios:test"`). Built in: `xcodebuild`, `xctest`, `simctl io … recordVideo`, `simctl spawn`. A bare wildcard or an entry under 3 characters is ignored (and logged). |
 | `[slot] builders` | — | No longer read: `capacity` replaced it. `max_booted_sims` and `max_swap_gb` were removed; `config validate` names them. |
 
 ### `[proof.tier]`

@@ -2,6 +2,39 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.25.0
+
+### Cleanup that no agent has to remember
+
+A Mac ran out of memory: simulators booted by `xcodebuild test` stayed booted, orphaned `xcodebuild` and `xctest`
+processes from runs started outside `factory run` lived on, and nothing reacted to memory filling. Three changes, each
+built to leave live factory work alone.
+
+**`factory run` shuts down the simulators its job booted.** Right after a job is admitted its lease records which
+simulators are booted. When the job ends, by exit, failure, time limit, signal or the owner dying, `factory run` shuts
+down each simulator that is booted now, was not booted then, and that no other live lease may own: not another lease's
+`--sim`, and not one that lease's job may have booted (a simulator absent from that lease's recorded list, so two jobs
+that overlap leave a simulator neither list holds for the janitor). It prints each one. Weight 0 jobs and nested runs do
+nothing, and so does a Mac without `xcrun`. `[slot] shutdown_booted = false` turns it off.
+
+**`factory janitor`: a safe periodic sweep.** `janitor run` frees dead leases, stops orphaned build and recording
+processes, shuts down idle simulators, and, when memory pressure is critical or swap is at least `[janitor] swap_pct`
+(80) full, shuts down every simulator no live lease may own. A process is stopped only if it is a named tool
+(`xcodebuild`, `xctest`, `simctl io … recordVideo`, `simctl spawn`, or a `[janitor] tools` entry), its parent is
+pid 1 (or every ancestor up to that is a named tool), it is older than `[janitor] orphan_minutes` (10), no live lease
+owns it, and it is not Xcode, Simulator or anything under them. Without `--apply` it only logs; every action or
+would-be action is a line in `<state_dir>/janitor/janitor.log` (rotated at 1 MB). `janitor install` writes a launchd user
+agent (every 300 s, never at load) that runs `janitor run --scheduled`; it starts **disabled**, so it only logs until you
+read a few passes and run `janitor enable`. `status`, `disable` and `uninstall` do what they say. Nothing is installed by
+upgrading. See the README for the exact rules.
+
+**hook-guard denies a background wait with no deadline.** A Bash call with `run_in_background: true` whose command
+holds an `until` or `while` loop and names no deadline (`timeout`, `gtimeout`, `perl -e 'alarm …'`, `$SECONDS`,
+`date +%s`) is denied, with the line to add. A `for` loop and a foreground loop pass. `[hook] background_wait_deadline =
+false` turns it off.
+
+To use it: `scripts/factory janitor install`, read `janitor.log` for a day, then `scripts/factory janitor enable`.
+
 ## v0.24.0
 
 ### A proof stops at its time limit too

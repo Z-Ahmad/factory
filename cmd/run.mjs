@@ -35,6 +35,14 @@
 // process group (only when every process in it started after the lease did); kills `simctl io … recordVideo` processes
 // whose parent is pid 1 and kit test runs (a node process running a kit checkout's test/*.test.mjs), each older than
 // [slot] orphan_minutes (default 60). It prints each thing it killed and touches nothing else.
+// Simulators: right after admission the job's lease records which simulators are booted (lease field `booted`). When the
+// job ends, however it ends (exit, failure, time limit, signal, owner death), `factory run` shuts down each simulator
+// that is booted now, was not booted then, and is not another live lease's: not its `--sim`, and not one that lease's job
+// may have booted. Another live lease might have booted a new simulator unless its own `booted` list already holds it
+// (then it was booted before that lease started, so during this job but not by that one); a live lease with no list
+// leaves every new simulator alone. So when two jobs overlap, a simulator neither list holds stays booted (the janitor
+// sweeps it once idle). It prints each one it shuts down. Weight 0 jobs and nested runs do nothing. [slot]
+// shutdown_booted = false turns it off. Without xcrun it does nothing.
 // Test hooks: FK_RUN_SWAP_PROBE_S (default 3) is how long a first swap-out sample is measured; FK_RUN_LOCK=mkdir forces
 // the lock-folder fallback.
 import { spawn, spawnSync } from 'node:child_process';
@@ -43,6 +51,7 @@ import { availableParallelism } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { load } from './config.mjs';
+import { bootedSims, shutdownSim } from '../lib/sims.mjs';
 
 export const DEFAULT_WEIGHTS = {
   build: 2, test: 2, release: 2, device: 2, archive: 2,
@@ -76,6 +85,7 @@ export function settings(file = process.env.FACTORY_TOML) {
     minFree: slot.min_free_pct ?? 15,
     maxSwapouts: slot.max_swapouts_per_min ?? 1000,
     orphanMin: slot.orphan_minutes ?? 60,
+    shutdownBooted: slot.shutdown_booted !== false,
     pollS: slot.poll_s ?? 5,
     timeoutS: slot.timeout_s ?? 3600,
     runLimits: { ...DEFAULT_RUN_LIMITS, ...(slot.run_limits ?? {}) },
@@ -232,7 +242,7 @@ export function killGroup(pgid, graceMs = 3000, first = 'SIGTERM') {
   }
   return true;
 }
-function killPid(pid, graceMs = 3000, first = 'SIGTERM') {
+export function killPid(pid, graceMs = 3000, first = 'SIGTERM') {
   try {
     process.kill(pid, first);
   } catch {
@@ -259,7 +269,7 @@ function atomicWrite(file, text) {
   writeFileSync(tmp, text);
   renameSync(tmp, file);
 }
-function readState(cfg) {
+export function readState(cfg) {
   try {
     const s = JSON.parse(readFileSync(leaseFile(cfg), 'utf8'));
     return { leases: Array.isArray(s.leases) ? s.leases : [], queue: Array.isArray(s.queue) ? s.queue : [] };
@@ -336,10 +346,13 @@ const OPS = {
     writeState(cfg, s);
     return { lines, admitted: false, ahead: at, inUse, fits, leases: s.leases };
   },
-  setpgid(cfg, { id, pgid }) {
+  setpgid(cfg, { id, pgid, booted }) {
     const s = readState(cfg);
     const l = s.leases.find((x) => x.id === id);
-    if (l) l.pgid = pgid;
+    if (l) {
+      l.pgid = pgid;
+      if (booted) l.booted = booted;
+    }
     writeState(cfg, s);
     return {};
   },
@@ -429,8 +442,35 @@ function isKitTestRun(cmd) {
   });
 }
 
+/**
+ * The simulators a job that has ended may shut down: booted now, not in `before` (booted when it was admitted), not
+ * another live lease's `--sim`, and not one another live lease's job may have booted (see the header: a new simulator
+ * is theirs unless their own `booted` list already holds it; a lease with no list claims every new one).
+ */
+export function simsToShut(now, before, others) {
+  return [...now].filter((u) => !before.has(u) && !others.some((l) => leaseMayOwn(u, l)));
+}
+
+/** A live lease may own a simulator: it is the lease's --sim, or it is not in the lease's `booted` list (no list: all are). */
+export const leaseMayOwn = (udid, l) => l.sim === udid || !Array.isArray(l.booted) || !l.booted.includes(udid);
+
+/** Shuts down the simulators this job booted (see simsToShut); prints each. Never throws. */
+function shutdownJobSims(cfg, id, before, job) {
+  if (!cfg.shutdownBooted || !before) return;
+  try {
+    const now = bootedSims();
+    if (!now) return;
+    const { state } = locked(cfg, 'prune');
+    const others = state.leases.filter((l) => l.id !== id);
+    for (const u of simsToShut(now, before, others))
+      say(shutdownSim(u) ? `shut down simulator ${u} (booted during ${job})` : `could not shut down simulator ${u} (booted during ${job})`);
+  } catch (e) {
+    say(`simulator cleanup skipped: ${e?.message ?? e}`);
+  }
+}
+
 /** The whole reaper; returns { lines, state } (the lease file after pruning). */
-function reap(cfg) {
+export function reap(cfg) {
   const { lines, state } = locked(cfg, 'prune');
   lines.push(...reapOrphans(cfg));
   for (const l of lines) say(l);
@@ -499,10 +539,12 @@ async function runJob(cfg, o) {
   };
   let leased = false;
   let child = null;
+  let before = null; // the simulators booted when the job was admitted (null: no lease, or xcrun gives none)
   let stopping = false;
 
   const finish = (code) => {
     if (child?.pid) killGroup(child.pid);
+    shutdownJobSims(cfg, id, before, o.job);
     if (leased) locked(cfg, 'release', { id });
     process.exit(code);
   };
@@ -565,6 +607,7 @@ async function runJob(cfg, o) {
   }
   if (stopping) return;
 
+  if (leased) before = bootedSims();
   child = spawn(o.cmd[0], o.cmd.slice(1), {
     stdio: 'inherit',
     detached: true, // its own process group (pgid = its pid), so the whole job can be signalled at once
@@ -575,7 +618,7 @@ async function runJob(cfg, o) {
     child = null;
     finish(127);
   });
-  if (child.pid && leased) locked(cfg, 'setpgid', { id, pgid: child.pid });
+  if (child.pid && leased) locked(cfg, 'setpgid', { id, pgid: child.pid, booted: before ? [...before] : null });
   const limitMin = o.limit ?? cfg.runLimits[o.job] ?? 0;
   if (limitMin > 0) {
     setTimeout(() => {
@@ -591,6 +634,7 @@ async function runJob(cfg, o) {
     const pgid = child.pid;
     child = null;
     if (killGroup(pgid)) say(`stopped what ${o.job} left running in process group ${pgid}`);
+    shutdownJobSims(cfg, id, before, o.job);
     if (leased) locked(cfg, 'release', { id });
     process.exit(code ?? 128 + (({ SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 })[signal] ?? 1));
   });

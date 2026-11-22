@@ -27,6 +27,10 @@
 //      which takes no lease. The rest of the wrapped command is checked by the other rules as usual. The XcodeBuildMCP
 //      build_* and test_* tools cannot be wrapped: they are denied while `factory run --check --job build` says a build
 //      would wait (a check that fails to answer allows the call).
+//   8. A Bash call with run_in_background: true whose command holds an `until` or `while` loop with no deadline: a wait
+//      nobody bounds outlives the session and polls forever. A command passes when it names a deadline: `timeout` or
+//      `gtimeout`, `perl -e 'alarm …'`, `$SECONDS`, or `date +%s` (compared with a start time). The denial says how to
+//      add one. Off with [hook] background_wait_deadline = false.
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
@@ -734,6 +738,18 @@ function analyze(src, ctx, state, depth) {
   }
 }
 
+// ------------------------------------------------------------ background waits
+
+// an until/while at the start of a command (after ; & | ( { do then else, a newline, or bash -c ')
+const WAIT_LOOP = /(?:^|[;&|({\n]|\bdo\b|\bthen\b|\belse\b|-c\s+['"])\s*(?:until|while)\s/;
+// anything that bounds it: a timeout wrapper, an alarm, or the clock read to compare with a start time
+const DEADLINE = /\b(?:g?timeout)\s|\balarm\b|\$SECONDS|\$\{SECONDS|\bdate\s+\+%s/;
+
+/** True when a command loops with until/while and names no deadline. */
+export function deadlineLessWait(command) {
+  return WAIT_LOOP.test(command) && !DEADLINE.test(command);
+}
+
 // ------------------------------------------------------------ entry points
 
 /** The guard's view of factory.toml. */
@@ -753,6 +769,7 @@ export function guardConfig(data, tomlPath) {
     slotGate: Boolean(data.slot || data.proof?.ios),
     weights: { ...DEFAULT_WEIGHTS, ...(data.slot?.weights ?? {}) },
     buildScripts: globs(data.hook?.build_scripts),
+    bgWaitDeadline: data.hook?.background_wait_deadline !== false,
     runCheck: (job) => runCheck(tomlPath, job),
   };
 }
@@ -833,6 +850,12 @@ export function evaluate(payload, cfg) {
         if (r?.busy) deny(`${tool.replace(/^mcp__.*__/, 'XcodeBuildMCP ')} would start a build the Mac has no room for: ${r.line} Run the build through \`factory run --job ${job} -- <xcodebuild …>\` instead, which queues for it (the limits are factory.toml [slot]).`);
       }
     } else if (tool === 'Bash' && typeof input.command === 'string') {
+      if (cfg.bgWaitDeadline && input.run_in_background === true && deadlineLessWait(input.command))
+        deny(
+          'background wait without a deadline is blocked (rule: background_wait_deadline): an until/while loop run in the background never ends if its condition never comes true. ' +
+            "Bound it: wrap it in `timeout 1200 bash -c '…'` (gtimeout on macOS with coreutils), or compare `$SECONDS` (or `date +%s`) with a start time inside the loop and `break` past it. " +
+            'Off with [hook] background_wait_deadline = false.',
+        );
       const state = { lsofPort: null, dynamicKill: false, runJob: null };
       analyze(input.command, ctx, state, 0);
       if (state.lsofPort && state.dynamicKill)
