@@ -2,6 +2,16 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.25.1
+
+### The janitor's scheduled pass runs where launchd may read
+
+macOS keeps launchd agents out of `~/Documents`, `~/Desktop` and `~/Downloads`, where projects usually live, so the
+installed pass failed with "Operation not permitted" before it started. The agent now runs the kit's own `bin/factory`
+(in `~/.factory-kit`) against a copy of `factory.toml` kept at `<state_dir>/janitor/factory.toml`, from that folder.
+Every pass run by hand or by a hook refreshes the copy, and re-installs the agent when the kit version or the copy's
+path changed, keeping its interval. `install` warns when the kit or the state dir is in one of those folders.
+
 ## v0.25.0
 
 ### Cleanup that no agent has to remember

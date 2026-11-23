@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { join } from 'node:path';
 import { KIT, factory, scratch } from './helpers.mjs';
 import { isTool, orphanCandidates, plist, sweep, swapPercent, toolPatterns } from '../cmd/janitor.mjs';
+const KIT_DIR = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 // Fake pids sit above any real pid (macOS stops at 99998, Linux at 4194304), so no test can signal a real process.
 const P = (n) => 90_000_000 + n;
@@ -355,10 +356,10 @@ test('janitor install / uninstall: a launchd agent in the (overridden) agents fo
   const t = project();
   try {
     const plistFile = t.p('agents', 'com.factory-kit.janitor.fixture-app.plist');
-    const shim = t.p('scripts', 'factory', 'factory');
-    mkdirSync(t.p('scripts', 'factory'), { recursive: true });
-    writeFileSync(shim, '#!/usr/bin/env bash\n');
-    chmodSync(shim, 0o755);
+    // the kit's own entry point and a copy of factory.toml in the state dir: launchd can't read ~/Documents, where the
+    // project usually lives, so the scheduled pass never touches the project folder
+    const shim = join(KIT_DIR, 'bin', 'factory');
+    const snap = t.p('state', 'janitor', 'factory.toml');
     const a = t.jan(['install']);
     assert.equal(a.status, 0, a.stderr);
     assert.match(a.stdout, /DISABLED \(dry run\)/);
@@ -367,7 +368,9 @@ test('janitor install / uninstall: a launchd agent in the (overridden) agents fo
     assert.match(text, new RegExp(`<string>${shim}</string>\\s*<string>janitor</string>\\s*<string>run</string>\\s*<string>--scheduled</string>`));
     assert.match(text, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);
     assert.match(text, /<key>RunAtLoad<\/key>\s*<false\/>/);
-    assert.match(text, new RegExp(`<key>FACTORY_TOML</key>\\s*<string>${t.p('factory.toml')}</string>`));
+    assert.match(text, new RegExp(`<key>FACTORY_TOML</key>\\s*<string>${snap}</string>`));
+    assert.match(text, new RegExp(`<key>WorkingDirectory</key>\\s*<string>${t.p('state', 'janitor')}</string>`));
+    assert.equal(readFileSync(snap, 'utf8'), readFileSync(t.p('factory.toml'), 'utf8'));
     assert.match(text, /StandardOutPath<\/key>\s*<string>[^<]*\/state\/janitor\/launchd\.out\.log/);
     assert.ok(!existsSync(t.p('state', 'janitor', 'enabled')));
     const calls = t.read('r', 'launchctl');
@@ -382,6 +385,18 @@ test('janitor install / uninstall: a launchd agent in the (overridden) agents fo
     assert.match(t.jan(['status']).stdout, /installed: yes/);
     // too short an interval is refused
     assert.equal(t.jan(['install', '--interval', '5']).status, 1);
+    // a pass run by hand refreshes the copy, and re-installs an agent pointing at an old kit (keeping its interval)
+    writeFileSync(t.p('factory.toml'), `${readFileSync(t.p('factory.toml'), 'utf8')}\n# changed\n`);
+    writeFileSync(plistFile, readFileSync(plistFile, 'utf8').replace(shim, '/old/.factory-kit/v0.1.0/bin/factory'));
+    const before = t.read('r', 'launchctl').length;
+    assert.equal(t.jan(['run']).status, 0);
+    assert.match(readFileSync(snap, 'utf8'), /# changed/);
+    const now = readFileSync(plistFile, 'utf8');
+    assert.ok(now.includes(`<string>${shim}</string>`) && /<integer>600<\/integer>/.test(now), now);
+    assert.equal(t.read('r', 'launchctl').length, before + 2);
+    // unchanged: no re-install
+    assert.equal(t.jan(['run']).status, 0);
+    assert.equal(t.read('r', 'launchctl').length, before + 2);
     // uninstall
     const u = t.jan(['uninstall']);
     assert.equal(u.status, 0, u.stderr);
@@ -405,7 +420,7 @@ test('janitor: usage errors and an unknown subcommand exit 1', () => {
 });
 
 test('janitor: plist escapes XML in paths', () => {
-  const text = plist({ project: 'a&b', mainCheckout: '/x/<y>', dir: '/s/janitor' }, { interval: 300, shim: '/s/f', toml: '/x/factory.toml' });
-  assert.match(text, /\/x\/&lt;y&gt;/);
+  const text = plist({ project: 'a&b', mainCheckout: '/x', dir: '/s/<y>/janitor' }, { interval: 300, shim: '/s/f', toml: '/s/<y>/janitor/factory.toml' });
+  assert.match(text, /\/s\/&lt;y&gt;\/janitor/);
   assert.match(text, /janitor\.a&amp;b|janitor\.a-b/);
 });
