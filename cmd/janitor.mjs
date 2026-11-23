@@ -35,6 +35,11 @@
 // (what was booted when the job was admitted): the job may have booted it (the same rule `factory run` uses at the end of
 // a job). Nothing ever erases or deletes a simulator.
 //
+// Housekeeping: about once a day, a pass that can read the project (the session-end pass, or one run by hand; never the
+// launchd one) runs `factory cleanup --only worktrees --only derived-data --only tmp`, with --apply when the pass applies,
+// so merged agent worktrees, stale build folders and old scratch go without anyone remembering. Cleanup's own rules
+// decide what is safe; its REMOVE lines and totals are logged.
+//
 // Scheduling: `install` writes ~/Library/LaunchAgents/com.factory-kit.janitor.<project>.plist (every --interval seconds,
 // default 300, never at load) running `<kit>/bin/factory janitor run --scheduled` (or --shim) against a copy of
 // factory.toml kept at <state_dir>/janitor/factory.toml, from that folder. macOS keeps launchd agents out of ~/Documents,
@@ -338,6 +343,45 @@ function takeLock(cfg) {
   }
 }
 
+// ------------------------------------------------------------ housekeeping
+const HOUSEKEEPING_EVERY_MS = 20 * 60 * 60 * 1000; // about once a day
+const HOUSEKEEPING_ONLY = ['worktrees', 'derived-data', 'tmp'];
+
+/**
+ * Once a day, `factory cleanup` for what finished work leaves behind: merged agent worktrees, stale build folders and
+ * old scratch. Cleanup's own rules decide (a worktree with unpushed or modified work, a locked one, or one git touched
+ * in the last minutes is kept). Dry unless applying: then only its REMOVE lines are logged. Skipped from launchd, which
+ * may not read the project (it runs against the config copy): the session-end pass and passes by hand do it.
+ */
+export function housekeeping(cfg, { apply = false, log = () => {}, now = Date.now(), env = process.env } = {}) {
+  if (!env.FACTORY_TOML || env.FACTORY_TOML === snapshotPath(cfg)) return [];
+  const stamp = join(cfg.dir, 'housekeeping');
+  try {
+    if (now - statSync(stamp).mtimeMs < HOUSEKEEPING_EVERY_MS) return [];
+  } catch {}
+  const cmd = env.FK_JANITOR_CLEANUP || join(KIT, 'bin', 'factory');
+  const args = [...(env.FK_JANITOR_CLEANUP ? [] : ['cleanup']), ...HOUSEKEEPING_ONLY.flatMap((c) => ['--only', c]), ...(apply ? ['--apply'] : [])];
+  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 15 * 60 * 1000, env });
+  if (r.error || r.status !== 0) {
+    log({ what: 'housekeeping', why: `factory cleanup failed (${r.error?.message ?? `exit ${r.status}`}); tries again next pass` });
+    return [];
+  }
+  mkdirSync(cfg.dir, { recursive: true });
+  writeFileSync(stamp, `${new Date(now).toISOString()}\n`);
+  const actions = [];
+  for (const line of r.stdout.split('\n')) {
+    const m = /^\s*REMOVE\s+(.*)$/.exec(line);
+    if (m) {
+      actions.push({ kind: 'housekeeping', what: m[1] });
+      log({ what: `${apply ? 'removed' : 'would remove'} ${m[1]}`, why: 'factory cleanup (merged worktree, stale build or old scratch)' });
+    }
+  }
+  for (const summary of [/^derived-data: [^\n]*/m.exec(r.stdout)?.[0], /^total (?:reclaimable|removed)[^\n]*/m.exec(r.stdout)?.[0]]) {
+    if (summary) log({ what: 'housekeeping', why: summary });
+  }
+  return actions;
+}
+
 function runPass(cfg, { apply, scheduled }) {
   const doApply = apply || (scheduled && isEnabled(cfg));
   const mode = doApply ? 'apply' : 'dry';
@@ -351,6 +395,7 @@ function runPass(cfg, { apply, scheduled }) {
     const logger = makeLogger(cfg, mode);
     for (const t of ignored) logger({ what: `ignored [janitor] tools entry ${JSON.stringify(t)}`, why: 'too broad: a name, glob or text of at least 3 characters' });
     const actions = sweep(cfg, { apply: doApply, log: logger });
+    actions.push(...housekeeping(cfg, { apply: doApply, log: logger }));
     writeFileSync(join(cfg.dir, 'last'), `${JSON.stringify({ time: new Date().toISOString(), mode, actions: actions.length })}\n`);
     if (!actions.length) console.log(`janitor: ${mode} pass: nothing to do`);
   } finally {
@@ -370,8 +415,12 @@ const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const shimPath = (given) => given || join(KIT, 'bin', 'factory');
 const snapshotPath = (cfg) => join(cfg.dir, 'factory.toml');
 // folders macOS's privacy protection keeps from a launchd agent
-const PROTECTED_DIRS = ['Documents', 'Desktop', 'Downloads'].map((d) => join(homedir(), d));
-const isProtected = (p) => PROTECTED_DIRS.some((d) => p === d || p.startsWith(`${d}/`));
+// FK_JANITOR_PROTECTED_DIRS (colon-separated) replaces the list: tests run from a checkout in ~/Documents
+const protectedDirs = () =>
+  process.env.FK_JANITOR_PROTECTED_DIRS != null
+    ? process.env.FK_JANITOR_PROTECTED_DIRS.split(':').filter(Boolean)
+    : ['Documents', 'Desktop', 'Downloads'].map((d) => join(homedir(), d));
+const isProtected = (p) => protectedDirs().some((d) => p === d || p.startsWith(`${d}/`));
 
 /** Copy the project's factory.toml to the state dir when it changed; returns the copy's path. */
 function syncSnapshot(cfg) {
@@ -457,6 +506,8 @@ function install(cfg, o) {
  * when what it would run changed (a new kit version, the copy's path). Keeps the installed interval. Never installs.
  */
 function refreshAgent(cfg) {
+  // a kit run from a protected folder (a local checkout in ~/Documents) is one launchd can't run: keep the agent as is
+  if (isProtected(KIT)) return;
   try {
     syncSnapshot(cfg);
     const file = plistPath(cfg);

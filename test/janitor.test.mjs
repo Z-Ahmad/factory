@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT, factory, scratch } from './helpers.mjs';
 import { isTool, orphanCandidates, plist, sweep, swapPercent, toolPatterns } from '../cmd/janitor.mjs';
@@ -203,6 +203,15 @@ elif [ "$1 $2" = "simctl shutdown" ]; then echo "$3" >> '${R}/shutdowns'
 else exit 1; fi`);
   stub('killrec', `echo "$1 $2" >> '${R}/kills'`);
   stub('launchctl', `echo "$@" >> '${R}/launchctl'`);
+  // factory cleanup stand-in: records its arguments, prints what the real one would
+  stub('cleanuprec', `echo "$@" >> '${R}/cleanup'
+echo "== worktrees =="
+echo "  REMOVE agent-old  (branch claude/x, PR #12 merged)"
+echo "  KEPT  agent-live (locked)"
+DD=reclaimable; T=reclaimable
+case " $* " in *" --apply "*) DD=freed; T=removed ;; esac
+echo "derived-data: 2 stale build folders, 3.0G $DD"
+echo "total $T: 3.1G (derived-data, frames, clips, tmp, archives)"`);
   writeFileSync(p('factory.toml'), `[kit]
 repo = "https://example.invalid/factory.git"
 ref  = "v0.0.0"
@@ -234,6 +243,8 @@ orphan_minutes = 10
     PATH: `${p('bin')}:${process.env.PATH}`,
     FK_JANITOR_KILL: p('bin', 'killrec'),
     FK_JANITOR_AGENTS_DIR: p('agents'),
+    FK_JANITOR_CLEANUP: p('bin', 'cleanuprec'),
+    FK_JANITOR_PROTECTED_DIRS: p('protected'),
     FK_RUN_SWAP_PROBE_S: '0',
   };
   const etime = (s) => `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
@@ -397,6 +408,11 @@ test('janitor install / uninstall: a launchd agent in the (overridden) agents fo
     // unchanged: no re-install
     assert.equal(t.jan(['run']).status, 0);
     assert.equal(t.read('r', 'launchctl').length, before + 2);
+    // a kit running from a protected folder (a checkout in ~/Documents) never repoints the agent at itself
+    writeFileSync(plistFile, readFileSync(plistFile, 'utf8').replace(shim, '/old/.factory-kit/v0.1.0/bin/factory'));
+    const held = readFileSync(plistFile, 'utf8');
+    assert.equal(t.jan(['run'], { FK_JANITOR_PROTECTED_DIRS: KIT_DIR }).status, 0);
+    assert.equal(readFileSync(plistFile, 'utf8'), held);
     // uninstall
     const u = t.jan(['uninstall']);
     assert.equal(u.status, 0, u.stderr);
@@ -423,4 +439,40 @@ test('janitor: plist escapes XML in paths', () => {
   const text = plist({ project: 'a&b', mainCheckout: '/x', dir: '/s/<y>/janitor' }, { interval: 300, shim: '/s/f', toml: '/s/<y>/janitor/factory.toml' });
   assert.match(text, /\/s\/&lt;y&gt;\/janitor/);
   assert.match(text, /janitor\.a&amp;b|janitor\.a-b/);
+});
+
+test('janitor housekeeping: once a day, factory cleanup for worktrees, builds and scratch; dry logs, apply passes --apply; never from launchd', () => {
+  const t = project();
+  try {
+    // dry (not enabled): cleanup runs without --apply, its REMOVE lines are logged as "would remove"
+    assert.equal(t.jan(['run']).status, 0);
+    assert.deepEqual(t.read('r', 'cleanup'), ['--only worktrees --only derived-data --only tmp']);
+    const log = t.read('state', 'janitor', 'janitor.log').join('\n');
+    assert.match(log, /dry would remove agent-old {2}\(branch claude\/x, PR #12 merged\)/);
+    assert.match(log, /derived-data: 2 stale build folders, 3\.0G reclaimable/);
+    assert.ok(!log.includes('agent-live'), 'a KEPT worktree is not an action');
+    // within the day: not again
+    assert.equal(t.jan(['run', '--apply']).status, 0);
+    assert.equal(t.read('r', 'cleanup').length, 1);
+    // a day later, applying: --apply is passed and the totals say removed
+    utimesSync(t.p('state', 'janitor', 'housekeeping'), new Date(Date.now() - 21 * 3600e3), new Date(Date.now() - 21 * 3600e3));
+    assert.equal(t.jan(['run', '--apply']).status, 0);
+    assert.equal(t.read('r', 'cleanup').at(-1), '--only worktrees --only derived-data --only tmp --apply');
+    assert.match(t.read('state', 'janitor', 'janitor.log').join('\n'), /apply removed agent-old[\s\S]*total removed: 3\.1G/);
+    // from launchd (the config copy): never, however long it has been
+    utimesSync(t.p('state', 'janitor', 'housekeeping'), new Date(0), new Date(0));
+    const copy = t.p('state', 'janitor', 'factory.toml');
+    copyFileSync(t.p('factory.toml'), copy);
+    assert.equal(t.jan(['run', '--scheduled'], { FACTORY_TOML: copy }).status, 0);
+    assert.equal(t.read('r', 'cleanup').length, 2);
+    // a failing cleanup is logged and tried again next pass (no stamp)
+    rmSync(t.p('state', 'janitor', 'housekeeping'));
+    const f = t.jan(['run'], { FK_JANITOR_CLEANUP: '/usr/bin/false' });
+    assert.equal(f.status, 0, f.stdout + f.stderr);
+    assert.match(f.stdout, /factory cleanup failed/, f.stdout + f.stderr);
+    assert.match(t.read('state', 'janitor', 'janitor.log').join('\n'), /factory cleanup failed \(exit 1\); tries again next pass/);
+    assert.ok(!existsSync(t.p('state', 'janitor', 'housekeeping')));
+  } finally {
+    t.s.cleanup();
+  }
 });
