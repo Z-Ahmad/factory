@@ -2,6 +2,21 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.26.0
+
+### The janitor does the daily housekeeping too
+
+Finished agent worktrees, stale build folders and old scratch only went when someone ran `factory cleanup --apply`,
+so they piled up (12 merged worktrees and 20.6 GB of builds on the Seaglass Mac). About once a day, a janitor pass that
+can read the project (the session-end pass, or one run by hand; never the launchd one, which macOS keeps out of
+~/Documents) runs `factory cleanup --only worktrees --only derived-data --only tmp`, with `--apply` when the pass
+applies. Cleanup's own rules decide what is safe: a worktree with unpushed or modified work, a locked one, or one git
+touched in the last minutes stays. Its REMOVE lines and totals go to the janitor log. A failed cleanup is logged and
+tried again next pass.
+
+A pass run from a kit in a protected folder (a local checkout in ~/Documents) no longer repoints the launchd agent at
+itself; `FK_JANITOR_PROTECTED_DIRS` overrides that list for tests.
+
 ## v0.25.1
 
 ### The janitor's scheduled pass runs where launchd may read
