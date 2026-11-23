@@ -3,6 +3,9 @@
 # usage: factory dev status
 # One line per [dev] all_ports entry (or the wait_ports when all_ports is not set): ":PORT up", ":PORT down",
 # or, with [dev] probe = "http", ":PORT hung" (it accepts connections but never answers: `factory dev restart`).
+# When [dev] cwd is a git worktree it first prints what the stack runs: its ref (following main, or the PR or branch
+# `factory dev switch` set), the short sha and subject, and how far behind origin/main it is (as of the last fetch;
+# a stack following main and behind says so and names `factory dev restart`).
 # Exit 0 when every [dev] wait_ports entry is up, 1 when any is down or hung, 2 when no ports are configured but
 # [dev] up is. A project with no [dev] at all (no dev stack) prints that and exits 0.
 set -euo pipefail
@@ -12,6 +15,19 @@ ALL="${FK_DEV_ALL_PORTS:-${FK_DEV_WAIT_PORTS:-}}"
 # No dev stack at all (no [dev] up either): nothing to check, which is not a failure.
 if [[ -z "$ALL" && -z "${FK_DEV_UP:-}" ]]; then echo "factory dev-status: no dev stack ([dev] not set)"; exit 0; fi
 [[ -n "$ALL" ]] || { echo "factory dev-status: [dev] all_ports and wait_ports are not set" >&2; exit 2; }
+
+. "$FK_KIT_DIR/lib/sh/devref.sh"
+if DIR="$(fk_dev_dir)" && fk_dev_is_worktree "$DIR"; then
+  REF="$(fk_dev_ref)"; FOLLOW="$(fk_dev_follow)"; BEHIND="$(fk_dev_behind "$DIR")"
+  if fk_dev_following "$REF"; then
+    echo "ref: $FOLLOW (following origin/$FOLLOW) $(fk_dev_describe "$DIR")"
+    if (( BEHIND > 0 )); then echo "behind origin/$FOLLOW: $BEHIND commit$([[ "$BEHIND" == 1 ]] || echo s); the stack is serving old code, run \`factory dev restart\`"
+    else echo "behind origin/$FOLLOW: 0"; fi
+  else
+    echo "ref: $REF (switched) $(fk_dev_describe "$DIR")"
+    echo "behind origin/$FOLLOW: $BEHIND; \`factory dev switch $FOLLOW\` follows $FOLLOW again"
+  fi
+fi
 
 STATE=""
 while IFS= read -r p; do

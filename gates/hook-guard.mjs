@@ -17,7 +17,7 @@
 //      With [git] github set, never_merge_into guards only that repository's PRs (named by -R, by a PR
 //      URL, or by the remotes of the directory the command runs in): the kit's own main is not this project's.
 //   5. Bash: starting the dev stack, or killing it by port or name, when [dev] agents_may_start = false.
-//   6. Bash: `factory dev restart` (or `dev-restart`) from a subagent (the hook input carries agent_id), unless
+//   6. Bash: `factory dev restart` (or `dev-restart`) or `factory dev switch` from a subagent (the hook input carries agent_id), unless
 //      [dev] restart_by = "anyone": restarting the stack is the orchestrator's.
 //   7. A build or test outside `factory run` (with [slot] or [proof.ios] set): Bash running xcodebuild (also through
 //      xcrun; an action that builds: -list, -showBuildSettings and other queries pass), a build.sh or test.sh script, or
@@ -707,8 +707,8 @@ function analyze(src, ctx, state, depth) {
     }
     if (c.name === 'factory') {
       // `factory dev up`, the shim, `factory dev read-api up`: the sanctioned routes; a restart only from the main session.
-      if ((c.args[0] === 'dev-restart' || (c.args[0] === 'dev' && c.args[1] === 'restart')) && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
-        deny(`\`factory dev restart\` is the orchestrator's: a subagent may not restart the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service instead`);
+      if ((c.args[0] === 'dev-restart' || (c.args[0] === 'dev' && (c.args[1] === 'restart' || c.args[1] === 'switch'))) && ctx.isSubagent && ctx.dev.restart_by !== 'anyone')
+        deny(`\`factory dev ${c.args[0] === 'dev' ? c.args[1] : 'restart'}\` is the orchestrator's: a subagent may not restart or re-point the dev stack (dev.restart_by = ${JSON.stringify(ctx.dev.restart_by ?? 'orchestrator')}); report the wedged service, or the branch you need on it, instead`);
       // `factory run --job <t> -- <cmd…>`: the wrapped command is checked too, as running inside a lease
       const run = runOf(c);
       if (run?.inner.length && depth < 4) {

@@ -193,6 +193,12 @@ const TABLE = [
   ['factory dev restart from the main session', () => bash('scripts/factory/factory dev restart'), 'allow'],
   ['factory dev restart from a subagent', () => subagentBash('scripts/factory/factory dev restart --no-seed'), 'deny', /orchestrator's/],
   ['factory dev restart from a subagent, restart_by = anyone', () => subagentBash('factory dev restart'), 'allow', null, () => cfgAnyone],
+  // `factory dev switch` re-points the stack at a branch: held to the same rule as restart
+  ['factory dev switch from the main session', () => bash('scripts/factory/factory dev switch 123'), 'allow'],
+  ['factory dev switch from a subagent', () => subagentBash('scripts/factory/factory dev switch 123'), 'deny', /dev switch.*orchestrator's/],
+  ['factory dev switch main from a subagent, in a chain', () => subagentBash('cd /tmp && factory dev switch main --no-seed'), 'deny', /orchestrator's/],
+  ['factory dev switch from a subagent, restart_by = anyone', () => subagentBash('factory dev switch feat/x'), 'allow', null, () => cfgAnyone],
+  ['factory dev status from a subagent', () => subagentBash('factory dev status'), 'allow'],
   ['factory dev up / status / read-api from a subagent', () => subagentBash('factory dev up; factory dev status; factory dev read-api up'), 'allow'],
 
   // ---- rule 5: the dev stack

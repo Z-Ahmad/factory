@@ -2,6 +2,30 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.27.0
+
+### One dev stack that follows main and can be switched to a PR
+
+The dev-stack worktree (`[dev] cwd`) was never moved forward, so it served old code (20 commits behind main on the
+Seaglass Mac), and agents could only run main on it: they may start a stack only through `factory dev up`.
+
+- **`factory dev switch <ref>`**: `<ref>` is a PR number (`123`, `#123`), a branch or `main`. It fetches, resolves the
+  ref (a PR's head through `gh pr view`, a branch as `origin/<branch>`), refuses with exit 5 when the worktree has
+  uncommitted tracked changes (untracked build output is fine), records `<state_dir>/dev.ref` (`ref=`, `sha=`,
+  `time=`), then restarts: the worktree moves to the commit, detached, `[dev] prep` runs and the stack starts.
+  `--dry-run`, `--no-seed`. Exit 9 when the ref does not resolve. hook-guard rule 6 holds it to `restart_by`, like
+  `restart`: the main session only, unless `[dev] restart_by = "anyone"`.
+- **`dev up` and `dev restart` fetch first.** A stack following main (nothing recorded, or `switch main`) is
+  fast-forwarded to `origin/main` and prepped before it starts. A switched stack stays on its PR or branch and moves to
+  its latest pushed commit. One line says which ref it is on. A stack that is already up is not moved under itself;
+  `up` reports how far behind it is. A dirty worktree or an unresolvable ref only warns on `up`/`restart`; a failing
+  prep exits 8.
+- **`dev status`** first prints the ref, its short sha and subject, and how far behind `origin/main` it is; following
+  main and behind, it says so and names `factory dev restart`.
+- **Config**: `[dev] prep` (a command run in the worktree after it moves; unset means none) and `[dev] follow`
+  (default `"main"`). Both are in `config validate` and the README. `FK_DEV_NET_TIMEOUT_S` (60) and
+  `FK_DEV_PREP_TIMEOUT_S` (900) bound every fetch, `gh` call and prep run; `lib/deadline.mjs` does it.
+
 ## v0.26.0
 
 ### The janitor does the daily housekeeping too
