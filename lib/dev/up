@@ -9,10 +9,17 @@
 # from the seed restore.
 # Exit 0 when the stack is up (and the seed restored), 1 on a bad argument, missing config or
 # missing directory, 2 when the ports did not come up in time, 3 when the seed restore failed,
-# 6 when a port is up but hung ([dev] probe = "http"): the orchestrator runs `factory dev restart`.
+# 6 when a port is up but hung ([dev] probe = "http"): the orchestrator runs `factory dev restart`,
+# 8 when [dev] prep failed.
+# Before it starts the stack, it fetches and moves the dev worktree: to origin/<[dev] follow, default main> when the
+# stack follows main (nothing recorded, or `factory dev switch main`), or to the latest pushed commit of the ref
+# `factory dev switch` recorded (a PR or a branch). Then it runs [dev] prep when the worktree moved, and prints one
+# line saying which ref it is on. Uncommitted tracked changes or an unreachable ref only warn: it starts what is
+# there. A failed prep exits 8. A stack that is already up is not moved under itself; it prints where it stands.
 # FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/sh/devref.sh"
 
 SEED=1 DIR=""
 while [[ $# -gt 0 ]]; do
@@ -40,12 +47,20 @@ if stack_up; then
     exit 6
   fi
   echo "factory-dev-up: ports already up ($PORTS_TXT); nothing to start"
+  if D="$(fk_dev_dir "$DIR")"; then fk_dev_note "$D"; fi
 else
   [[ -n "${FK_DEV_UP:-}" ]] || fk_die "[dev] up is not set"
   [[ -n "$DIR" ]] || DIR="${FK_DEV_CWD:-}"
   [[ -n "$DIR" ]] || fk_die "no directory: pass one, or set [dev] cwd"
   [[ "$DIR" == /* ]] || DIR="$MAIN/$DIR"
   [[ -d "$DIR" ]] || { echo "factory-dev-up: no such dir $DIR" >&2; exit 1; }
+  SRC=0
+  fk_dev_sync "$DIR" || SRC=$?
+  case "$SRC" in
+    0) ;;
+    5|9) echo "factory-dev-up: starting what is checked out in $DIR" >&2 ;;
+    *) exit "$SRC" ;;
+  esac
   LOG="${FK_DEV_LOG:-${FK_PROJECT_STATE_DIR:?}/dev.log}"
   PID="$(fk_spawn_detached "$DIR" "$LOG" "$FK_DEV_UP")"
   echo "factory-dev-up: started $FK_DEV_UP (pid $PID) detached in $DIR; log $LOG"

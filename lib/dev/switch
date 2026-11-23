@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# desc: point the dev stack at a PR, a branch or main, and restart it; the orchestrator's
+# usage: factory dev switch <ref> [--no-seed] [--dry-run]
+# <ref> is a PR number (123 or #123), a branch name, or `main` (back to following [dev] follow, default main).
+# Fetches, resolves the ref to a commit (a PR's head through `gh pr view`; a branch as origin/<branch>), refuses when
+# the dev worktree ([dev] cwd) has uncommitted tracked changes (untracked build output is fine), records the ref in
+# <state_dir>/dev.ref, then restarts the stack: dev restart stops it and dev up moves the worktree to the commit
+# (detached), runs [dev] prep, and starts it. `factory dev up` and `restart` afterwards stay on the ref and move to
+# its latest pushed commit; `factory dev switch main` follows origin/main again.
+# hook-guard lets only the main session run it: a subagent is denied unless [dev] restart_by = "anyone".
+# --dry-run prints what it would do and changes nothing.
+# Exit 0 when the stack is back up, 1 on a bad argument or missing config, 5 when the worktree has uncommitted
+# tracked changes, 9 when the ref does not resolve (or the fetch failed); then restart's and up's exits (4, 2, 3, 8).
+set -euo pipefail
+. "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
+. "$FK_KIT_DIR/lib/sh/devref.sh"
+
+SEED=1 DRY=0 REF=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-seed) SEED=0; shift ;;
+    --dry-run) DRY=1; shift ;;
+    -*) echo "unknown arg: $1" >&2; exit 1 ;;
+    *) [[ -z "$REF" ]] || { echo "unexpected argument: $1" >&2; exit 1; }; REF="$1"; shift ;;
+  esac
+done
+[[ -n "$REF" ]] || { echo "usage: factory dev switch <pr number | branch | main> [--no-seed] [--dry-run]" >&2; exit 1; }
+
+DIR="$(fk_dev_dir)" || fk_die "[dev] cwd is not set: there is no dev worktree to switch"
+fk_dev_is_worktree "$DIR" || fk_die "[dev] cwd ($DIR) is not a git worktree of its own"
+
+if ! fk_dev_fetch "$DIR"; then echo "factory-dev-switch: fetch from origin failed (or passed its ${FK_DEV_NET_TIMEOUT_S:-60}s deadline)" >&2; exit 9; fi
+SHA="$(fk_dev_resolve "$REF" "$DIR")" || exit 9
+if fk_dev_dirty "$DIR"; then
+  echo "factory-dev-switch: $DIR has uncommitted tracked changes; commit or discard them first:" >&2
+  git -C "$DIR" status --porcelain --untracked-files=no | head -n 10 >&2
+  exit 5
+fi
+WHAT="$REF -> $(fk_dev_describe "$DIR" "$SHA")"
+
+if [[ "$DRY" == 1 ]]; then
+  echo "factory-dev-switch: would switch $DIR to $WHAT, run prep (${FK_DEV_PREP:-none}), restart the stack"
+  exit 0
+fi
+
+fk_dev_record "$REF" "$SHA"
+echo "factory-dev-switch: $WHAT"
+ARGS=()
+[[ "$SEED" == 1 ]] || ARGS+=(--no-seed)
+exec "$FK_KIT_DIR/lib/dev/restart" "${ARGS[@]+"${ARGS[@]}"}"

@@ -401,6 +401,10 @@ export const SCHEMA = table({
     stop_s: int(),
     // who may run `factory dev-restart`: "orchestrator" (default; the main session, never a subagent) or "anyone"
     restart_by: str(),
+    // commands run in [dev] cwd after dev up / switch moves it to another commit (e.g. rebuild a shared package); unset = none
+    prep: str(),
+    // the ref the stack follows when no PR or branch is switched to (default "main"; origin/<follow>)
+    follow: str(),
     agents_may_start: bool(),
     read_api: table({ cwd: str(REQ), cmd: str(REQ), port: int(REQ) }),
   }),

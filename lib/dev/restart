@@ -7,6 +7,8 @@
 # alive (one that never listened and ignores TERM). Then runs dev up, which starts it again
 # and restores the seed (skipped with --no-seed). --dry-run prints the process groups it would stop.
 # hook-guard lets only the main session run it: a subagent is denied unless [dev] restart_by = "anyone".
+# The up it ends in fetches first and moves the dev worktree as `factory dev up` does (follow main, or the ref
+# `factory dev switch` recorded), so a restart picks up new commits.
 # Exit 0 when the stack is back up, 1 on a bad argument or missing config, 4 when a port would not
 # close; otherwise dev up's own exit (2 ports did not come up, 3 seed restore failed).
 # FK_DEV_POLL_S (default 5) is the seconds between port checks, for tests.
