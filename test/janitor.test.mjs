@@ -188,6 +188,9 @@ function project() {
     writeFileSync(p('bin', name), `#!/usr/bin/env bash\n${body}\n`);
     chmodSync(p('bin', name), 0o755);
   };
+  // plenty of free disk, so the disk gate and the janitor's disk check never act on the machine running the tests
+  stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfake 1 1 524288000 1%% /\\n"')
+  stub('osascript', 'exit 0')
   stub('ps', `cat '${R}/ps' 2>/dev/null; true`);
   stub('sysctl', `case "$2" in
   kern.memorystatus_vm_pressure_level) cat '${R}/pressure' 2>/dev/null || echo 1 ;;

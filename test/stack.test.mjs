@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { factory } from './helpers.mjs';
 import { tree } from './fixture-tree.mjs';
@@ -136,9 +136,13 @@ test('stack land: a squash-merged parent: conflicts resolved with the child (mai
     const c = t.child('one', 2);
     const wtP = join(t.main, '.worktrees', 'p1wt');
     t.g(t.main, 'worktree', 'add', '-q', wtP, 'p1');
+    // the removed worktree's two iOS build folders (dd-<name> and dd-<name>-kit) go with it; another worktree's stay
+    for (const d of ['dd-p1wt', 'dd-p1wt-kit', 'dd-otherwt']) mkdirSync(t.p('cache', d));
     t.squash();
     const r = t.run(['land', '1']);
     assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /removed 2 derived-data folders of p1wt/);
+    assert.deepEqual(['dd-p1wt', 'dd-p1wt-kit', 'dd-otherwt'].map((d) => existsSync(t.p('cache', d))), [false, false, true]);
     assert.match(t.gh.log(), /pr edit 2 --base trunk/);
     assert.match(r.stdout, /resolved 1 conflicted file with the child's side/);
     // the child on origin: its own file content, main merged in, one merge commit

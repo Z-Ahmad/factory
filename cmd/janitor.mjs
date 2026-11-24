@@ -10,6 +10,12 @@
 // skips its step. Every action, or in a dry run every would-be action, is one line in <state_dir>/janitor/janitor.log
 // (timestamp, apply|dry, what, why; rotated at 1 MB to janitor.log.1).
 //
+// Disk (first, every pass, enabled or not, --apply or not: the one thing the janitor acts on by default; [janitor]
+// disk_act = false makes it only warn): free space below [disk] min_gb runs the safe low-disk sweep (stale build folders
+// no lease or process uses, scratch, frames, clips; never worktrees or simulators) and posts a macOS notification with
+// what it freed; still below [disk] floor_gb afterwards, a louder one naming the five biggest space users. One
+// notification per level per [janitor] notify_every_min. See diskPass() below.
+//
 // The pass, in order:
 //   a. reap      leases whose process is gone are freed and their leftover process group killed (`factory run --reap`);
 //                a dry run only lists them.
@@ -50,13 +56,14 @@
 // Test hooks: FK_JANITOR_AGENTS_DIR (the LaunchAgents folder; with it set, install also works off macOS) and launchctl
 // found on PATH; FK_JANITOR_KILL (a command run as `<cmd> <SIGNAL> <pid>` instead of signalling).
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { load } from './config.mjs';
 import { alive, killPid, leaseMayOwn, processes, readState, reap } from './run.mjs';
 import { bootedSimNames, shutdownSim, simsInUse } from '../lib/sims.mjs';
+import { DEFAULT_FLOOR_GB, DEFAULT_MIN_GB, SAFE_ONLY, diskPath, expandHome, freeGb, safeCleanup } from '../lib/disk.mjs';
 
 const KIT = dirname(dirname(fileURLToPath(import.meta.url)));
 const LOG_MAX = 1024 * 1024;
@@ -83,6 +90,11 @@ export function settings(file = process.env.FACTORY_TOML) {
     orphanMin: j.orphan_minutes ?? 10,
     swapPct: j.swap_pct ?? 80,
     tools: j.tools ?? [],
+    diskAct: j.disk_act !== false,
+    notifyEveryMin: j.notify_every_min ?? 30,
+    minGb: r.resolved.disk?.min_gb ?? DEFAULT_MIN_GB,
+    floorGb: r.resolved.disk?.floor_gb ?? DEFAULT_FLOOR_GB,
+    ddRoot: r.resolved.disk?.dd_root ?? null,
     idleMin: r.resolved.sim?.idle_minutes ?? 30,
     keepBooted: r.resolved.sim?.keep_booted ?? [],
     runCfg: { stateDir, orphanMin: r.resolved.slot?.orphan_minutes ?? 60 },
@@ -307,6 +319,162 @@ export function sweep(cfg, { apply = false, log = () => {}, deps = realDeps() } 
   return actions;
 }
 
+
+// ------------------------------------------------------------ disk
+
+const GB = 1048576; // KB per GB
+const fmtKb = (kb) => (kb >= GB ? `${(kb / GB).toFixed(1)} GB` : `${Math.max(1, Math.round(kb / 1024))} MB`);
+
+function sizeKb(path) {
+  try {
+    const r = spawnSync('du', ['-sk', path], { encoding: 'utf8', timeout: 60000 });
+    const n = Number(r.stdout?.split(/\s+/)[0]);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function listDirs(dir) {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+function simNames() {
+  try {
+    const r = spawnSync('xcrun', ['simctl', 'list', 'devices', '-j'], { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 24 });
+    if (r.error || r.status !== 0) return new Map();
+    const m = new Map();
+    for (const list of Object.values(JSON.parse(r.stdout).devices ?? {})) for (const d of list) if (d?.udid) m.set(d.udid, d.name ?? d.udid);
+    return m;
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * The biggest space users the kit knows about, largest first: [{ label, kb }]. Build folders grouped by worktree
+ * (`dd-<name>` and `dd-<name>-kit` are one entry), the state dir's subfolders, simulators by name.
+ */
+export function topUsers(cfg, { n = 5, size = sizeKb, ls = listDirs, names = simNames, coreSim = process.env.FK_CORESIM_DIR || join(homedir(), 'Library', 'Developer', 'CoreSimulator', 'Devices') } = {}) {
+  const rows = [];
+  const dd = expandHome(cfg.ddRoot);
+  if (dd) {
+    const by = new Map();
+    for (const d of ls(dd).filter((x) => x.startsWith('dd-'))) {
+      const wt = d.slice(3).replace(/-kit$/, '');
+      const e = by.get(wt) ?? { kb: 0, k: 0 };
+      e.kb += size(join(dd, d));
+      e.k++;
+      by.set(wt, e);
+    }
+    for (const [wt, e] of by) rows.push({ label: `build folders of ${wt}${e.k > 1 ? ` (${e.k})` : ''}`, kb: e.kb });
+  }
+  for (const d of ls(cfg.stateDir)) rows.push({ label: `state/${d}`, kb: size(join(cfg.stateDir, d)) });
+  const devs = ls(coreSim);
+  if (devs.length) {
+    const nm = names();
+    for (const u of devs) rows.push({ label: `simulator ${nm.get(u) ?? u}`, kb: size(join(coreSim, u)) });
+  }
+  return rows.filter((r) => r.kb > 0).sort((a, b) => b.kb - a.kb).slice(0, n);
+}
+
+/** Show a macOS notification (best effort: never throws, never waits more than 15 s). Returns true when osascript took it. */
+export function notify(title, text, { loud = false } = {}) {
+  try {
+    const script = ['on run argv', `display notification (item 1 of argv) with title (item 2 of argv)${loud ? ' sound name "Basso"' : ''}`, 'end run'];
+    const r = spawnSync('osascript', [...script.flatMap((l) => ['-e', l]), text, title], { encoding: 'utf8', timeout: 15000 });
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function realDiskDeps() {
+  return { freeGb, cleanup: safeCleanup, notify, topUsers, now: () => Date.now() };
+}
+
+const notifyFile = (cfg) => join(cfg.dir, 'disk-notify.json');
+
+/** True (and recorded) when a notification of this level may go out now: at most one per [janitor] notify_every_min. */
+function notifyDue(cfg, level, now) {
+  let seen = {};
+  try {
+    seen = JSON.parse(readFileSync(notifyFile(cfg), 'utf8'));
+  } catch {}
+  if (Number.isFinite(seen[level]) && now - seen[level] < cfg.notifyEveryMin * 60000) return false;
+  seen[level] = now;
+  try {
+    mkdirSync(cfg.dir, { recursive: true });
+    writeFileSync(notifyFile(cfg), JSON.stringify(seen));
+  } catch {}
+  return true;
+}
+
+/**
+ * The disk check every pass makes, whatever the pass's mode (the one thing the janitor acts on by default;
+ * [janitor] disk_act = false makes it only look and warn).
+ *   free >= [disk] min_gb          nothing: no log line, no notification.
+ *   below min_gb                   (disk_act) the doctor's own low-disk sweep, limited to the safe set: stale build folders
+ *                                  (never one a live lease or process uses), scratch, proof frames and clips. Never worktrees,
+ *                                  simulators or archives. Then a notification: how much it freed, the space now.
+ *   still below [disk] floor_gb    after that sweep: a louder notification naming the five biggest space users.
+ * A notification goes out at most once per [janitor] notify_every_min per level (min, floor). From launchd (the config
+ * copy: the project folder is unreadable) cleanup runs with --no-project. Returns the actions it logged.
+ */
+export function diskPass(cfg, { log = () => {}, deps = realDiskDeps(), env = process.env } = {}) {
+  const actions = [];
+  const say = (what, why) => {
+    actions.push({ what, why });
+    log({ what, why, mode: 'apply' });
+  };
+  const fromCopy = !!env.FACTORY_TOML && env.FACTORY_TOML === snapshotPath(cfg);
+  const path = diskPath({ ddRoot: cfg.ddRoot, stateDir: cfg.stateDir }, fromCopy ? isProtected : () => false);
+  const before = deps.freeGb(path);
+  if (before == null || before >= cfg.minGb) return actions;
+  const limits = `min ${cfg.minGb} GB ([disk] min_gb), floor ${cfg.floorGb} GB ([disk] floor_gb)`;
+  say(`disk low: ${before} GB free on ${path}`, limits);
+  if (fromCopy && cfg.ddRoot && isProtected(expandHome(cfg.ddRoot))) {
+    say('build folders out of reach', `[disk] dd_root ${cfg.ddRoot} is in a folder macOS keeps from launchd agents; move it elsewhere or cleanup there only runs by hand`);
+  }
+  let after = before;
+  let freed = null;
+  let cleaned = false;
+  if (cfg.diskAct) {
+    const r = deps.cleanup({ minGb: cfg.minGb, noProject: fromCopy, env });
+    cleaned = r.ok;
+    freed = r.freed;
+    after = deps.freeGb(path) ?? before;
+    if (r.ok) say(`disk cleanup (${SAFE_ONLY.join(', ')})`, `freed ${freed ?? 'nothing'}; ${after} GB free now`);
+    else say('disk cleanup failed', r.timedOut ? 'stopped at its deadline' : `exit ${r.status}: ${(r.stderr || r.stdout).trim().split('\n').pop()?.slice(0, 200) ?? ''}`);
+  } else say('disk cleanup skipped', '[janitor] disk_act = false');
+
+  const level = after < cfg.floorGb ? 'floor' : 'min';
+  const now = deps.now();
+  if (!notifyDue(cfg, level, now)) {
+    log({ what: `notification (${level}) not sent`, why: `one per ${cfg.notifyEveryMin} min ([janitor] notify_every_min)`, mode: 'apply' });
+    return actions;
+  }
+  let title;
+  let text;
+  if (level === 'floor') {
+    const top = deps.topUsers(cfg);
+    title = `Disk critically low: ${after} GB free`;
+    text = `Under the ${cfg.floorGb} GB floor${cleaned ? ` even after freeing ${freed ?? 'nothing'}` : ''}. Biggest: ${top.length ? top.map((t) => `${t.label} ${fmtKb(t.kb)}`).join('; ') : 'nothing the kit knows of'}. Run \`factory cleanup\`.`;
+  } else {
+    title = `Disk low: ${after} GB free`;
+    text = cfg.diskAct
+      ? `Janitor freed ${freed ?? 'nothing'} of old build folders and scratch. ${after} GB free now (min ${cfg.minGb} GB).`
+      : `${after} GB free (min ${cfg.minGb} GB). [janitor] disk_act is off: run \`factory cleanup\`.`;
+  }
+  const sent = deps.notify(title, text, { loud: level === 'floor' });
+  say(`notification (${level}${sent ? '' : ', not shown'})`, `${title}: ${text}`.slice(0, 400));
+  return actions;
+}
+
 // ------------------------------------------------------------ log and state files
 
 function makeLogger(cfg, mode) {
@@ -315,10 +483,11 @@ function makeLogger(cfg, mode) {
   try {
     if (statSync(file).size > LOG_MAX) renameSync(file, `${file}.1`);
   } catch {}
-  return ({ what, why }) => {
-    const line = `${new Date().toISOString()} ${mode} ${what} | ${why}`;
+  return ({ what, why, mode: own }) => {
+    const m = own ?? mode;
+    const line = `${new Date().toISOString()} ${m} ${what} | ${why}`;
     appendFileSync(file, `${line}\n`);
-    process.stdout.write(`janitor: ${mode} ${what} | ${why}\n`);
+    process.stdout.write(`janitor: ${m} ${what} | ${why}\n`);
   };
 }
 
@@ -398,7 +567,13 @@ function runPass(cfg, { apply, scheduled }) {
     const ignored = toolPatterns(cfg.tools).ignored;
     const logger = makeLogger(cfg, mode);
     for (const t of ignored) logger({ what: `ignored [janitor] tools entry ${JSON.stringify(t)}`, why: 'too broad: a name, glob or text of at least 3 characters' });
-    const actions = sweep(cfg, { apply: doApply, log: logger });
+    const actions = [];
+    try {
+      actions.push(...diskPass(cfg, { log: logger }));
+    } catch (e) {
+      logger({ what: 'disk check skipped', why: `error: ${e?.message ?? e}` });
+    }
+    actions.push(...sweep(cfg, { apply: doApply, log: logger }));
     actions.push(...housekeeping(cfg, { apply: doApply, log: logger }));
     writeFileSync(join(cfg.dir, 'last'), `${JSON.stringify({ time: new Date().toISOString(), mode, actions: actions.length })}\n`);
     if (!actions.length) console.log(`janitor: ${mode} pass: nothing to do`);

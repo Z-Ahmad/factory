@@ -29,6 +29,9 @@ case "$2" in
   vm.swapusage) echo "total = 11264.00M  used = 10137.00M  free = 1.00M  (encrypted)" ;;
   *) exit 1 ;;
 esac`);
+  // plenty of free disk, so the disk gate and the janitor's disk check never act on the machine running the tests
+  stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfake 1 1 524288000 1%% /\\n"')
+  stub('osascript', 'exit 0')
   stub('vm_stat', `echo "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
 echo "Swapouts:                                 $(cat '${R}/swapouts' 2>/dev/null || echo 100)."`);
   // xcrun: the booted simulators are the lines of r/booted; `simctl shutdown` removes one and logs it to r/shutdowns

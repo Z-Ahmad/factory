@@ -17,7 +17,7 @@
 //           holds the parent's final version of it; any other conflict stops with exit 3 and the merge left in progress.
 //           The merge commit goes through the repo's hooks (never --no-verify) and a plain `git push` (never forced).
 //           Only when every child is retargeted and pushed does it delete the merged PR's remote branch, local branch and
-//           worktree. --dry-run prints the plan. Run it again after fixing a failure: it picks the children up again.
+//           worktree (and its derived-data folders: `cleanup --worktree-caches`). --dry-run prints the plan. Run it again after fixing a failure: it picks the children up again.
 //   status  each stack as a tree: PR number, title, state, base, mergeable, and whether the base branch still exists;
 //           warns when a base is merged but the child was not landed, and when a base is gone (GitHub closes the child).
 // [stack] target (default "main") is where a stack lands; max_depth (default 3) the most PRs one stack holds.
@@ -25,7 +25,8 @@
 // has a conflict a person must resolve (the merge is left in progress in the worktree it names).
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { removeWorktreeCaches } from '../lib/disk.mjs';
 import { GH_DEADLINE_S, openBasePrs, readStacks, writeStacks } from '../lib/stack.mjs';
 
 const env = process.env;
@@ -321,6 +322,11 @@ function removeMergedBranch(merged) {
     else {
       const r = git(MAIN, 'worktree', 'remove', '--force', wt.path);
       note(r.ok ? `removed worktree ${wt.path}` : `could not remove worktree ${wt.path}: ${r.stderr}`);
+      // its build folders go with it (never one a live lease or process uses); a failure here never fails the land
+      if (r.ok) {
+        const c = removeWorktreeCaches(basename(wt.path), branch, { env });
+        if (c?.n) note(`removed ${c.n} derived-data folder${c.n === 1 ? '' : 's'} of ${basename(wt.path)}`);
+      }
     }
   }
   if (hasLocal(branch) && !worktreeOf(branch)) {

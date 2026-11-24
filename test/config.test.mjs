@@ -183,6 +183,15 @@ test('[stack] target and max_depth validate, reach the environment, and reject a
   assert.equal(load(`${validText}\n[stack]\nmax_deph = 3\n`).errors[0].path, 'stack.max_deph');
 });
 
+test('[janitor] disk_act and notify_every_min validate, reach the environment, and reject bad values', () => {
+  const ok = load(`${validText}\n[janitor]\ndisk_act = false\nnotify_every_min = 10\n`);
+  assert.deepEqual(ok.errors, []);
+  assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_JANITOR_DISK_ACT='false'$/m);
+  assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_JANITOR_NOTIFY_EVERY_MIN='10'$/m);
+  assert.equal(load(`${validText}\n[janitor]\ndisk_act = "no"\n`).errors[0].path, 'janitor.disk_act');
+  assert.equal(load(`${validText}\n[janitor]\nnotify_every_min = 0\n`).errors[0].path, 'janitor.notify_every_min');
+});
+
 test('[slot] capacity, [slot.weights], max_swapouts_per_min and orphan_minutes, and [proof.tier], validate', () => {
   const text = `${validText}\n[slot]\ncapacity = 6\nmax_swapouts_per_min = 2000\norphan_minutes = 30\nmin_free_pct = 15\n\n[slot.weights]\nbuild = 3\nlint = 1\n\n[proof.tier]\nmotion = "default"\nvisual = "quick"\nlogic = "none"\n`;
   const r = load(text);
