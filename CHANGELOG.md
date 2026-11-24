@@ -2,6 +2,20 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.29.2
+
+### `factory stack land` no longer commits conflict markers or brings back renamed files
+
+Landing #694 merged main into the child PR #693, whose files had been renamed.
+Git reports those as rename conflicts, with eight-character markers such as `<<<<<<<< HEAD:path`.
+`land` took the child's side, but some files still held the markers, and it committed and pushed them.
+It also brought back the old files the child had renamed away.
+
+- **The child's side is the child's file.** A conflicted path is set to its blob from the child's head before the merge, byte for byte, and removed when the child has no such path.
+- **Renamed or removed files stay gone.** Before the merge commit, every path whose merged content differs from the child's head must be one main changed since the parent's final tip.
+  Any other path is put back to the child's version (when the child already holds the parent's final tip), and `land` stops with exit 3 and lists the paths if one cannot be.
+- **Conflict markers are refused.** If a staged file gained a line of 7 or more `<`, `>` or `|` characters followed by a space or the end of the line, `land` leaves the merge in progress, lists the files, exits 3 and pushes nothing.
+
 ## v0.29.1
 
 ### `factory stack status` forgets dead links, `stack new` will not cut a twin

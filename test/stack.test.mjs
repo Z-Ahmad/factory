@@ -197,6 +197,71 @@ test('stack land: a real conflict stops with exit 3, names the file, leaves the 
     assert.equal(t.g(t.main, 'ls-remote', 'origin', c.branch).split('\t')[0], before, 'nothing pushed');
   }));
 
+test('stack land: a child that renamed a file the parent added keeps its rename; the old path stays gone', () =>
+  withProject((t) => {
+    const c = t.child('ren', 2, { touchA: false });
+    t.g(c.dir, 'mv', 'a.txt', 'b.txt');
+    t.g(c.dir, 'commit', '-q', '-m', 'rename a to b');
+    t.g(c.dir, 'push', '-q', 'origin', c.branch);
+    t.squash(); // trunk gets a.txt back, as the parent's squash commit
+    const r = t.run(['land', '1']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /kept 1 file the child renamed or removed/);
+    assert.equal(t.show(`origin/${c.branch}`, 'b.txt'), 'P');
+    assert.equal(t.g(t.main, 'ls-tree', '--name-only', `origin/${c.branch}`, 'a.txt'), '', 'a.txt did not come back');
+  }));
+
+test('stack land: a rename/rename conflict (git writes 8-character markers) takes the child\'s file verbatim', () =>
+  withProject((t) => {
+    const body = ['1', '2', '3', '4', '5', '6', ''].join('\n');
+    t.g(t.main, 'checkout', '-q', 'trunk');
+    t.write(t.main, 'x.txt', body);
+    t.g(t.main, 'add', 'x.txt');
+    t.g(t.main, 'commit', '-q', '-m', 'x');
+    t.g(t.main, 'push', '-q', 'origin', 'trunk');
+    t.g(t.main, 'checkout', '-q', '-b', 'p2', 'trunk');
+    t.g(t.main, 'mv', 'x.txt', 'y.txt');
+    t.g(t.main, 'commit', '-q', '-m', 'parent two renames x to y');
+    t.g(t.main, 'push', '-q', 'origin', 'p2');
+    const p2 = t.g(t.main, 'rev-parse', 'p2');
+    t.g(t.main, 'checkout', '-q', 'trunk');
+    t.gh.pr({ number: 5, title: 'Parent two', headRefName: 'p2', baseRefName: 'trunk', headRefOid: p2 });
+    const n = t.run(['new', '5', '--name', 'rr']);
+    assert.equal(n.status, 0, n.stdout + n.stderr);
+    const dir = join(t.main, '.worktrees', 'rr');
+    const branch = 'x/rr-wt';
+    t.g(dir, 'mv', 'y.txt', 'z.txt');
+    t.g(dir, 'commit', '-q', '-m', 'child renames y to z');
+    t.g(dir, 'push', '-q', '-u', 'origin', branch);
+    t.gh.pr({ number: 6, title: 'Child rr', headRefName: branch, baseRefName: 'p2', headRefOid: t.g(dir, 'rev-parse', 'HEAD') });
+    t.g(t.main, 'mv', 'x.txt', 'y.txt'); // the squash of p2 on trunk
+    t.g(t.main, 'commit', '-q', '-m', 'Parent two (#5)');
+    t.g(t.main, 'push', '-q', 'origin', 'trunk');
+    t.gh.set(5, { state: 'MERGED', mergeCommit: { oid: t.g(t.main, 'rev-parse', 'HEAD') } });
+    const r = t.run(['land', '5']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(t.show(`origin/${branch}`, 'z.txt'), body.trimEnd());
+    assert.equal(t.g(t.main, 'ls-tree', '--name-only', `origin/${branch}`, 'x.txt', 'y.txt'), '', 'the old paths stay gone');
+  }));
+
+test('stack land: refuses to commit a staged file that holds conflict markers of 7 or more characters; pushes nothing', () =>
+  withProject((t) => {
+    const c = t.child('one', 2);
+    t.squash();
+    t.write(t.main, 'm.txt', 'ok\n<<<<<<<< HEAD:foo\nx\n========\ny\n>>>>>>>> origin/main:bar\n');
+    t.g(t.main, 'add', 'm.txt');
+    t.g(t.main, 'commit', '-q', '-m', 'main carries markers');
+    t.g(t.main, 'push', '-q', 'origin', 'trunk');
+    const before = t.g(t.main, 'rev-parse', `origin/${c.branch}`);
+    const r = t.run(['land', '1']);
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stdout, /still contain conflict markers/);
+    assert.match(r.stdout, /^ {4}m\.txt$/m);
+    assert.ok(t.g(c.dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'), 'merge left in progress');
+    assert.equal(t.g(t.main, 'ls-remote', 'origin', c.branch).split('\t')[0], before, 'nothing pushed');
+    assert.equal(t.remoteHas('p1'), true);
+  }));
+
 test('stack land: two children; one conflicts, the parent stays until a person finishes it and land is run again', () =>
   withProject((t) => {
     const a = t.child('alpha', 2);
