@@ -14,7 +14,11 @@
 //   land    after the owner merged a PR: for each open PR based on its branch, `gh pr edit --base <[stack] target>`, then
 //           (in the child's worktree, or one made for it) `git merge --no-edit origin/<target>`. A conflicted file is
 //           resolved with the child's side only when `git diff --quiet <parent-head> origin/<target> -- <file>` says main
-//           holds the parent's final version of it; any other conflict stops with exit 3 and the merge left in progress.
+//           holds the parent's final version of it, and then it is the child's blob verbatim (or removed, when the child has no such
+//           path: a rename); any other conflict stops with exit 3 and the merge left in progress. Before the merge commit land
+//           checks the merged tree against the child's head (a path main did not change since the parent's final tip must equal
+//           the child's, so main's copy of a file the child renamed away is not brought back) and refuses, exit 3, a staged file
+//           that gained a conflict marker line of 7 or more characters.
 //           The merge commit goes through the repo's hooks (never --no-verify) and a plain `git push` (never forced).
 //           Only when every child is retargeted and pushed does it delete the merged PR's remote branch, local branch and
 //           worktree (and its derived-data folders: `cleanup --worktree-caches`). --dry-run prints the plan. Run it again after fixing a failure: it picks the children up again.
@@ -225,11 +229,30 @@ function cmdNew() {
 
 // ------------------------------------------------------------------ land
 
-/** Resolves a conflicted file with the child's side; a file the child deleted is removed. */
-function takeOurs(dir, file) {
-  const stages = git(dir, 'ls-files', '-u', '--', file).stdout.split('\n').filter(Boolean).map((l) => l.split(/\s+/)[2]);
-  if (stages.includes('2')) return git(dir, 'checkout', '--ours', '--', file).ok && git(dir, 'add', '--', file).ok;
-  return git(dir, 'rm', '-q', '--', file).ok;
+/** Every path with an unmerged index entry (a rename conflict lists both of its paths). */
+const unmergedPaths = (dir) => [...new Set(git(dir, 'ls-files', '-u').stdout.split('\n').filter(Boolean).map((l) => l.split('\t').slice(1).join('\t')))];
+const inTree = (dir, rev, file) => git(dir, 'cat-file', '-e', `${rev}:${file}`).ok;
+
+/**
+ * Makes `file` the child's version from `tip` (the child's head before the merge), byte for byte:
+ * its blob when the child has the file, removed when it does not. Never `checkout --ours`: after a rename
+ * conflict that can leave a file with git's markers in it.
+ */
+function takeChild(dir, tip, file) {
+  if (inTree(dir, tip, file)) return git(dir, 'checkout', tip, '--', file).ok;
+  return git(dir, 'rm', '-q', '-f', '--ignore-unmatch', '--', file).ok;
+}
+
+/** Files that gained a conflict marker line (7 or more of < > or |) in the staged result, compared with the child's head. */
+function stagedMarkerFiles(dir) {
+  const diff = git(dir, 'diff', '--cached', '-U0', '--no-color', '--no-renames', 'HEAD').stdout;
+  const hit = new Set();
+  let file = '';
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++ b/')) file = line.slice(6);
+    else if (line.startsWith('+') && !line.startsWith('+++') && /^\+(<{7,}|>{7,}|\|{7,})( |$)/.test(line)) hit.add(file);
+  }
+  return [...hit];
 }
 
 /**
@@ -277,20 +300,33 @@ function landChild(child, parent) {
   if (git(dir, 'merge-base', '--is-ancestor', `origin/${TARGET}`, 'HEAD').ok) {
     note(`  #${child.number}: already contains origin/${TARGET}`);
   } else {
-    const m = git(dir, 'merge', '--no-edit', `origin/${TARGET}`);
-    if (!m.ok) {
-      const files = unmerged(dir);
-      if (!files.length) return { fail: `git merge origin/${TARGET} failed in ${dir}: ${m.stderr || m.stdout}`, keep: mergeInProgress(dir) };
-      const same = files.filter((f) => git(dir, 'diff', '--quiet', parent.head, `origin/${TARGET}`, '--', f).ok);
-      const differ = files.filter((f) => !same.includes(f));
-      if (differ.length) {
-        return { conflict: differ, safe: same, dir };
-      }
-      for (const f of same) if (!takeOurs(dir, f)) return { fail: `could not resolve ${f} in ${dir}`, keep: true };
-      const c = git(dir, 'commit', '--no-edit');
-      if (!c.ok) return { fail: `the merge commit was refused in ${dir} (the repo's hooks run on it; nothing is skipped): ${c.stderr || c.stdout}`, keep: true };
-      note(`  #${child.number}: resolved ${same.length} conflicted file${same.length === 1 ? '' : 's'} with the child's side (${TARGET} holds ${short(parent.head)}'s version of each)`);
+    const tip = git(dir, 'rev-parse', 'HEAD').stdout; // the child as it was before the merge
+    const m = git(dir, 'merge', '--no-edit', '--no-commit', '--no-ff', `origin/${TARGET}`);
+    const files = unmergedPaths(dir);
+    if (!m.ok && !files.length) return { fail: `git merge origin/${TARGET} failed in ${dir}: ${m.stderr || m.stdout}`, keep: mergeInProgress(dir) };
+    const same = files.filter((f) => git(dir, 'diff', '--quiet', parent.head, `origin/${TARGET}`, '--', f).ok);
+    const differ = files.filter((f) => !same.includes(f));
+    if (differ.length) return { conflict: differ, safe: same, dir };
+    for (const f of same) if (!takeChild(dir, tip, f)) return { fail: `could not resolve ${f} in ${dir}`, keep: true };
+
+    // Every path the merged tree holds differently from the child's head must be one main changed since the parent's
+    // final tip. Any other is main's copy of a file the child renamed or removed (or an old copy of its own), back again.
+    const mainChanged = new Set(git(dir, 'diff', '--name-only', '--no-renames', parent.head, `origin/${TARGET}`).stdout.split('\n').filter(Boolean));
+    const unexplained = () => git(dir, 'diff', '--cached', '--name-only', '--no-renames', tip).stdout.split('\n').filter((f) => f && !mainChanged.has(f));
+    let back = unexplained();
+    // Putting the child's version back is only right when the child already holds the parent's final tip.
+    if (back.length && git(dir, 'merge-base', '--is-ancestor', parent.head, tip).ok) {
+      for (const f of back) if (!takeChild(dir, tip, f)) return { fail: `could not restore ${f} in ${dir}`, keep: true };
+      note(`  #${child.number}: kept ${back.length} file${back.length === 1 ? '' : 's'} the child renamed or removed out of ${TARGET}'s copy of the parent`);
+      back = unexplained();
     }
+    if (back.length) return { conflict: back, dir, why: `the merged tree differs from the child in files ${TARGET} did not change since ${short(parent.head)}, so a person must check them` };
+    const marked = stagedMarkerFiles(dir);
+    if (marked.length) return { conflict: marked, dir, why: 'these staged files still contain conflict markers; nothing was committed or pushed' };
+
+    const c = git(dir, 'commit', '--no-edit');
+    if (!c.ok) return { fail: `the merge commit was refused in ${dir} (the repo's hooks run on it; nothing is skipped): ${c.stderr || c.stdout}`, keep: true };
+    if (same.length) note(`  #${child.number}: resolved ${same.length} conflicted file${same.length === 1 ? '' : 's'} with the child's side (${TARGET} holds ${short(parent.head)}'s version of each)`);
   }
   const p = gitNet(dir, 'push', 'origin', `HEAD:refs/heads/${head}`);
   if (!p.ok) return { fail: `plain push of ${head} failed (nothing forced): ${p.stderr}`, keep: true };
@@ -410,6 +446,7 @@ function cmdLand() {
     } else if (r.conflict) {
       conflicts++;
       if (r.unresolved) note(`  CONFLICT: a merge is still in progress in ${r.dir}; resolve it, commit, and run land again`);
+      else if (r.why) note(`  CONFLICT merging origin/${TARGET} into ${c.head}: ${r.why}:`);
       else note(`  CONFLICT merging origin/${TARGET} into ${c.head}: ${TARGET} differs from ${short(parent.head)} in these files, so a person must choose:`);
       for (const f of r.conflict) out(`    ${f}`);
       if (r.safe?.length) out(`    (not touched, but safe to take from the child: ${r.safe.join(', ')})`);
