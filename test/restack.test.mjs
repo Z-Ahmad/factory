@@ -9,9 +9,10 @@ import { tree } from './fixture-tree.mjs';
 const ident = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid' };
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, env: { ...cleanEnv(), ...ident }, stdio: 'pipe' }).toString().trim();
 
-// A parent branch with a child on top of it (#7) and a grandchild on a second chain (#8, in a GitHub stack). The
+// A parent branch with a child on top of it (#7) and a second chain (#8, linked with `gh stack`). The
 // parents are then "squash-merged": trunk gets a new commit and the parent branches are deleted on origin.
-// gh is a stub: it answers the open-PR list, merged-PR lookups (none), the stack query (#8 only) and logs the rest.
+// gh is a stub: it answers the open-PR list, merged-PR lookups (none) and logs the rest. A GitHub stack link changes nothing:
+// GitHub does not rebase the rest of a stack after a squash merge, so #8 is restacked like #7.
 function setup() {
   const t = tree({});
   const m = t.main;
@@ -33,7 +34,6 @@ function setup() {
 echo "$*" >> '${t.p('gh.log')}'
 case "$*" in
   *"pr list --state open"*) printf '7\\tchild\\tparent\\n8\\tchild2\\tparent2\\n9\\tunrelated\\ttrunk\\n' ;;
-  *"api graphql"*) case "$*" in *"n=8"*) echo PRS_stack ;; esac ;;
   *"repo view"*) echo owner/repo ;;
 esac
 exit 0
@@ -52,9 +52,9 @@ test('restack: a dry run says what it would do and changes nothing', () => {
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /dry run onto trunk/);
     assert.match(r.stdout, /WOULD #7 child: base parent is deleted -> retarget onto trunk, merge origin\/trunk into child, push/);
-    assert.match(r.stdout, /SKIP {2}#8 child2: part of a GitHub stack/);
+    assert.match(r.stdout, /WOULD #8 child2: base parent2 is deleted -> retarget onto trunk/);
     assert.ok(!/#9/.test(r.stdout), 'a PR already on the target is not touched');
-    assert.match(r.stdout, /2 PRs with a merged or deleted base; 0 restacked, 1 in a GitHub stack, 0 need a human/);
+    assert.match(r.stdout, /2 PRs with a merged or deleted base; 0 restacked, 0 need a human/);
     assert.ok(!ghLog(t).includes('pr edit'), 'no retarget in a dry run');
     assert.equal(git(t.root + '/origin.git', 'rev-parse', 'child'), before);
   } finally {
@@ -68,9 +68,9 @@ test('restack --apply: retargets, merges the target in, pushes without force, an
     const r = restack(t, ['--apply']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(ghLog(t), /pr edit 7 --base trunk/);
-    assert.ok(!/pr edit 8/.test(ghLog(t)), 'the stacked PR is left to GitHub');
+    assert.match(ghLog(t), /pr edit 8 --base trunk/, 'a PR in a GitHub stack is restacked too');
     assert.match(r.stdout, /pushed child \(no force\)/);
-    assert.match(r.stdout, /1 restacked, 1 in a GitHub stack, 0 need a human/);
+    assert.match(r.stdout, /2 restacked, 0 need a human/);
     const origin = join(t.root, 'origin.git');
     assert.equal(git(origin, 'show', 'child:squashed.txt'), 'both parents, squashed'); // the target is merged in
     assert.equal(git(origin, 'show', 'child:c.txt'), 'c'); // its own work stays

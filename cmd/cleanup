@@ -26,7 +26,8 @@
 #                 commits newer than the PR's head), its branch is contained in a [[targets]] base (e.g. origin/main), or
 #                 its commits are all patch-equivalent on some origin/<[git] push_branch prefix>* branch. Never removed:
 #                 a locked worktree, one with uncommitted changes (untracked symlinks are fine), one touched in the last
-#                 2 hours (HEAD log), the main checkout, the one you run from, the [dev] cwd worktree, and names matching
+#                 2 hours (HEAD log), one whose branch is the base of an open PR (a stack's parent: it prints "kept: base of
+#                 #7", asked with `factory stack bases`), the main checkout, the one you run from, the [dev] cwd worktree, and names matching
 #                 [git] protected_worktrees (unless --include-night <name>). Unpushed commits whose newest is older than
 #                 7 days print "FLAG ... not removed": a worktree nobody pushed and nobody merged is the human's call. Removing one also removes the
 #                 <[disk] dd_root>/dd-* folders (keep list still wins) whose name contains its lane slug (name minus the
@@ -359,6 +360,14 @@ wt_merged() {
   fi
   return 1
 }
+# wt_open_bases <branch>: prints "#7, #9" (exit 0) when open PRs target the branch, so it is the base of a stack and must
+# stay; exit 1 when none does or `factory stack bases` could not tell (gh missing or offline: nothing is held back for it).
+wt_open_bases() {
+  local out
+  out="$("$FK_KIT_DIR/bin/factory" stack bases "$1" 2>/dev/null)" || return 1
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out" | paste -sd, - | sed 's/,/, /g'
+}
 if want worktrees; then
   header "worktrees"
   git fetch origin --quiet 2>/dev/null || true
@@ -423,6 +432,9 @@ if want worktrees; then
     if (( idle < 120 )); then echo "  KEPT  $name (in use: git touched it ${idle} min ago)"; continue; fi
     WT_NOTE=""
     if merged="$(wt_merged "$path" "$head" "$branch")"; then WT_NOTE=""; else WT_NOTE="$merged"; merged=""; fi
+    if [[ -n "$merged" && -n "$branch" ]] && bases="$(wt_open_bases "$branch")"; then
+      echo "  KEPT  $name (kept: base of $bases)"; continue
+    fi
     if [[ -n "$merged" ]]; then
       echo "  REMOVE $name  (branch ${branch:-detached}, $merged)"
       wt_linked "$name" "$branch"

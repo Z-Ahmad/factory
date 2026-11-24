@@ -31,6 +31,9 @@
 //      nobody bounds outlives the session and polls forever. A command passes when it names a deadline: `timeout` or
 //      `gtimeout`, `perl -e 'alarm …'`, `$SECONDS`, or `date +%s` (compared with a start time). The denial says how to
 //      add one. Off with [hook] background_wait_deadline = false.
+//   9. Bash: `git push <remote> --delete <branch>` (or -d, or the `:<branch>` refspec) while an open PR targets that branch.
+//      Deleting a base branch makes GitHub close the PR on top of it. Asked with `gh pr list --base <branch> --state open`;
+//      when gh is missing, offline or slow the push is allowed and a warning line on stderr says why (it fails open).
 //
 // The Bash command is tokenized by a small quote-aware shell scanner, so text inside a quoted string,
 // a heredoc or a comment is never mistaken for a command.
@@ -40,6 +43,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseToml } from '../cmd/config.mjs';
+import { openBasePrs } from '../lib/stack.mjs';
 
 class Deny extends Error {}
 const deny = (msg) => {
@@ -464,6 +468,7 @@ function checkPush(rest, dir, ctx) {
     if (o === '--all' || o === '--mirror')
       deny(`git push ${o} would push every branch, including those in [git] never_push (git.never_push = ${JSON.stringify(ctx.neverPush.map((g) => g.src))})`);
   }
+  checkBaseDeletes(pos, opts, dir, ctx);
   if (!ctx.neverPush.length) return;
   const key = `git.never_push = ${JSON.stringify(ctx.neverPush.map((g) => g.src))}`;
   const info = () => gitInfo(dir);
@@ -485,6 +490,32 @@ function checkPush(rest, dir, ctx) {
     if (!dst) continue;
     if (dst.includes('*')) deny(`pushing a wildcard refspec '${spec}' could update a protected branch (${key})`);
     if (anyGlob(ctx.neverPush, dst)) deny(`pushing to '${dst}' is blocked (${key})`);
+  }
+}
+
+/** Rule 9: no base branch is deleted while an open PR targets it. */
+function checkBaseDeletes(pos, opts, dir, ctx) {
+  const delFlag = opts.some((o) => o === '--delete' || (!o.startsWith('--') && /^-[^o]*d/.test(o)));
+  const doomed = [];
+  for (const spec of pos.slice(1)) {
+    if (delFlag) doomed.push(spec);
+    else if (spec.startsWith(':') && spec.length > 1) doomed.push(spec.slice(1));
+  }
+  if (!doomed.length) return;
+  if (ctx.github && !pushesToProject(gitInfo(dir), pos[0] ?? 'origin', ctx.github)) return; // another repository's remote
+  for (const spec of doomed) {
+    const branch = spec.replace(/^refs\/heads\//, '');
+    if (!branch || branch.includes('*') || spec.startsWith('refs/tags/')) continue;
+    const r = ctx.openBasePrs(branch, { repo: ctx.github ?? '', cwd: dir, timeoutS: 10 });
+    if (r.error) {
+      ctx.warn(`could not check whether an open PR targets '${branch}' (${r.error}); allowing the delete`);
+      continue;
+    }
+    if (r.prs.length)
+      deny(
+        `deleting '${branch}' is blocked: ${r.prs.map((p) => `#${p.number}`).join(', ')} still ${r.prs.length === 1 ? 'targets' : 'target'} it as its base, and GitHub closes a PR whose base branch is deleted (built-in rule: no base branch is deleted while an open PR targets it; no toml key). ` +
+          `Retarget first: after the owner merges the parent, \`factory stack land <merged-pr>\` retargets each child, pushes it and only then deletes the branch.`,
+      );
   }
 }
 
@@ -766,6 +797,8 @@ export function guardConfig(data, tomlPath) {
     allowMerge: data.loop?.allow_merge === true,
     neverMergeInto: globs(data.loop?.never_merge_into),
     resolveBase: ghPrBase,
+    openBasePrs,
+    warn: (m) => process.stderr.write(`factory hook-guard: ${m}\n`),
     slotGate: Boolean(data.slot || data.proof?.ios),
     weights: { ...DEFAULT_WEIGHTS, ...(data.slot?.weights ?? {}) },
     buildScripts: globs(data.hook?.build_scripts),

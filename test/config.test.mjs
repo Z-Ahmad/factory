@@ -172,6 +172,17 @@ test('a placeholder that needs an unset config key is an error', () => {
   assert.ok(r.errors.some((e) => /\{trip\} needs seed\.trip/.test(e.message)));
 });
 
+test('[stack] target and max_depth validate, reach the environment, and reject a bad depth', () => {
+  const ok = load(`${validText}\n[stack]\ntarget = "trunk"\nmax_depth = 2\n`);
+  assert.deepEqual(ok.errors, []);
+  assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_STACK_TARGET='trunk'$/m);
+  assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_STACK_MAX_DEPTH='2'$/m);
+  assert.deepEqual(load(`${validText}\n[stack]\n`).errors, []);
+  assert.equal(load(`${validText}\n[stack]\nmax_depth = 0\n`).errors[0].path, 'stack.max_depth');
+  assert.equal(load(`${validText}\n[stack]\ntarget = 1\n`).errors[0].path, 'stack.target');
+  assert.equal(load(`${validText}\n[stack]\nmax_deph = 3\n`).errors[0].path, 'stack.max_deph');
+});
+
 test('[slot] capacity, [slot.weights], max_swapouts_per_min and orphan_minutes, and [proof.tier], validate', () => {
   const text = `${validText}\n[slot]\ncapacity = 6\nmax_swapouts_per_min = 2000\norphan_minutes = 30\nmin_free_pct = 15\n\n[slot.weights]\nbuild = 3\nlint = 1\n\n[proof.tier]\nmotion = "default"\nvisual = "quick"\nlogic = "none"\n`;
   const r = load(text);

@@ -2,6 +2,34 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.28.0
+
+### Stacked PRs the kit keeps safe
+
+A stack of PRs went wrong four ways on the Seaglass repo (Nov 23 2026). After the parent squash-merged, the child showed
+conflicts in every file the parent touched (GitHub does not rebase the rest of a stack). Deleting the merged parent's
+branch while a child still targeted it made GitHub close the child. `gh stack link 683 684 686` chained siblings in
+series. And the daily housekeeping could delete a stack's base overnight. The kit now makes these safe, instead of an
+agent's memory.
+
+- **`factory stack new <parent-pr|branch>`**: cuts a worktree and branch for the child from the parent's head (through
+  `factory worktree`) and records the link in `<state_dir>/stacks.json`. Refuses past `[stack] max_depth` (default 3).
+  Prints the `gh pr create --base <parent-branch>` line. Never calls `gh stack`.
+- **`factory stack land <merged-pr>`**: after the owner merges, retargets each open child onto `[stack] target`, merges
+  the target in (in the child's worktree, or one made for it), settles a conflicted file with the child's side only
+  when `git diff --quiet <parent-head> origin/<target> -- <file>` shows the target holds the parent's final version
+  (else exit 3, merge left in progress, files listed), commits through the repo's hooks, pushes plainly, and deletes
+  the merged branch only after every child is through. `--dry-run`. Run it again after a failure.
+- **`factory stack status`**: each stack as a tree (number, title, state, base, mergeable, whether the base exists),
+  with warnings for a merged base that was not landed and for a gone base ("will be closed by GitHub" / "closed").
+- **No base branch is deleted while an open PR targets it.** hook-guard rule 9 denies `git push <remote> --delete
+  <branch>`, `-d` and `:<branch>` then (fails open, with a stderr warning, when `gh` cannot answer). `factory cleanup`
+  and the janitor housekeeping keep the worktree and branch of such a base and log `kept: base of #N`.
+- **`factory restack`** stays, as the after-the-fact sweep, but no longer skips a PR linked with `gh stack`: GitHub does
+  not restack those after a squash merge. The README says so.
+- **Config**: `[stack] target` (default `"main"`) and `max_depth` (default 3), in `config validate` and the README. An
+  `int` key can now carry a `min` in the schema (`max_depth` needs at least 1).
+
 ## v0.27.0
 
 ### One dev stack that follows main and can be switched to a PR
