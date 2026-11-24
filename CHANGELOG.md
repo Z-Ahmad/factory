@@ -2,6 +2,42 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.29.0
+
+### Low disk is caught early, everywhere
+
+On Nov 24 2026 an ordinary day of agent work took the user's Mac down to 4.5 GB free. The user: "I'd like to catch this
+earlier." The kit's disk guard (`[disk] min_gb`, `floor_gb`, `low_cleanup`) ran only inside `factory doctor`, before an
+overnight firing. A daytime agent, `factory run --job build|test|proof`, a phone install and a TestFlight build never
+passed through it, and the janitor looked at memory, swap and simulators, never disk. Each agent worktree leaves two iOS
+build folders of about 2.3 GB (`dd-<name>` and `dd-<name>-kit`), and about 35 GB piled up from one day's agents.
+
+- **The janitor checks disk on every pass** (the 5-minute launchd pass, the session-end pass, a pass by hand), enabled or
+  not, `--apply` or not. Under `[disk] min_gb` it runs the doctor's own low-disk sweep (`cleanup --apply --if-below`),
+  limited to the safe set: stale build folders (never one a live lease or running process uses), scratch in `/tmp` and
+  `$TMPDIR`, proof frames and clips. Never worktrees, simulators or archives. It posts a macOS notification with what it
+  freed and the space now. Still under `[disk] floor_gb` afterwards: a louder notification (with a sound) naming the five
+  biggest space users the kit knows about: build folders by worktree, the state dir's subfolders, simulators by name.
+  At most one notification per level per `[janitor] notify_every_min` (30). Every step is a line in `janitor.log`.
+  This is the one thing the janitor acts on by default; `[janitor] disk_act = false` makes it only warn.
+- **It works from launchd.** The scheduled pass runs from `~/.factory-kit/<ref>` against its config copy and never enters
+  the project folder: `cleanup --no-project` (new) allows only derived-data, tmp, frames and clips, and reads the keep
+  names it would have grepped from the project's scripts out of `<state_dir>/janitor/dd-keep.txt`, which every full
+  `cleanup --apply` writes. With `[disk] dd_keep_derive` set and no such record, derived-data is skipped, never guessed.
+  Free space is read with `df` on the `[disk] dd_root` volume (else the state dir, else `/`); a `dd_root` inside
+  `~/Documents` is logged as out of the scheduled pass's reach.
+- **`factory run` checks the disk before it admits** a `build`, `test`, `release`, `proof`, `device` or `archive` job
+  (not a nested one, not `--check`/`--wait`). Under `min_gb` it runs the same safe sweep first (at most 300 s); still
+  under `floor_gb`, it exits **74** without starting anything, saying the free space, the floor and the
+  `factory cleanup --apply` to run.
+- **A removed worktree takes its build folders.** `factory stack land` now deletes the landed worktree's `dd-<name>` and
+  `dd-<name>-kit` folders (new `cleanup --worktree-caches <name> [--branch <b>]`, the same naming rules cleanup's own
+  worktree removal uses; `dd_keep` still wins). `factory worktree` only creates worktrees, so it has nothing to remove.
+- **No build folder in use is ever removed**, by any cleanup route: a folder a live `factory run --dd` lease or a
+  running process names prints `KEPT ... (in use: ...)`, including when its worktree is going away or `--dd-all` is set.
+- Config: `[janitor] disk_act` (default true), `[janitor] notify_every_min` (default 30). Cleanup's `--if-below` now
+  measures the `dd_root` volume (else `/`).
+
 ## v0.28.1
 
 ### `factory stack status` stops showing old news

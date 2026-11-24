@@ -32,6 +32,10 @@ fk_port_state() {
 # fk_free_gb [path]: whole GB free on the volume holding path (default /).
 fk_free_gb() { df -k "${1:-/}" | awk 'NR==2 {printf "%d", $4/1048576}'; }
 
+# fk_disk_path [dd_root]: where free space is measured: the volume holding the build-cache root when it is a readable
+# folder, else /.
+fk_disk_path() { if [[ -n "${1:-}" && -d "$1" ]]; then printf '%s' "$1"; else printf '/'; fi; }
+
 # fk_load1: the 1-minute load average ("3.21"); nothing when it cannot be read.
 fk_load1() {
   local l

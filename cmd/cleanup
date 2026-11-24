@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # desc: list or remove build caches, frame dumps, proof videos, scratch files, old archives, spare simulators and merged agent worktrees
-# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|clips|archives|tmp]... [--frames-age <days>] [--include-night <name>] [--night N] [--dd-all] [--if-below <GB> [--floor <GB>]]
+# usage: factory cleanup [--apply] [--only derived-data|sims|worktrees|frames|clips|archives|tmp]... [--frames-age <days>] [--include-night <name>] [--night N] [--dd-all] [--if-below <GB> [--floor <GB>]] [--no-project]
+#        factory cleanup --apply --worktree-caches <worktree-name> [--branch <branch>]
 # Dry-run by default: prints what it WOULD remove with sizes and a total. --apply deletes.
-# --if-below <GB>: do nothing unless the free space on / is under that many GB (this is what disk-guard did). Below it,
+# --if-below <GB>: do nothing unless the free space is under that many GB, on the volume holding [disk] dd_root (else /)
+#                 (this is what disk-guard did; the janitor and `factory run` run the same sweep, see their notes). Below it,
 #                 with no --only, the [disk] low_cleanup categories run (default frames, tmp, sims, derived-data,
 #                 worktrees) with --frames-age 0, and the free space is printed again. --floor <GB> (with --apply):
 #                 exit 2 and say stop when it is still under that after the sweep.
@@ -47,6 +49,15 @@
 #                 [disk] tmp_dirs_globs (default *.ktrace *.trace instruments* XcodeDistPipeline.*): Instruments traces and
 #                 TestFlight upload scratch. Nothing else in those dirs is touched.
 #   archives      <[disk] archives.glob> in the main checkout + worktrees; keeps the [disk] archives.keep highest build numbers overall
+# --no-project: for a caller that may not read the project folder (the janitor under launchd: macOS privacy protection
+#                 keeps launchd agents out of ~/Documents). Only derived-data, tmp, frames and clips are allowed (anything
+#                 else exits 1); the main checkout is never entered and git never runs. The keep list's derived names, which
+#                 come from grepping project files, are read from <state_dir>/janitor/dd-keep.txt, written by every full
+#                 run; with [disk] dd_keep_derive set and no such file, derived-data is skipped (never guessed).
+# --worktree-caches <name> [--branch <b>]: remove only the derived-data folders of a worktree that is going away (the
+#                 same naming rules as the worktrees category below), what `factory stack land` calls after it removes one.
+# A derived-data folder a live lease (`factory run --dd`) or a running process names is never removed, however it was
+# chosen: it prints "KEPT ... (in use: ...)".
 # Bash 3.2 compatible (macOS /bin/bash). Sizes are `du -sk`. Exit 0, or 1 on a bad argument.
 set -euo pipefail
 . "${FK_KIT_DIR:?run this through bin/factory}/lib/sh/common.sh"
@@ -54,7 +65,7 @@ set -euo pipefail
 shopt -s extglob   # so [sim] ephemeral can say box-test-+([0-9])
 
 FRAMES_AGE="${FK_DISK_FRAMES_AGE_DAYS:-2}"
-APPLY=0 ONLY="" INCLUDE_NIGHT="" NIGHT="" DD_ALL=0 IF_BELOW="" FLOOR="" FRAMES_SET=0
+APPLY=0 ONLY="" INCLUDE_NIGHT="" NIGHT="" DD_ALL=0 IF_BELOW="" FLOOR="" FRAMES_SET=0 NO_PROJECT=0 WT_CACHES="" WT_BRANCH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=1; shift ;;
@@ -64,21 +75,34 @@ while [[ $# -gt 0 ]]; do
     --frames-age) FRAMES_SET=1; FRAMES_AGE="${2:?}"; [[ "$FRAMES_AGE" =~ ^[0-9]+$ ]] || { echo "--frames-age wants days (integer)" >&2; exit 1; }; shift 2 ;;
     --include-night) INCLUDE_NIGHT="${2:?}"; shift 2 ;;
     --dd-all) DD_ALL=1; shift ;;
+    --no-project) NO_PROJECT=1; shift ;;
+    --worktree-caches) WT_CACHES="${2:?}"; shift 2 ;;
+    --branch) WT_BRANCH="${2:?}"; shift 2 ;;
     --night) NIGHT="${2:?}"; [[ "$NIGHT" =~ ^[0-9]+$ ]] || { echo "--night wants a night number" >&2; exit 1; }; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
-HERE="$(git rev-parse --show-toplevel 2>/dev/null || true)"; [[ -z "$HERE" ]] || HERE="$(cd "$HERE" && pwd -P)"
-MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
-cd "$MAIN"
+if [[ -n "$WT_CACHES" ]]; then ONLY=" worktree-caches"; fi
+if [[ "$NO_PROJECT" == 1 ]]; then
+  for c in $ONLY; do
+    case "$c" in derived-data|tmp|frames|clips) ;; *) echo "--no-project allows only derived-data, tmp, frames and clips (got: $c)" >&2; exit 1 ;; esac
+  done
+  [[ -n "$ONLY" ]] || { echo "--no-project needs --only derived-data|tmp|frames|clips" >&2; exit 1; }
+  HERE="" MAIN="" TARGET_BASES=""
+  cd "${FK_PROJECT_STATE_DIR:-/}" 2>/dev/null || cd /
+else
+  HERE="$(git rev-parse --show-toplevel 2>/dev/null || true)"; [[ -z "$HERE" ]] || HERE="$(cd "$HERE" && pwd -P)"
+  MAIN="$(cd "${FK_PROJECT_MAIN_CHECKOUT:?}" && pwd -P)"
+  cd "$MAIN"
+fi
 DD_ROOT="${FK_DISK_DD_ROOT:-}"
 TMP_DIR="${FK_DISK_TMP_DIR:-/tmp}"
 CLIPS_MODE="${FK_DISK_CLIPS:-delete}"
 [[ "$CLIPS_MODE" == delete || "$CLIPS_MODE" == keep ]] || { echo "[disk] clips must be \"delete\" or \"keep\" (got: $CLIPS_MODE)" >&2; exit 1; }
 
 if [[ -n "$IF_BELOW" ]]; then
-  FREE_GB="$(fk_free_gb /)"
+  FREE_GB="$(fk_free_gb "$(fk_disk_path "$DD_ROOT")")"
   echo "factory-cleanup: ${FREE_GB} GB free on / (min ${IF_BELOW}${FLOOR:+, floor $FLOOR})"
   if (( FREE_GB >= IF_BELOW )); then exit 0; fi
   if [[ -z "$ONLY" ]]; then
@@ -119,11 +143,25 @@ dd_age_hours() {
   newest="$(find "$d" -exec "${STAT_M[@]}" {} + 2>/dev/null | sort -rn | head -n 1 || true)"
   if [[ "$newest" =~ ^[0-9]+$ ]]; then echo $(( ($(date +%s) - newest) / 3600 )); else echo "$DD_STALE_H"; fi
 }
-# dd_take <dir> <reason>: list (and, with --apply, remove) one derived-data dir once, counting it.
+# dd_used_why <dir>: prints what uses it and exits 0, or exits 1. A live `factory run --dd` lease or a running process
+# that names the folder (lib/disk.mjs dd-in-use, read once).
+DD_USED_LOADED=0 DD_USED=""
+dd_used_why() {
+  local why
+  if [[ "$DD_USED_LOADED" == 0 ]]; then
+    DD_USED_LOADED=1
+    if [[ -n "$DD_ROOT" ]]; then DD_USED="$(node "$FK_KIT_DIR/lib/disk.mjs" dd-in-use "$DD_ROOT" "${FK_PROJECT_STATE_DIR:-}" </dev/null 2>/dev/null || true)"; fi
+  fi
+  why="$(printf '%s\n' "$DD_USED" | awk -F'\t' -v d="$1" '$1 == d { print $2; exit }')"
+  [[ -n "$why" ]] && { echo "$why"; return 0; }
+  return 1
+}
+# dd_take <dir> <reason>: list (and, with --apply, remove) one derived-data dir once, counting it; one in use is kept.
 dd_take() {
-  local d="$1" size
+  local d="$1" size why
   [[ "$DD_SEEN" == *$'\n'"$d"$'\n'* ]] && return 0
   DD_SEEN="$DD_SEEN$d"$'\n'
+  if why="$(dd_used_why "$d")"; then echo "  KEPT  $d (in use: $why)"; DD_SKIPPED=$((DD_SKIPPED + 1)); return 0; fi
   size="$(kb "$d")"; DD_N=$((DD_N + 1)); DD_KB=$((DD_KB + size))
   remove_path "$d" "$2"
 }
@@ -171,8 +209,9 @@ if [[ "$APPLY" == 1 ]]; then echo "factory-cleanup: APPLY"; else echo "factory-c
 DD_RUNS=0 KEEP_LIST=" " KEEP_GLOBS_LIST=""
 if want derived-data && fk_is_darwin; then DD_RUNS=1; fi
 
+KEEP_SNAPSHOT="${FK_PROJECT_STATE_DIR:-/nonexistent}/janitor/dd-keep.txt" KEEP_UNKNOWN=0
 build_keep() {
-  local n g f m pat KEEP KEEP_GLOBS FILES
+  local n g f m pat KEEP KEEP_GLOBS FILES DERIVED
   KEEP=" " KEEP_GLOBS=""
   while IFS= read -r n; do
     [[ -n "$n" ]] || continue
@@ -182,11 +221,23 @@ build_keep() {
     esac
   done <<< "${FK_DISK_DD_KEEP:-}"
   # Names the project's scripts actually use: each pattern's match ends in the name (a dd- prefix is dropped).
-  FILES=()
-  while IFS= read -r g; do
-    [[ -n "$g" ]] || continue
-    while IFS= read -r f; do [[ -n "$f" ]] && FILES+=("$f"); done < <(glob_lines "$g")
-  done <<< "${FK_DISK_DD_KEEP_DERIVE:-}"
+  FILES=() DERIVED=""
+  if [[ "$NO_PROJECT" == 1 ]]; then
+    # the project's files are out of reach: the names an earlier full run recorded stand in for the grep
+    if [[ -f "$KEEP_SNAPSHOT" ]]; then
+      while IFS= read -r n; do
+        [[ -n "$n" ]] || continue
+        [[ "$KEEP" == *" $n "* ]] || KEEP="$KEEP$n "
+      done < "$KEEP_SNAPSHOT"
+    elif [[ -n "${FK_DISK_DD_KEEP_DERIVE:-}" ]]; then
+      KEEP_UNKNOWN=1
+    fi
+  else
+    while IFS= read -r g; do
+      [[ -n "$g" ]] || continue
+      while IFS= read -r f; do [[ -n "$f" ]] && FILES+=("$f"); done < <(glob_lines "$g")
+    done <<< "${FK_DISK_DD_KEEP_DERIVE:-}"
+  fi
   if [[ ${#FILES[@]} -gt 0 ]]; then
     while IFS= read -r pat; do
       [[ -n "$pat" ]] || continue
@@ -194,8 +245,13 @@ build_keep() {
         [[ -n "$m" ]] || continue
         n="${m##*[[:space:]]}"; n="${n#dd-}"
         [[ "$KEEP" == *" $n "* ]] || KEEP="$KEEP$n "
+        DERIVED="$DERIVED$n"$'\n'
       done < <(grep -hoE "$pat" "${FILES[@]}" 2>/dev/null || true)
     done <<< "${FK_DISK_DD_KEEP_PATTERNS:-}"
+    # record the derived names for a later --no-project run (best effort)
+    if [[ -n "${FK_PROJECT_STATE_DIR:-}" && "$APPLY" == 1 ]]; then
+      { mkdir -p "$(dirname "$KEEP_SNAPSHOT")" && printf '%s' "$DERIVED" | sort -u > "$KEEP_SNAPSHOT"; } 2>/dev/null || true
+    fi
   fi
   KEEP_LIST="$KEEP" KEEP_GLOBS_LIST="$KEEP_GLOBS"
   KEEP_BUILT=1
@@ -208,7 +264,9 @@ if want derived-data; then
   else
     build_keep; KEEP="$KEEP_LIST" KEEP_GLOBS="$KEEP_GLOBS_LIST"
     echo "  keep list (derived from scripts + base): $KEEP${KEEP_GLOBS:+ and ${KEEP_GLOBS//$'\n'/, }}"
-    if [[ -n "$DD_ROOT" && -d "$DD_ROOT" ]]; then
+    if [[ "$KEEP_UNKNOWN" == 1 ]]; then
+      echo "  skipped: [disk] dd_keep_derive names project files this run may not read, and no record of them exists yet (a full \`factory cleanup\` writes $KEEP_SNAPSHOT)"
+    elif [[ -n "$DD_ROOT" && -d "$DD_ROOT" ]]; then
       for d in "$DD_ROOT"/dd-*; do
         [[ -d "$d" ]] || continue
         n="${d##*/dd-}"
@@ -304,7 +362,7 @@ wt_linked() {
         dd_take "$d" "worktree gone: $name"
       done
     fi
-    if command -v xcrun >/dev/null 2>&1; then
+    if [[ "${WT_LINKED_SIMS:-1}" == 1 ]] && command -v xcrun >/dev/null 2>&1; then
       while IFS= read -r line; do
         [[ "$line" =~ $SIM_RE ]] || continue
         sname="${BASH_REMATCH[1]}"; udid="${BASH_REMATCH[2]}"; state="${BASH_REMATCH[3]}"
@@ -458,6 +516,14 @@ if want worktrees; then
   if [[ "$APPLY" == 1 ]]; then git worktree prune 2>/dev/null || true; fi
 fi
 
+# ---- 3b. the build folders of one worktree that is going away (`factory stack land`) ----
+if [[ -n "$WT_CACHES" ]]; then
+  header "worktree caches ($WT_CACHES)"
+  WT_LINKED_SIMS=0
+  wt_linked "$WT_CACHES" "$WT_BRANCH"
+  echo "derived-data: $DD_N build folder$([[ "$DD_N" == 1 ]] || echo s) of $WT_CACHES, $(fk_human "$DD_KB") $([[ "$APPLY" == 1 ]] && echo freed || echo reclaimable) ($DD_SKIPPED in use, left alone)"
+fi
+
 # ---- 4. frame dumps ----
 if want frames; then
   header "frames (older than $FRAMES_AGE days)"
@@ -579,7 +645,7 @@ fi
 echo
 echo "total $([[ "$APPLY" == 1 ]] && echo removed || echo reclaimable): $(fk_human "$TOTAL_KB") (derived-data, frames, clips, tmp, archives; sims and worktrees listed above)"
 if [[ -n "$IF_BELOW" && "$APPLY" == 1 ]]; then
-  FREE_GB="$(fk_free_gb /)"
+  FREE_GB="$(fk_free_gb "$(fk_disk_path "$DD_ROOT")")"
   echo "factory-cleanup: ${FREE_GB} GB free after cleanup"
   if [[ -n "$FLOOR" ]] && (( FREE_GB < FLOOR )); then echo "factory-cleanup: BELOW FLOOR (${FLOOR} GB), stop" >&2; exit 2; fi
 fi

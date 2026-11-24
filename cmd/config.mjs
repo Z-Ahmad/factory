@@ -584,8 +584,12 @@ export const SCHEMA = table({
   // like critical memory pressure, makes it shut down every booted simulator no live lease may own; tools = extra
   // tool names it may stop when orphaned: an executable name or glob ("test-runner", "xc*"), or text with a space that
   // the command line must contain ("npm run ios:test"); built in: xcodebuild, xctest, simctl io recordVideo, simctl spawn.
-  // Whether it acts or only logs is `factory janitor enable|disable`, not a key.
-  janitor: table({ orphan_minutes: int(), swap_pct: int(), tools: strs() }),
+  // Whether it acts or only logs is `factory janitor enable|disable`, not a key, with one exception: every pass checks free
+  // disk (the [disk] min_gb and floor_gb) and, below min_gb, runs the safe part of the low-disk cleanup (stale build
+  // folders, scratch, frames, clips) and posts a macOS notification, enabled or not. disk_act (default true) = false
+  // turns that action off (it still warns); notify_every_min (default 30) = the least gap between two notifications of one
+  // level (min, floor).
+  janitor: table({ orphan_minutes: int(), swap_pct: int(), tools: strs(), disk_act: bool(), notify_every_min: int({ min: 1 }) }),
   // `factory stack`: stacked PRs. target = the branch a stack lands on and a child is retargeted onto (default "main");
   // max_depth = the most PRs one stack may hold, counting the one on the target (default 3);
   // recent_days = how many days a merged or closed PR keeps its stack in `factory stack status` (default 7; 0 = open PRs only).

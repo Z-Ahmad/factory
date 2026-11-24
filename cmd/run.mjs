@@ -26,7 +26,7 @@
 // group. The command gets FK_RUN_LEASE (the lease id) and FK_SLOT_HELD=1, so a nested `factory run`, `factory slot wait`
 // or a proof's own slot wait does not queue again. Exit: the command's status (128 + n for signal n); 75 when the queue
 // wait passed --timeout ([slot] timeout_s, default 3600; 0 = no limit); 124 when the command ran past its time limit;
-// 1 on a usage error.
+// 74 when the disk is under [disk] floor_gb even after a safe cleanup (nothing was started); 1 on a usage error.
 // Time limit: once admitted, a job may run for its type's minutes ([slot.run_limits], merged over the defaults: test 30,
 // build 45, device 45, release 60, archive 60, proof 5; other types none) or --limit <min> (0 = none). Past it the whole
 // process group is stopped, the lease freed, and it says so: a hung xcodebuild must never hold room for hours.
@@ -43,6 +43,11 @@
 // leaves every new simulator alone. So when two jobs overlap, a simulator neither list holds stays booted (the janitor
 // sweeps it once idle). It prints each one it shuts down. Weight 0 jobs and nested runs do nothing. [slot]
 // shutdown_booted = false turns it off. Without xcrun it does nothing.
+// Disk: before a build, test, release, proof, device or archive job is queued (not a nested one, not --check or --wait),
+// the free space on the build-cache volume ([disk] dd_root, else the state dir, else /) is read. Under [disk] min_gb
+// (default 40) it first runs the doctor's safe sweep (stale build folders, scratch, frames, clips; never worktrees or
+// simulators; at most 300 s). Still under [disk] floor_gb (default 20) afterwards: exit 74, with the free space, the
+// floor and the `factory cleanup` command to run. Otherwise the job goes on to the queue.
 // Test hooks: FK_RUN_SWAP_PROBE_S (default 3) is how long a first swap-out sample is measured; FK_RUN_LOCK=mkdir forces
 // the lock-folder fallback.
 import { spawn, spawnSync } from 'node:child_process';
@@ -52,6 +57,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { load } from './config.mjs';
 import { bootedSims, shutdownSim } from '../lib/sims.mjs';
+import { DEFAULT_FLOOR_GB, DEFAULT_MIN_GB, diskPath, expandHome, freeGb, safeCleanup } from '../lib/disk.mjs';
 
 export const DEFAULT_WEIGHTS = {
   build: 2, test: 2, release: 2, device: 2, archive: 2,
@@ -88,6 +94,9 @@ export function settings(file = process.env.FACTORY_TOML) {
     shutdownBooted: slot.shutdown_booted !== false,
     pollS: slot.poll_s ?? 5,
     timeoutS: slot.timeout_s ?? 3600,
+    minGb: r.resolved.disk?.min_gb ?? DEFAULT_MIN_GB,
+    floorGb: r.resolved.disk?.floor_gb ?? DEFAULT_FLOOR_GB,
+    ddRoot: r.resolved.disk?.dd_root ?? null,
     runLimits: { ...DEFAULT_RUN_LIMITS, ...(slot.run_limits ?? {}) },
   };
 }
@@ -528,6 +537,28 @@ function weightOf(cfg, job) {
   return Math.min(Math.max(0, w), cfg.capacity);
 }
 
+/** The job types that build or test something big enough to fill the disk. */
+export const DISK_JOBS = new Set(['build', 'test', 'release', 'proof', 'device', 'archive']);
+export const EXIT_DISK = 74;
+
+/**
+ * 0 to go on, or EXIT_DISK with the reason said on stderr. Under min_gb it sweeps first (bounded by the sweep's own
+ * deadline); under floor_gb after that it refuses. A disk it cannot read never blocks a job.
+ */
+export function diskGate(cfg, job, { env = process.env, deps = { freeGb, cleanup: safeCleanup } } = {}) {
+  if (!DISK_JOBS.has(job) || env.FK_RUN_LEASE) return 0;
+  const path = diskPath({ ddRoot: expandHome(cfg.ddRoot), stateDir: cfg.stateDir });
+  let free = deps.freeGb(path);
+  if (free == null || free >= cfg.minGb) return 0;
+  say(`disk: ${free} GB free (min ${cfg.minGb}); cleaning stale build folders and scratch first`);
+  const r = deps.cleanup({ minGb: cfg.minGb, env });
+  free = deps.freeGb(path) ?? free;
+  say(`disk: ${r.ok ? `freed ${r.freed ?? 'nothing'}` : r.timedOut ? 'cleanup stopped at its deadline' : `cleanup failed (exit ${r.status})`}; ${free} GB free now`);
+  if (free >= cfg.floorGb) return 0;
+  process.stderr.write(`factory run: not starting the ${job} job: ${free} GB free is under the ${cfg.floorGb} GB floor ([disk] floor_gb), even after cleaning. Run \`factory cleanup --apply\` (add \`--only worktrees\` to drop merged agent worktrees), free some space, then run it again.\n`);
+  return EXIT_DISK;
+}
+
 async function runJob(cfg, o) {
   const weight = weightOf(cfg, o.job);
   const nested = process.env.FK_RUN_LEASE;
@@ -728,6 +759,8 @@ async function main(argv) {
     return waitFree(cfg, o.job, cfg.timeoutS);
   }
   if (!o.cmd.length) die(`no command after --\n${USAGE}`);
+  const full = diskGate(cfg, o.job);
+  if (full) return full;
   await runJob(cfg, o);
   return null; // the job's exit handler ends the process
 }
