@@ -586,6 +586,9 @@ export const SCHEMA = table({
   // the command line must contain ("npm run ios:test"); built in: xcodebuild, xctest, simctl io recordVideo, simctl spawn.
   // Whether it acts or only logs is `factory janitor enable|disable`, not a key.
   janitor: table({ orphan_minutes: int(), swap_pct: int(), tools: strs() }),
+  // `factory stack`: stacked PRs. target = the branch a stack lands on and a child is retargeted onto (default "main");
+  // max_depth = the most PRs one stack may hold, counting the one on the target (default 3).
+  stack: table({ target: str(), max_depth: int({ min: 1 }) }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),
@@ -664,6 +667,7 @@ function checkNode(spec, value, path, report) {
     case 'bool':
       if (!isScalarOk(spec.t, value))
         report(here, `expected ${spec.t}, got ${typeName(value)} (${preview(value)})`);
+      else if (spec.t === 'int' && spec.min !== undefined && value < spec.min) report(here, `must be at least ${spec.min}, got ${value}`);
       return;
     case 'string|string[]':
       if (typeof value === 'string') return;

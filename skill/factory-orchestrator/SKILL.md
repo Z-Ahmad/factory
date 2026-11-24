@@ -146,7 +146,11 @@ the earlier attempt measured.
 3. Commit: imperative subject, the body says why, then `git.commit_trailer` and any session line the harness asks for.
 4. `git push origin HEAD:<push branch>`. Never a `git.never_push` branch, never a force push (the hook denies both).
 5. Open the item's PR to its target `pr_base`; the body says what shipped, where the proof evidence is and what the
-   human should check. A PR stacked on a parent that merges is retargeted later by `factory restack` (§10).
+   human should check. A PR stacked on a parent is cut with `factory stack new <parent-pr|branch>` (a real dependency only, at most
+   `[stack] max_depth` deep; never `gh stack`), opened with `gh pr create --base <parent-branch>`, and brought onto the
+   target by `factory stack land <merged-pr>` after the owner merges the parent (§10). GitHub does not rebase the rest
+   of a stack after a squash merge: the child shows conflicts in every file the parent touched until `land` has run.
+   Never delete a branch an open PR targets (the hook denies it, and GitHub would close the PR).
 6. **Tracker** (`loop.linear`): one comment on the item's issue (what shipped, the shots dir, what needs the device).
    If behaviour diverged from the issue, rewrite its body the same turn. Move it to `on_ship`. Don't skip this step.
 7. Never merge unless `allow_merge` is true or the human asks (the hook denies `gh pr merge`), and never into a `never_merge_into` base.
@@ -173,9 +177,12 @@ fresh one per call, and one long agent can spend the account's limit for every l
 
 1. Nothing mid-flight: no running subagents; every shipped item committed and pushed. Never leave uncommitted work in
    a worktree: ship it, or save it as `<state_dir>/patches/<id>.patch` and say so.
-2. `factory restack` (dry run, then `--apply`): any open PR whose base branch merged or was deleted is retargeted onto
-   the target, gets the target merged in and is pushed (plain push, never forced). A PR in a GitHub stack is left to GitHub.
-   A conflict it reports is a human's.
+2. `factory stack status`: every stack as a tree. A `WARN` that a base is merged means the owner merged a parent:
+   `factory stack land <pr>` (it retargets each child onto the target, merges the target in, takes the child's side only
+   where the target holds the parent's final version of the file, pushes plainly, and only then deletes the merged
+   branch; exit 3 = a conflict a person must resolve, left in progress in the worktree it names). Subagents may run
+   `land`; nobody deletes the branch any other way. `factory restack` (dry run, then `--apply`) is the after-the-fact
+   sweep for PRs whose base is already gone; a conflict it reports is a human's.
 3. `factory cleanup` (**dry run first**), read it, then `--apply`. It frees, so you never do it by hand:
    - **Agent worktrees** on a `git.agent_branches` pattern whose PR merged (or whose branch is in a target), with their
      `disk.dd_root` builds and `sim.ephemeral` sims. A locked, dirty, protected or just-touched worktree stays; a `FLAG`
@@ -234,5 +241,5 @@ hook; show the human the diff or the command and ask.
 | proofs | `factory proof` · `proof --cells <matrix>` · `proof-compare` (base vs patch at one load) · `proof-verdict <mp4>` · `clip-frames` |
 | builds, stopped agents | `factory run --job <type> -- <cmd>` for every build, test or proof (it queues for a weighted lease and waits inside; hook-guard denies a raw build; `factory run --status` shows leases and gates) · `factory sims idle --shutdown` · `proof --cells <matrix> --rerun-failed <prev out>` re-runs only the failed cells |
 | the dev stack | `factory dev up\|status\|restart\|switch <pr\|branch\|main>\|read-api` (`switch` points the one stack at the branch under review, yours alone; `up` and `restart` follow origin/main otherwise; `read-api up` / `down` stops only its own process) |
-| upkeep | `factory cleanup [--only <category>] [--if-below <GB>] [--apply]` · `factory restack [--apply]` |
+| upkeep | `factory cleanup [--only <category>] [--if-below <GB>] [--apply]` · `factory stack new\|land\|status` · `factory restack [--apply]` |
 | setup | `factory install-skill [--uninstall]` · `factory hook-guard` (PreToolUse) · `factory config get <key>` |

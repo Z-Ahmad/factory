@@ -376,6 +376,10 @@ export function housekeeping(cfg, { apply = false, log = () => {}, now = Date.no
       log({ what: `${apply ? 'removed' : 'would remove'} ${m[1]}`, why: 'factory cleanup (merged worktree, stale build or old scratch)' });
     }
   }
+  for (const line of r.stdout.split('\n')) {
+    const m = /^\s*KEPT\s+(\S+)\s+\((kept: base of [^)]*)\)/.exec(line);
+    if (m) log({ what: `kept ${m[1]}`, why: m[2] });
+  }
   for (const summary of [/^derived-data: [^\n]*/m.exec(r.stdout)?.[0], /^total (?:reclaimable|removed)[^\n]*/m.exec(r.stdout)?.[0]]) {
     if (summary) log({ what: 'housekeeping', why: summary });
   }

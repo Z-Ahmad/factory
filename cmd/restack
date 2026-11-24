@@ -5,7 +5,11 @@
 # (`gh pr list --state merged --head <base>`): `gh pr edit <n> --base <target>`, then, in a temporary worktree, merge
 # origin/<target> into the PR's head, show `git diff origin/<target>...HEAD --stat`, and push with a plain `git push`
 # (never forced: a squash-merged parent leaves the child's own commits on top, so a merge needs no rewrite).
-# A PR that is part of a GitHub stack (the stack field of the PR) is skipped: GitHub rebases those itself.
+# A PR linked with `gh stack` is treated like any other: GitHub does not rebase the rest of a stack after a squash merge
+# (the child shows conflicts in every file the parent touched), so it is retargeted and merged here too.
+# This is the after-the-fact sweep. Right after the owner merges a PR, `factory stack land <pr>` is the safer path: it also
+# resolves the conflicts a squash merge causes (only where the target holds the parent's final version of the file),
+# and deletes the merged branch only once every child is retargeted and pushed.
 # The target is --target, else the default [[targets]] pr_base. Dry run by default (--dry-run says so out loud); --apply acts.
 # --pr <n> limits it to those PRs. A merge that conflicts is aborted and reported, the PR left retargeted for a human.
 # Exit 0, or 1 when any PR needs a human (conflict, failed push, failed retarget), 2 on a bad argument or no gh.
@@ -35,20 +39,11 @@ fi
 [[ -n "$TARGET" ]] || { echo "factory-restack: no target (pass --target, or mark a [[targets]] default with pr_base)" >&2; exit 2; }
 
 GH=(gh); [[ -z "${FK_GIT_GITHUB:-}" ]] || GH=(gh -R "$FK_GIT_GITHUB")
-REPO="${FK_GIT_GITHUB:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)}"
 
 if [[ "$APPLY" == 1 ]]; then echo "factory-restack: APPLY (onto $TARGET)"; else echo "factory-restack: dry run onto $TARGET (pass --apply to act)"; fi
 git fetch --prune origin --quiet 2>/dev/null || true
 
-in_stack() { # in_stack <pr>: exit 0 when the PR belongs to a GitHub stack
-  [[ "$REPO" == */* ]] || return 1
-  local out
-  out="$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){stack{id}}}}' \
-    -f o="${REPO%%/*}" -f r="${REPO#*/}" -F n="$1" --jq '.data.repository.pullRequest.stack.id // empty' 2>/dev/null || true)"
-  [[ -n "$out" ]]
-}
-
-N_DONE=0 N_STACK=0 N_HUMAN=0 N_SEEN=0
+N_DONE=0 N_HUMAN=0 N_SEEN=0
 LIST="$("${GH[@]}" pr list --state open --limit 200 --json number,headRefName,baseRefName \
   --jq '.[] | "\(.number)\t\(.headRefName)\t\(.baseRefName)"')"
 while IFS=$'\t' read -r num head base; do
@@ -60,10 +55,6 @@ while IFS=$'\t' read -r num head base; do
   fi
   [[ -n "$why" ]] || continue
   N_SEEN=$((N_SEEN + 1))
-  if in_stack "$num"; then
-    echo "  SKIP  #$num $head: part of a GitHub stack (base $base $why); GitHub restacks it"
-    N_STACK=$((N_STACK + 1)); continue
-  fi
   if [[ "$APPLY" != 1 ]]; then
     echo "  WOULD #$num $head: base $base is $why -> retarget onto $TARGET, merge origin/$TARGET into $head, push"
     continue
@@ -87,5 +78,5 @@ while IFS=$'\t' read -r num head base; do
   cleanup_tmp
 done <<< "$LIST"
 
-echo "factory-restack: $N_SEEN PR$([[ "$N_SEEN" == 1 ]] || echo s) with a merged or deleted base; $N_DONE restacked, $N_STACK in a GitHub stack, $N_HUMAN need a human"
+echo "factory-restack: $N_SEEN PR$([[ "$N_SEEN" == 1 ]] || echo s) with a merged or deleted base; $N_DONE restacked, $N_HUMAN need a human"
 [[ "$N_HUMAN" == 0 ]]

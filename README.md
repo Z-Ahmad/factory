@@ -10,7 +10,7 @@
 
 This repo is the reusable part: the bookkeeping, the environment upkeep, and the proof checks. Your project describes itself in one config file, `factory.toml`; the kit holds no project-specific values.
 
-> **Status: v0.22 (unreleased), early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, machine upkeep (`doctor`, `cleanup`, `restack`, `dev`, `worktree`, `sims`, `slot`), video proofs (`proof`, `proof-compare`, `proof-verdict`, `clip-frames`; iOS Simulator today), a safety hook (`hook-guard`), and the orchestrator itself: a Claude Code skill (`install-skill`).
+> **Status: v0.22 (unreleased), early.** It is being extracted from one real app (a SwiftUI iPhone app with a web sibling), one command at a time. Available today: the config reader, machine upkeep (`doctor`, `cleanup`, `stack`, `restack`, `dev`, `worktree`, `sims`, `slot`), video proofs (`proof`, `proof-compare`, `proof-verdict`, `clip-frames`; iOS Simulator today), a safety hook (`hook-guard`), and the orchestrator itself: a Claude Code skill (`install-skill`).
 
 ## Why it exists
 
@@ -82,7 +82,7 @@ A **matrix** runs the same scenario where defects usually hide: light and dark t
 MATRIX: FAIL (2/3 cells)
 ```
 
-**4. Morning.** `factory cleanup` takes back the night's disk (proof videos, merged agent worktrees, build caches), and `factory restack` retargets any PR whose parent was merged. You review the PRs and the proofs' verdict lines.
+**4. Morning.** `factory cleanup` takes back the night's disk (proof videos, merged agent worktrees, build caches), and `factory stack land` (after you merge a parent) brings its child PRs onto main; `factory restack` sweeps up any PR whose parent is already gone. You review the PRs and the proofs' verdict lines.
 
 ## Getting started
 
@@ -155,11 +155,12 @@ scripts/factory install-skill          # links skill/factory-orchestrator into ~
 | `factory config get <key>` | ✓ | Prints one value, e.g. `factory config get git.github` |
 | `factory config env --sh` | ✓ | Prints every value as `FK_*` shell exports |
 | `factory cleanup` | ✓ | Lists what can be freed: **stale derived data** (build folders nobody has written to for `[disk] dd_stale_hours`, in `dd_root` and `dd_roots_extra`), old proof frames, **proof videos (`clips`)**, temp files (in `/tmp` and in `$TMPDIR`), extra archives, throwaway simulators, and **merged agent worktrees** (any worktree on a `[git] agent_branches` glob whose PR merged, or whose branch is in a target; never a locked, dirty, protected or just-touched one; unpushed commits older than 7 days are flagged, not removed). Deletes only with `--apply`. `--only <category>`, `--frames-age N`, `--include-night <name>`, `--night N` (limits `clips` to one night), `--if-below <GB> [--floor <GB>]` (sweep only when free disk is under that: what `disk-guard` did). See [`[disk]` and `[sim]`: what cleanup frees](#disk-and-sim-what-cleanup-frees) |
-| `factory restack` | ✓ | For each open PR whose base branch was merged or deleted: `gh pr edit --base <target>`, then in a temporary worktree merge `origin/<target>` into its head, show the diff stat and push with a plain `git push` (never forced). A PR in a GitHub stack (`gh stack`) is skipped: GitHub restacks it. Dry run by default; `--apply` acts; `--target <branch>`, `--pr <n>` |
+| `factory restack` | ✓ | The after-the-fact sweep, for PRs whose base branch is already merged or deleted: `gh pr edit --base <target>`, then in a temporary worktree merge `origin/<target>` into the head, show the diff stat and push with a plain `git push` (never forced). A PR linked with `gh stack` is treated like any other: GitHub does not rebase the rest of a stack after a squash merge. A conflict is aborted and left for a person. Dry run by default; `--apply` acts; `--target <branch>`, `--pr <n>`. Right after a merge, prefer [`factory stack land`](#stacked-prs), which also resolves the conflicts a squash merge causes. It stays a separate command because it needs no recorded stack and no PR number |
+| `factory stack new\|land\|status` | ✓ | Stacked PRs. `new <parent-pr\|branch>` cuts a child worktree and branch from the parent's head and records the link in `<state_dir>/stacks.json`; `land <merged-pr>` retargets each child onto `[stack] target`, merges the target in, pushes, and only then deletes the merged branch; `status` draws each stack as a tree and warns about a base that is merged or gone. `--dry-run` on `new` and `land`. See [Stacked PRs](#stacked-prs) |
 | `factory dev up\|status\|restart\|read-api` | ✓ | The dev stack. `up` starts `[dev] up` in the background if its ports are down, then resets the test data (nothing to do when it is up). `status`: one line per dev port, up, down, or (with `[dev] probe = "http"`) hung, a port that accepts connections but never answers; exit 1 if a required port is down or hung. `restart` stops it (TERM to each listener's process group on `[dev] all_ports`, KILL after `stop_s`) and runs `up` again, for a wedged emulator; `--dry-run`, `--no-seed`. `switch <ref>` points the one stack at a PR (`123` or `#123`), a branch, or `main`: it fetches, resolves the ref to a commit (a PR's head through `gh pr view`, a branch as `origin/<branch>`), refuses when the dev worktree has uncommitted tracked changes (untracked build output is fine), records the ref in `<state_dir>/dev.ref`, then restarts: the worktree moves to the commit (detached), `[dev] prep` runs, the stack starts; `--dry-run`, `--no-seed`. `restart` and `switch` are the main session's: hook-guard denies them from a subagent unless `[dev] restart_by = "anyone"`. `up` and `restart` fetch first: a stack following main (nothing switched, or `switch main`) is fast-forwarded to `origin/main` and prepped before it starts; a switched stack stays on its PR or branch and moves to its latest pushed commit, with one line saying which ref it is on. `up` on a stack that is already up moves nothing under it; it says how far behind it is. `status` also prints the ref, its short sha and subject, and how far behind `origin/<follow>` it is (as of the last fetch; following main and behind, it says so and names `factory dev restart`). `read-api up\|down` runs a second API server on its own port (`[dev] read_api`) and stops only the one it started. The old names (`dev-up`, `dev-status`, `dev-restart`, `read-api`) still work and print a deprecation line |
 | `factory worktree <name>` | ✓ | Makes an isolated git worktree for a night or an agent. Shares installed dependencies and caches from the main checkout through symlinks, but makes npm workspace links and derived build outputs match the worktree's own branch, so a worker never borrows the main checkout's. See [`[worktree]`](#worktree-sharing-from-the-main-checkout) |
 | `factory doctor` | ✓ | Start of every firing: prune stale derived data (`[disk] dd_auto`); **disk** (`cleanup --apply --if-below [disk] min_gb --floor floor_gb`: exit 2 when space is still under the floor); a **git check** (exit 5 when a checkout is no longer a working tree, e.g. `core.bare = true` set by a stray `git init`); an **Xcode check** (exit 4 when Xcode can't build for the simulator); **keep-awake** (one night-long `caffeinate`); the **dev-stack worktree** (`[dev] cwd`) is flagged when its branch is gone on origin or it is behind its target, and a tool the dev command needs but `node_modules/.bin` and PATH lack fails with exit 7 while the stack is down (it would never come up); then `dev up`, then a test-data reset. One summary line; it names the step that failed. `preflight` still works as an alias. See [`[preflight]`](#preflight-xcode-and-keep-awake) |
-| `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify` (pushes to `never_push` only toward the `[git] github` repository when it is set), `gh pr merge` (or, with `allow_merge`, merges into a `[loop] never_merge_into` base, again only in the `[git] github` repository when it is set), and starting or killing the dev stack outside `factory dev up` / `dev restart` / `dev switch` (the last two only from the main session). Silent when allowed (~45 ms), and it fails open on its own errors |
+| `factory hook-guard` | ✓ | A Claude Code `PreToolUse` hook. It blocks what `factory.toml` forbids: edits to `[never_touch]` files, running `never_run_in_worktree` scripts from a worktree, pushes to `never_push` branches, force pushes, `--no-verify` (pushes to `never_push` only toward the `[git] github` repository when it is set), `gh pr merge` (or, with `allow_merge`, merges into a `[loop] never_merge_into` base, again only in the `[git] github` repository when it is set), a branch delete (`git push <remote> --delete <branch>`, `-d`, or `:<branch>`) while an open PR targets that branch (checked with `gh pr list --base <branch> --state open`; it fails open, with a warning on stderr, when `gh` cannot answer), and starting or killing the dev stack outside `factory dev up` / `dev restart` / `dev switch` (the last two only from the main session). Silent when allowed (~45 ms), and it fails open on its own errors |
 | `factory install-skill` | ✓ | Links the `factory-orchestrator` skill into `~/.claude/skills`, so Claude Code loads the loop. `--dry-run`, `--uninstall` |
 | `factory help` | ✓ | Lists the commands |
 | `factory proof <scenario>` | ✓ | Installs the app on an iOS Simulator, runs a self-driving test scenario, records it, and prints a `VERDICT` line. Writes the clip, a contact sheet, rest frames, `verdict.json`, and `flags.png` when something is flagged. Exit 4 on FAIL (`--no-gate` to record only). `--orientation landscape` turns the simulator first and back after (see [orientation](#proof-orientation-builder-slots-and-same-load-compares)); `verdict.json` records the load at the start and end of the clip |
@@ -173,6 +174,40 @@ scripts/factory install-skill          # links skill/factory-orchestrator into ~
 | `factory clip-frames <clip.mp4> …` | ✓ | Grabs frames or contact sheets from a simulator recording without seeking (seeking those files returns stale frames) |
 
 `factory` finds `factory.toml` by walking up from the current directory, then in the main git checkout, so it works from any worktree. Use `FACTORY_TOML=<path>` to name one explicitly.
+
+## Stacked PRs
+
+A stack is a child PR whose base is its parent's branch. Use one only for a real dependency, and not deeper than `[stack] max_depth` (default 3). The owner merges bottom-up with squash merges; the kit never merges and never calls `gh stack`.
+
+**GitHub does not rebase the rest of a stack after a squash merge.** The squash puts one new commit on the target, while the child still carries the parent's original commits, so the child shows conflicts in every file the parent touched. Retargeting it onto the target is not enough either: the child needs the target merged in, and each of those conflicts is only safe to settle with the child's version when the target holds exactly the parent's final version of the file. `factory stack land` does that, and checks it.
+
+```
+factory stack new <parent>      # 1. cut the child: a worktree and branch from the parent's head, recorded in <state_dir>/stacks.json
+gh pr create --base <parent-branch>   # 2. open the child PR against the parent's branch (the line `new` prints)
+                                # 3. the owner merges the parent on GitHub (squash)
+factory stack land <parent-pr>  # 4. retarget, merge the target in, push, then delete the merged branch
+factory stack status            # 5. check: every stack as a tree
+```
+
+| Command | What it does |
+|---|---|
+| `factory stack new <parent-pr\|parent-branch> [--name <n>] [--dry-run]` | `<parent>` is a PR number or a branch. Cuts a worktree and branch for the child from the parent's head (`factory worktree <name> --base origin/<parent-branch>`, so caches and derived builds are shared as usual) and records the link: child branch, parent PR number and branch, the parent's head sha at the cut. Refuses past `[stack] max_depth`, and a parent that is merged or closed. Prints the `gh pr create --base <parent-branch>` line |
+| `factory stack land <merged-pr> [--dry-run]` | Run after the owner merges. Reads the PR (`gh pr view`) and refuses unless it is merged. For each open PR whose base is its head branch: `gh pr edit --base <target>`; in the child's worktree (or one made for it) `git merge --no-edit origin/<target>`; for each conflicted file, take the child's side only if `git diff --quiet <parent-head> origin/<target> -- <file>` says the target holds the parent's final version, else stop with **exit 3**, naming the files and leaving the merge in progress; commit through the repo's own hooks (never `--no-verify`); plain `git push`; record that the child's parent is now the target. Only when every child is retargeted and pushed does it delete the merged PR's remote branch, local branch and worktree (and it asks GitHub once more whether any open PR still targets the branch). A failure or a conflict deletes nothing; fix it and run `land` again, which picks the children up again. `--dry-run` prints the plan. Subagents may run it |
+| `factory stack status` | Each stack as a tree: PR number, title, state, base, mergeable, and whether the base branch still exists. Warns when a base is merged but its child was not landed, and when a base branch is gone: "GitHub will close #N", or "closed" if it already has |
+
+Siblings are two `new` calls on the same parent. The base branch is the link: nothing else is needed, and `gh stack link <a> <b> <c>` chains the PRs it is given in series (a, then b on a, then c on b), which is wrong for siblings.
+
+Exit codes: 0 done; 1 a failure (not merged, `gh` or `git` failed, a push was refused); 2 a bad argument or no `gh`; 3 a conflict a person must resolve.
+
+**No base branch is deleted while an open PR targets it.** Deleting the merged parent's branch while a child still targets it makes GitHub close the child. Three places hold this line: hook-guard denies `git push <remote> --delete <branch>` (and `-d`, and `:<branch>`) when `gh pr list --base <branch> --state open` is not empty (when `gh` is missing or offline it allows the push and warns on stderr); `factory cleanup`, and so the janitor's daily housekeeping, never removes the worktree or branch of a base of an open PR, and prints `kept: base of #N`; and `land` deletes the merged branch only through its own check, after every child is pushed.
+
+```toml
+[stack]
+target    = "main"   # where a stack lands, and what a child is retargeted onto
+max_depth = 3        # the most PRs one stack may hold, counting the one on the target
+```
+
+`<state_dir>/stacks.json` is the kit's own record (`links`: child, worktree, parentPr, parentBranch, parentHead, createdAt; after a landing the child's parent is the target, with `landedFrom`). Tunables: `FK_STACK_NET_TIMEOUT_S` (default 120: every fetch and push) and `FK_STACK_GH_TIMEOUT_S` (default 20: every `gh` call).
 
 ## `factory.toml` reference
 
@@ -194,6 +229,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
+| `[stack]` | no | Stacked PRs: `target` (default `"main"`), the branch a stack lands on and a child is retargeted onto; `max_depth` (default 3), the most PRs one stack may hold, counting the one on the target. See [Stacked PRs](#stacked-prs) |
 | `[slot]` | no | `factory run`'s capacity, job weights and gates |
 | `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch) |
 
