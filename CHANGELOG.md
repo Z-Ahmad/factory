@@ -6,7 +6,7 @@ Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `fa
 
 ### Low disk is caught early, everywhere
 
-On Nov 24 2026 an ordinary day of agent work took the owner's Mac down to 4.5 GB free. The owner: "I'd like to catch this
+On Nov 24 2026 an ordinary day of agent work took the user's Mac down to 4.5 GB free. The user: "I'd like to catch this
 earlier." The kit's disk guard (`[disk] min_gb`, `floor_gb`, `low_cleanup`) ran only inside `factory doctor`, before an
 overnight firing. A daytime agent, `factory run --job build|test|proof`, a phone install and a TestFlight build never
 passed through it, and the janitor looked at memory, swap and simulators, never disk. Each agent worktree leaves two iOS
@@ -37,6 +37,15 @@ build folders of about 2.3 GB (`dd-<name>` and `dd-<name>-kit`), and about 35 GB
   running process names prints `KEPT ... (in use: ...)`, including when its worktree is going away or `--dd-all` is set.
 - Config: `[janitor] disk_act` (default true), `[janitor] notify_every_min` (default 30). Cleanup's `--if-below` now
   measures the `dd_root` volume (else `/`).
+
+## v0.28.1
+
+### `factory stack status` stops showing old news
+
+Run against a real repo, `status` drew trees and printed WARN lines for PRs closed months ago on purpose. It now shows
+only stacks with an open PR, or a PR merged or closed within `[stack] recent_days` (new, default 7, min 0). It warns only
+for an open PR whose base branch is gone or merged, and for a PR closed within the window whose base is gone (GitHub
+just closed it). `factory stack status --all` shows everything, as before. `land`, `new` and `bases` are unchanged.
 
 ## v0.28.0
 

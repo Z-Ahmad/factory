@@ -2,7 +2,7 @@
 // desc: stacked PRs: cut a child from a parent PR (new), retarget and push the children after the parent merges (land), show the stacks (status)
 // usage: factory stack new <parent-pr|parent-branch> [--name <name>] [--dry-run]
 //        factory stack land <merged-pr> [--dry-run]
-//        factory stack status
+//        factory stack status [--all]
 //        factory stack bases <branch>      (plumbing for cleanup: the open PRs that target <branch>)
 //
 // A stack is a child PR whose base is its parent's branch. The owner merges bottom-up with squash merges, so the
@@ -20,7 +20,10 @@
 //           worktree (and its derived-data folders: `cleanup --worktree-caches`). --dry-run prints the plan. Run it again after fixing a failure: it picks the children up again.
 //   status  each stack as a tree: PR number, title, state, base, mergeable, and whether the base branch still exists;
 //           warns when a base is merged but the child was not landed, and when a base is gone (GitHub closes the child).
-// [stack] target (default "main") is where a stack lands; max_depth (default 3) the most PRs one stack holds.
+//           Only stacks with an open PR, or a PR merged or closed within [stack] recent_days, are shown, and only these warn:
+//           an open PR whose base is gone or merged, and a PR closed within the window whose base is gone. --all shows everything.
+// [stack] target (default "main") is where a stack lands; max_depth (default 3) the most PRs one stack holds;
+// recent_days (default 7) how long a merged or closed PR keeps its stack in `status`.
 // Exit 0; 1 on a failure (not merged, gh or git failed, a push was refused); 2 on a bad argument or no gh; 3 when a child
 // has a conflict a person must resolve (the merge is left in progress in the worktree it names).
 import { spawnSync } from 'node:child_process';
@@ -35,6 +38,8 @@ const MAIN = env.FK_PROJECT_MAIN_CHECKOUT ? realpathSync(env.FK_PROJECT_MAIN_CHE
 const STATE = env.FK_PROJECT_STATE_DIR || join(MAIN, '.factory');
 const TARGET = env.FK_STACK_TARGET || 'main';
 const MAX_DEPTH = Number(env.FK_STACK_MAX_DEPTH) || 3;
+const RECENT_DAYS = env.FK_STACK_RECENT_DAYS !== undefined && env.FK_STACK_RECENT_DAYS !== '' && Number.isFinite(Number(env.FK_STACK_RECENT_DAYS)) ? Number(env.FK_STACK_RECENT_DAYS) : 7;
+const NOW_MS = env.FK_NOW && Number.isFinite(Date.parse(env.FK_NOW)) ? Date.parse(env.FK_NOW) : Date.now(); // FK_NOW: an ISO time, for tests
 const REPO = env.FK_GIT_GITHUB || '';
 const NET_S = Number(env.FK_STACK_NET_TIMEOUT_S) || 120; // every fetch and push
 const LOCAL_S = 60; // every local git call
@@ -107,16 +112,17 @@ const unmerged = (dir) => git(dir, 'diff', '--name-only', '--diff-filter=U').std
 // ------------------------------------------------------------------ arguments
 
 const [sub, ...rest] = process.argv.slice(2);
-const flags = { dryRun: false, name: '' };
+const flags = { dryRun: false, name: '', all: false };
 const pos = [];
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   if (a === '--dry-run') flags.dryRun = true;
+  else if (a === '--all') flags.all = true;
   else if (a === '--name') flags.name = rest[++i] ?? die('--name wants a value', 2);
   else if (a.startsWith('--')) die(`unknown arg: ${a}`, 2);
   else pos.push(a);
 }
-const usage = () => die('usage: factory stack new <parent-pr|parent-branch> [--name <name>] [--dry-run] | land <merged-pr> [--dry-run] | status | bases <branch>', 2);
+const usage = () => die('usage: factory stack new <parent-pr|parent-branch> [--name <name>] [--dry-run] | land <merged-pr> [--dry-run] | status [--all] | bases <branch>', 2);
 if (!['new', 'land', 'status', 'bases'].includes(sub ?? '')) usage();
 if (sub !== 'bases') {
   const v = spawnSync('gh', ['--version'], { encoding: 'utf8' });
@@ -124,7 +130,7 @@ if (sub !== 'bases') {
 }
 const prNumber = (s) => (/^#?\d+$/.test(s ?? '') ? Number(s.replace('#', '')) : null);
 
-const PR_FIELDS = 'number,title,state,headRefName,headRefOid,baseRefName,mergeable,mergeCommit';
+const PR_FIELDS = 'number,title,state,headRefName,headRefOid,baseRefName,mergeable,mergeCommit,closedAt,mergedAt';
 
 // ------------------------------------------------------------------ depth
 
@@ -457,9 +463,28 @@ function cmdStatus() {
       cur = parentOf(cur);
     }
   }
+  // recent: open, or merged or closed within [stack] recent_days (a missing time counts as old)
+  const recent = (p) => {
+    if (flags.all || p.state === 'OPEN') return true;
+    const t = Date.parse(p.state === 'MERGED' ? (p.mergedAt ?? p.closedAt) : p.closedAt);
+    return Number.isFinite(t) && NOW_MS - t <= RECENT_DAYS * 86_400_000;
+  };
+  const rootOf = (p) => {
+    let cur = p;
+    for (let i = 0; i < 20; i++) {
+      const par = parentOf(cur);
+      if (!par || !members.has(par.number)) break;
+      cur = par;
+    }
+    return cur.number;
+  };
+  const live = new Set(); // roots of the stacks worth showing
+  for (const p of prs) if (members.has(p.number) && recent(p)) live.add(rootOf(p));
+  const hidden = new Set([...members].map((n) => rootOf(prs.find((p) => p.number === n)))).size - live.size;
+  for (const p of prs) if (members.has(p.number) && !live.has(rootOf(p))) members.delete(p.number);
   const recorded = readStacks(STATE).links.filter((l) => !l.landedFrom && !prs.some((p) => p.headRefName === l.child && p.state === 'OPEN'));
   if (!members.size && !recorded.length) {
-    note(`no stacks (no PR is based on a branch other than ${TARGET})`);
+    note(hidden ? `no current stacks (${hidden} older hidden; --all shows them)` : `no stacks (no PR is based on a branch other than ${TARGET})`);
     return 0;
   }
   const kids = new Map();
@@ -478,7 +503,7 @@ function cmdStatus() {
     if (p.state === 'OPEN' && par?.state === 'MERGED') warnings.push(`#${p.number}: its base #${par.number} (${p.baseRefName}) is merged but #${p.number} was not landed; run: factory stack land ${par.number}`);
     if (p.baseRefName !== TARGET && !baseOk) {
       if (p.state === 'OPEN') warnings.push(`#${p.number}: its base branch ${p.baseRefName} is gone; GitHub will close #${p.number}${par ? ` (restore the branch, then: factory stack land ${par.number})` : ''}`);
-      else if (p.state === 'CLOSED') warnings.push(`#${p.number}: closed, its base branch ${p.baseRefName} is gone (restore it, \`gh pr reopen ${p.number}\`, then \`factory stack land\` its parent)`);
+      else if (p.state === 'CLOSED' && recent(p)) warnings.push(`#${p.number}: closed, its base branch ${p.baseRefName} is gone (restore it, \`gh pr reopen ${p.number}\`, then \`factory stack land\` its parent)`);
     }
     return `#${p.number} ${p.title}  [${p.state.toLowerCase()}] base ${base}, mergeable: ${mergeable}`;
   };
@@ -497,6 +522,7 @@ function cmdStatus() {
   }
   for (const l of recorded) out(`${l.child}: cut from ${l.parentBranch}${l.parentPr ? ` (#${l.parentPr})` : ''}, no open PR yet`);
   for (const w of warnings) out(`WARN ${w}`);
+  if (hidden) note(`${hidden} older stack${hidden === 1 ? '' : 's'} hidden (nothing open, nothing merged or closed in ${RECENT_DAYS} days); --all shows them`);
   return 0;
 }
 

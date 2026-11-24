@@ -177,6 +177,11 @@ test('[stack] target and max_depth validate, reach the environment, and reject a
   assert.deepEqual(ok.errors, []);
   assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_STACK_TARGET='trunk'$/m);
   assert.match(toEnvSh(ok.resolved, '/tmp/example/factory.toml'), /^export FK_STACK_MAX_DEPTH='2'$/m);
+  const rd = load(`${validText}\n[stack]\nrecent_days = 14\n`);
+  assert.deepEqual(rd.errors, []);
+  assert.match(toEnvSh(rd.resolved, '/tmp/example/factory.toml'), /^export FK_STACK_RECENT_DAYS='14'$/m);
+  assert.deepEqual(load(`${validText}\n[stack]\nrecent_days = 0\n`).errors, []);
+  assert.equal(load(`${validText}\n[stack]\nrecent_days = -1\n`).errors[0].path, 'stack.recent_days');
   assert.deepEqual(load(`${validText}\n[stack]\n`).errors, []);
   assert.equal(load(`${validText}\n[stack]\nmax_depth = 0\n`).errors[0].path, 'stack.max_depth');
   assert.equal(load(`${validText}\n[stack]\ntarget = 1\n`).errors[0].path, 'stack.target');

@@ -13,7 +13,8 @@ const DEADLINE_MS = 120_000; // every call to the kit has one
 function project({ maxDepth } = {}) {
   const t = tree({ extraToml: () => `\n[stack]\ntarget = "trunk"\n${maxDepth ? `max_depth = ${maxDepth}\n` : ''}` });
   const gh = installGh(t.p('bin'), t.p('gh-state.json'), t.p('gh.log'));
-  const env = { ...t.env, ...gh.env, ...IDENT };
+  const NOW = '2026-11-23T12:00:00Z'; // fake time: every closedAt in these tests is measured against it
+  const env = { ...t.env, ...gh.env, ...IDENT, FK_NOW: NOW };
   const m = t.main;
   const g = (cwd, ...a) => t.git(cwd, ...a);
   const write = (dir, f, text) => writeFileSync(join(dir, f), text);
@@ -311,10 +312,63 @@ test('stack status: a base branch that is gone: "will be closed by GitHub", then
     let r = t.run(['status']);
     assert.match(r.stdout, /base p1 \(GONE\)/);
     assert.match(r.stdout, /WARN #2: its base branch p1 is gone; GitHub will close #2/);
-    t.gh.set(2, { state: 'CLOSED' });
+    t.gh.set(2, { state: 'CLOSED', closedAt: '2026-11-22T12:00:00Z' });
     r = t.run(['status']);
     assert.match(r.stdout, /WARN #2: closed, its base branch p1 is gone/);
     assert.ok(!/will close/.test(r.stdout));
+  }));
+
+// an old closed PR whose base branch is gone, next to a live stack (#1 parent, #2 child)
+const oldClosed = (t) => {
+  t.gh.pr({ number: 9, title: 'Old port', state: 'CLOSED', headRefName: 'old-port', baseRefName: 'long-gone', closedAt: '2026-08-01T00:00:00Z' });
+};
+
+test('stack status: an old closed PR with a gone base is hidden, with no WARN; the live stack stays', () =>
+  withProject((t) => {
+    t.child('one', 2);
+    oldClosed(t);
+    const r = t.run(['status']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /#2 Child one/);
+    assert.ok(!r.stdout.includes('#9') && !r.stdout.includes('WARN'), r.stdout);
+    assert.match(r.stdout, /1 older stack hidden/);
+  }));
+
+test('stack status: the same PR closed inside the window warns', () =>
+  withProject((t) => {
+    oldClosed(t);
+    t.gh.set(9, { closedAt: '2026-11-20T12:00:00Z' });
+    const r = t.run(['status']);
+    assert.match(r.stdout, /WARN #9: closed, its base branch long-gone is gone/);
+    assert.match(r.stdout, /#9 Old port/);
+  }));
+
+test('stack status: an open PR with a gone base always warns, however old', () =>
+  withProject((t) => {
+    t.gh.pr({ number: 8, title: 'Stranded', headRefName: 'stranded', baseRefName: 'long-gone', createdAt: '2026-01-01T00:00:00Z' });
+    const r = t.run(['status']);
+    assert.match(r.stdout, /WARN #8: its base branch long-gone is gone; GitHub will close #8/);
+  }));
+
+test('stack status: --all shows everything, as before', () =>
+  withProject((t) => {
+    oldClosed(t);
+    const r = t.run(['status', '--all']);
+    assert.match(r.stdout, /#9 Old port/);
+    assert.match(r.stdout, /WARN #9: closed, its base branch long-gone is gone/);
+    assert.ok(!/hidden/.test(r.stdout));
+  }));
+
+test('stack status: [stack] recent_days is respected', () =>
+  withProject((t) => {
+    oldClosed(t);
+    t.gh.set(9, { closedAt: '2026-11-20T12:00:00Z' }); // 3 days old
+    const wide = factory(['stack', 'status'], { env: { ...t.env, FK_STACK_RECENT_DAYS: '2' }, cwd: t.main, timeout: DEADLINE_MS });
+    assert.ok(!wide.stdout.includes('#9'), 'a 2-day window hides a 3-day-old close');
+    const zero = factory(['stack', 'status'], { env: { ...t.env, FK_STACK_RECENT_DAYS: '0' }, cwd: t.main, timeout: DEADLINE_MS });
+    assert.ok(!zero.stdout.includes('#9'));
+    const ok = factory(['stack', 'status'], { env: { ...t.env, FK_STACK_RECENT_DAYS: '30' }, cwd: t.main, timeout: DEADLINE_MS });
+    assert.match(ok.stdout, /#9 Old port/);
   }));
 
 test('stack status: no stacks says so', () =>
