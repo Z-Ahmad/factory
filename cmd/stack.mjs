@@ -180,6 +180,11 @@ function cmdNew() {
   if (parentDepth + 1 > MAX_DEPTH)
     die(`a child of ${parent.branch} would be ${parentDepth + 1} PRs deep; [stack] max_depth is ${MAX_DEPTH}. Land the bottom of the stack first, or stack on a different parent`);
 
+  // a second `new` for the same parent while the first child has no PR yet would leave a duplicate worktree
+  if (!flags.name) {
+    const twin = readStacks(STATE).links.find((l) => l.parentBranch === parent.branch && !l.landedFrom && hasLocal(l.child) && !openByHead.has(l.child));
+    if (twin) die(`${twin.child} was already cut from ${parent.branch} (worktree ${join(MAIN, env.FK_GIT_WORKTREES_DIR || '.worktrees', twin.worktree || '')}) and has no PR yet; use it, or pass --name <name> for a second child`);
+  }
   // a name nobody has: the worktree directory, its branch (from [git] worktree_branch) and the local branch must be free
   const slug = parent.branch.split('/').pop().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[^A-Za-z0-9]+/, '') || 'stack';
   const base = flags.name || `${slug}-next`;
@@ -482,7 +487,15 @@ function cmdStatus() {
   for (const p of prs) if (members.has(p.number) && recent(p)) live.add(rootOf(p));
   const hidden = new Set([...members].map((n) => rootOf(prs.find((p) => p.number === n)))).size - live.size;
   for (const p of prs) if (members.has(p.number) && !live.has(rootOf(p))) members.delete(p.number);
-  const recorded = readStacks(STATE).links.filter((l) => !l.landedFrom && !prs.some((p) => p.headRefName === l.child && p.state === 'OPEN'));
+  // a link whose child branch is gone (not local, not on origin) and never had a PR is dead: forget it
+  const reg = readStacks(STATE);
+  const dead = reg.links.filter((l) => !l.landedFrom && !hasLocal(l.child) && !onOrigin(l.child) && !prs.some((p) => p.headRefName === l.child));
+  if (dead.length) {
+    reg.links = reg.links.filter((l) => !dead.includes(l));
+    writeStacks(STATE, reg);
+    for (const l of dead) note(`forgot ${l.child} (branch gone, no PR)`);
+  }
+  const recorded = reg.links.filter((l) => !l.landedFrom && !prs.some((p) => p.headRefName === l.child && p.state === 'OPEN'));
   if (!members.size && !recorded.length) {
     note(hidden ? `no current stacks (${hidden} older hidden; --all shows them)` : `no stacks (no PR is based on a branch other than ${TARGET})`);
     return 0;

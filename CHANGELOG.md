@@ -2,6 +2,19 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.29.1
+
+### `factory stack status` forgets dead links, `stack new` will not cut a twin
+
+An agent ran `factory stack new 693` twice and removed the duplicate worktree and branch, but `stacks.json` still listed
+it, and `factory stack status` printed "cut from ..., no open PR yet" for it for good.
+
+- **`stack status` drops a dead link.** A link whose child branch exists neither locally nor on origin, and that never
+  had a PR (open, merged or closed), is removed from `stacks.json`, with one line: `stack: forgot <branch> (branch gone, no PR)`.
+  Links with a PR, or a branch that still exists, are handled as before.
+- **`stack new` refuses a twin.** Run again for the same parent while the first child's branch still exists and has no open
+  PR, it stops and names the first worktree (use it, or pass `--name` for a deliberate second child).
+
 ## v0.29.0
 
 ### Low disk is caught early, everywhere
