@@ -587,8 +587,9 @@ export const SCHEMA = table({
   // Whether it acts or only logs is `factory janitor enable|disable`, not a key.
   janitor: table({ orphan_minutes: int(), swap_pct: int(), tools: strs() }),
   // `factory stack`: stacked PRs. target = the branch a stack lands on and a child is retargeted onto (default "main");
-  // max_depth = the most PRs one stack may hold, counting the one on the target (default 3).
-  stack: table({ target: str(), max_depth: int({ min: 1 }) }),
+  // max_depth = the most PRs one stack may hold, counting the one on the target (default 3);
+  // recent_days = how many days a merged or closed PR keeps its stack in `factory stack status` (default 7; 0 = open PRs only).
+  stack: table({ target: str(), max_depth: int({ min: 1 }), recent_days: int({ min: 0 }) }),
   tests: table({ unit: str(), gate: str(), retry_once: strs() }),
   phone: table({
     export: str(),

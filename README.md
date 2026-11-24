@@ -193,7 +193,7 @@ factory stack status            # 5. check: every stack as a tree
 |---|---|
 | `factory stack new <parent-pr\|parent-branch> [--name <n>] [--dry-run]` | `<parent>` is a PR number or a branch. Cuts a worktree and branch for the child from the parent's head (`factory worktree <name> --base origin/<parent-branch>`, so caches and derived builds are shared as usual) and records the link: child branch, parent PR number and branch, the parent's head sha at the cut. Refuses past `[stack] max_depth`, and a parent that is merged or closed. Prints the `gh pr create --base <parent-branch>` line |
 | `factory stack land <merged-pr> [--dry-run]` | Run after the owner merges. Reads the PR (`gh pr view`) and refuses unless it is merged. For each open PR whose base is its head branch: `gh pr edit --base <target>`; in the child's worktree (or one made for it) `git merge --no-edit origin/<target>`; for each conflicted file, take the child's side only if `git diff --quiet <parent-head> origin/<target> -- <file>` says the target holds the parent's final version, else stop with **exit 3**, naming the files and leaving the merge in progress; commit through the repo's own hooks (never `--no-verify`); plain `git push`; record that the child's parent is now the target. Only when every child is retargeted and pushed does it delete the merged PR's remote branch, local branch and worktree (and it asks GitHub once more whether any open PR still targets the branch). A failure or a conflict deletes nothing; fix it and run `land` again, which picks the children up again. `--dry-run` prints the plan. Subagents may run it |
-| `factory stack status` | Each stack as a tree: PR number, title, state, base, mergeable, and whether the base branch still exists. Warns when a base is merged but its child was not landed, and when a base branch is gone: "GitHub will close #N", or "closed" if it already has |
+| `factory stack status [--all]` | Each stack as a tree: PR number, title, state, base, mergeable, and whether the base branch still exists. Shows only stacks with an open PR or one merged or closed within `[stack] recent_days`; `--all` shows everything. Warns when an open PR's base is merged but it was not landed, when an open PR's base branch is gone ("GitHub will close #N"), and when a PR closed within the window has a gone base |
 
 Siblings are two `new` calls on the same parent. The base branch is the link: nothing else is needed, and `gh stack link <a> <b> <c>` chains the PRs it is given in series (a, then b on a, then c on b), which is wrong for siblings.
 
@@ -205,6 +205,7 @@ Exit codes: 0 done; 1 a failure (not merged, `gh` or `git` failed, a push was re
 [stack]
 target    = "main"   # where a stack lands, and what a child is retargeted onto
 max_depth = 3        # the most PRs one stack may hold, counting the one on the target
+recent_days = 7      # `status` hides stacks with nothing open and nothing merged or closed this many days back (0 = open only)
 ```
 
 `<state_dir>/stacks.json` is the kit's own record (`links`: child, worktree, parentPr, parentBranch, parentHead, createdAt; after a landing the child's parent is the target, with `landedFrom`). Tunables: `FK_STACK_NET_TIMEOUT_S` (default 120: every fetch and push) and `FK_STACK_GH_TIMEOUT_S` (default 20: every `gh` call).
@@ -229,7 +230,7 @@ The file is a small subset of [TOML](https://toml.io): tables, `[[arrays of tabl
 | `[proof.*]` | no | How to build and record proofs, verdict thresholds, matrix cells |
 | `[tests]` | no | The unit-test command and the pre-commit gate |
 | `[phone]`, `[release.*]` | no | Device builds and beta uploads |
-| `[stack]` | no | Stacked PRs: `target` (default `"main"`), the branch a stack lands on and a child is retargeted onto; `max_depth` (default 3), the most PRs one stack may hold, counting the one on the target. See [Stacked PRs](#stacked-prs) |
+| `[stack]` | no | Stacked PRs: `target` (default `"main"`), the branch a stack lands on and a child is retargeted onto; `max_depth` (default 3), the most PRs one stack may hold, counting the one on the target; `recent_days` (default 7, min 0), how long a merged or closed PR keeps its stack in `stack status`. See [Stacked PRs](#stacked-prs) |
 | `[slot]` | no | `factory run`'s capacity, job weights and gates |
 | `[loop]` | no | Which model does which role, review rounds, report lengths, `wrap_context_k` (default 400: an agent past that many thousand tokens of context hands back a patch) |
 
