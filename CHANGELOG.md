@@ -2,6 +2,15 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.28.1
+
+### `factory stack status` stops showing old news
+
+Run against a real repo, `status` drew trees and printed WARN lines for PRs closed months ago on purpose. It now shows
+only stacks with an open PR, or a PR merged or closed within `[stack] recent_days` (new, default 7, min 0). It warns only
+for an open PR whose base branch is gone or merged, and for a PR closed within the window whose base is gone (GitHub
+just closed it). `factory stack status --all` shows everything, as before. `land`, `new` and `bases` are unchanged.
+
 ## v0.28.0
 
 ### Stacked PRs the kit keeps safe
