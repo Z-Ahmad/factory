@@ -393,3 +393,45 @@ test('stack bases: lists the open PRs that target a branch (exit 0), none (1), o
     assert.equal(rec.status, 0);
     assert.match(rec.stdout, /x\/one-wt/);
   }));
+
+test('stack status: forgets a link whose branch is gone everywhere and has no PR, in one line', () =>
+  withProject((t) => {
+    assert.equal(t.run(['new', '1']).status, 0);
+    const link = t.stacks().links[0];
+    const dir = join(t.main, '.worktrees', link.worktree);
+    // the agent removes the duplicate: worktree and branch
+    t.g(t.main, 'worktree', 'remove', '--force', dir);
+    t.g(t.main, 'branch', '-D', link.child);
+    const r = t.run(['status']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, new RegExp(`^stack: forgot ${link.child.replace(/[/.]/g, '\\$&')} \\(branch gone, no PR\\)$`, 'm'));
+    assert.ok(!/no open PR yet/.test(r.stdout));
+    assert.deepEqual(t.stacks().links, []);
+    assert.match(t.run(['status']).stdout, /no stacks/);
+  }));
+
+test('stack status: keeps a link whose branch exists, and one that has a PR even with the branch gone', () =>
+  withProject((t) => {
+    assert.equal(t.run(['new', '1', '--name', 'alive']).status, 0);
+    const c = t.child('prd', 2);
+    t.g(t.main, 'worktree', 'remove', '--force', c.dir);
+    t.g(t.main, 'branch', '-D', c.branch);
+    t.g(t.main, 'push', '-q', 'origin', '--delete', c.branch);
+    const r = t.run(['status']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!/forgot/.test(r.stdout), r.stdout);
+    assert.match(r.stdout, /x\/alive-wt: cut from p1 \(#1\), no open PR yet/);
+    assert.deepEqual(t.stacks().links.map((l) => l.child).sort(), ['x/alive-wt', 'x/prd-wt']);
+  }));
+
+test('stack new: a second run for the same parent refuses while the first child has no PR, and --name still works', () =>
+  withProject((t) => {
+    assert.equal(t.run(['new', '1']).status, 0);
+    const again = t.run(['new', '1']);
+    assert.notEqual(again.status, 0);
+    assert.match(again.stderr, /already cut from p1.*no PR yet.*--name/);
+    assert.equal(t.stacks().links.length, 1);
+    const o = t.run(['new', '1', '--name', 'second']);
+    assert.equal(o.status, 0, o.stdout + o.stderr);
+    assert.equal(t.stacks().links.length, 2);
+  }));
