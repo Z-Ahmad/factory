@@ -16,7 +16,7 @@ Worker rules:
 - Every xcodebuild, test run or proof goes through `factory run --job <build|test|proof> --dd {dd} -- <cmd>` (a weighted lease; it waits inside, never poll).
   The orchestrator runs at most 2 iOS agents at once (builders or provers); never start a third.
 - Never start or stop the shared dev stack. If you need your own server, run it on a separate port and kill only the
-  processes you started (`factory read-api up|down` when the project has one).
+  processes you started (`factory dev read-api up|down` when the project has one).
 - Never edit the files factory.toml lists under [never_touch], never run its never_run_in_worktree scripts here, and
   never save edits to the test seed (cancel, or restore it after).
 - Need something from outside your worktree (an env file, a secret, another checkout's server or build)? Stop and report
