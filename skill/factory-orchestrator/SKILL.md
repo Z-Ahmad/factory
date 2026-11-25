@@ -67,8 +67,8 @@ comes from `factory.toml` through `factory config get <key>`; never hard-code on
    the dev command needs a tool its worktree lacks (`npm install` there, rerun); dev-up 1/2 → stderr, retry
    `factory dev up` once, then stop; a port that is up but never answers → `factory dev restart` (yours alone; the hook
    denies subagents); seed 3 → stop. Flags in the line (`dev worktree on <branch>: branch gone on origin`, `N commits
-   behind`) mean the dev stack serves a dead or stale checkout: fix it (`restack`, or update that worktree) before
-   trusting any proof. "App Store auto-update on" → tell the human once (it is how Xcode breaks overnight).
+   behind`) mean the dev stack serves a dead or stale checkout: fix it (`factory dev restart`
+   moves a stack following main to origin/main; `factory dev switch main` leaves a gone branch) before trusting any proof. "App Store auto-update on" → tell the human once (it is how Xcode breaks overnight).
    keep-awake holds a `caffeinate` (`preflight.keep_awake`); a closed MacBook lid still sleeps the Mac.
    Never start or kill the dev stack any other way (the hook denies it).
 2. **Worktree.** Per item: `factory worktree <name>` (prints the push command), then enter it with `EnterWorktree`
