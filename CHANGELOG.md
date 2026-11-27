@@ -2,6 +2,16 @@
 
 Releases are git tags (`vX.Y.Z`); a project pins one with `[kit] ref` in its `factory.toml`. Releases before v0.12.0 are described in their tag messages and commits.
 
+## v0.29.3
+
+### `factory run` no longer waits on memory pressure "warn"
+
+A Seaglass test waited 35 minutes with nothing running: capacity 0/4 in use, 39-54% of memory free, no swapping.
+macOS left `kern.memorystatus_vm_pressure_level` at 2 (warn) while a simulator kept from an earlier proof stayed booted, and the gate held on anything but 1.
+
+- **Only critical (4) holds.** Warn is shown as `pressure warn (not a gate below critical)`.
+  The swap-out rate (`[slot] max_swapouts_per_min`) and free memory (`[slot] min_free_pct`) still hold a Mac that is really short, as they did before; like swap in use before v0.22, the warn level lingers after the squeeze that raised it.
+
 ## v0.29.2
 
 ### `factory stack land` no longer commits conflict markers or brings back renamed files
