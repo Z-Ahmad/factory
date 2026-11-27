@@ -178,8 +178,12 @@ export function gates(r, cfg) {
   const parts = [];
   const held = [];
   if (r.pressure != null) {
-    const ok = r.pressure === 1;
-    parts.push(`pressure ${PRESSURE[r.pressure] ?? r.pressure}${ok ? '' : ' (kern.memorystatus_vm_pressure_level is not 1)'}`);
+    // Only critical holds. macOS leaves the level at warn long after the squeeze that raised it (a booted simulator
+    // kept it there with 39-54% free, holding a test for 35 min on an idle Mac), the way swap in use lingered before
+    // v0.22; the swap-out rate and free memory below are what read a real shortage.
+    const ok = r.pressure !== 4;
+    const name = PRESSURE[r.pressure] ?? r.pressure;
+    parts.push(`pressure ${name}${ok ? (r.pressure === 1 ? '' : ' (not a gate below critical)') : ' (kern.memorystatus_vm_pressure_level is critical)'}`);
     if (!ok) held.push('pressure');
   }
   if (r.swapRate != null) {

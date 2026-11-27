@@ -194,7 +194,7 @@ test('run: [slot.weights] adds job types and changes weights; an unknown type is
   }
 });
 
-test('run: the gates: pressure, swap-outs per minute, and free memory each hold admission and name their key; swap in use and load never do', async () => {
+test('run: the gates: critical pressure, swap-outs per minute, and free memory each hold admission and name their key; swap in use and load never do', async () => {
   const t = project('capacity = 4');
   try {
     // a Mac with 10 GB of swap in use (vm.swapusage) and half its memory free: it admits
@@ -203,8 +203,13 @@ test('run: the gates: pressure, swap-outs per minute, and free memory each hold 
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /pressure normal; swapouts (?:\?|\d+)\/min; memory 52% free; load 1\)/);
     assert.doesNotMatch(r.stdout, /swap /);
+    // warn lingers after the squeeze that raised it: with memory free and no swapping it admits, and says so
     t.set('pressure', 2);
-    assert.match(t.run(['--check', '--job', 'build']).stdout, /would wait \(.*pressure warn \(kern\.memorystatus_vm_pressure_level is not 1\)/);
+    r = t.run(['--check', '--job', 'build']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /pressure warn \(not a gate below critical\)/);
+    t.set('pressure', 4);
+    assert.match(t.run(['--check', '--job', 'build']).stdout, /would wait \(.*pressure critical \(kern\.memorystatus_vm_pressure_level is critical\)/);
     t.set('pressure', 1);
     t.set('free', 9);
     assert.match(t.run(['--check', '--job', 'build']).stdout, /memory 9% free < 15% \(\[slot\] min_free_pct\)/);
@@ -473,6 +478,8 @@ test('run: pure helpers: etime, the swap-out rate, the gate text', () => {
   assert.deepEqual(gates({ pressure: null, free: null, load: null, swapouts: null, swapRate: null }, cfg), { ok: true, held: [], text: 'no readings' });
   const g = gates({ pressure: 4, free: 10, load: 20, swapouts: 5, swapRate: 2000 }, cfg);
   assert.deepEqual(g.held, ['pressure', 'max_swapouts_per_min', 'min_free_pct']);
+  assert.deepEqual(gates({ pressure: 2, free: 39, load: 1, swapouts: 5, swapRate: 0 }, cfg).held, []);
+  assert.deepEqual(gates({ pressure: 2, free: 10, load: 1, swapouts: 5, swapRate: 0 }, cfg).held, ['min_free_pct']);
 });
 
 test('slot status / slot wait: deprecated aliases of run --status and run --wait', () => {
